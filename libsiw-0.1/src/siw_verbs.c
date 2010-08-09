@@ -1,41 +1,3 @@
-/*
- * Software iWARP user library for SoftiWARP 'siw' Linux driver
- *
- * Authors: Bernard Metzler <bmt@zurich.ibm.com>
- *
- * Copyright (c) 2008-2010, IBM Corporation
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * BSD license below:
- *
- *   Redistribution and use in source and binary forms, with or
- *   without modification, are permitted provided that the following
- *   conditions are met:
- *
- *   - Redistributions of source code must retain the above copyright notice,
- *     this list of conditions and the following disclaimer.
- *
- *   - Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *
- *   - Neither the name of IBM nor the names of its contributors may be
- *     used to endorse or promote products derived from this software without
- *     specific prior written permission.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-
 #if HAVE_CONFIG_H
 #  include <config.h>
 #endif
@@ -81,6 +43,17 @@ int siw_query_port(struct ibv_context *ctx, uint8_t port,
 	return ibv_cmd_query_port(ctx, port, attr, &cmd, sizeof cmd);
 }
 
+
+int siw_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr,
+                        enum ibv_qp_attr_mask attr_mask,
+                        struct ibv_qp_init_attr *init_attr)
+{
+	struct ibv_query_qp cmd;
+
+	return ibv_cmd_query_qp(qp, attr, attr_mask, init_attr, &cmd, sizeof(cmd));
+}
+
+
 struct ibv_pd *siw_alloc_pd(struct ibv_context *ctx)
 {
 	struct siw_alloc_pd	 cmd;
@@ -125,6 +98,8 @@ struct ibv_mr *siw_reg_mr(struct ibv_pd *pd, void *addr,
 
 	if (!mr)
 		return NULL;
+
+	//printf("SIW_TRACE: %s going to call ibv_cmd_reg_mr\n", __func__);
 
 	rv = ibv_cmd_reg_mr(pd, addr, len, (uintptr_t)addr, access, &mr->ofa_mr,
 			    &req.ofa_req, sizeof req, &resp.ofa_resp, sizeof resp);

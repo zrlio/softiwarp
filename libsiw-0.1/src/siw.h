@@ -1,41 +1,3 @@
-/*
- * Software iWARP user library for SoftiWARP 'siw' Linux driver
- *
- * Authors: Bernard Metzler <bmt@zurich.ibm.com>
- *
- * Copyright (c) 2008-2010, IBM Corporation
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * BSD license below:
- *
- *   Redistribution and use in source and binary forms, with or
- *   without modification, are permitted provided that the following
- *   conditions are met:
- *
- *   - Redistributions of source code must retain the above copyright notice,
- *     this list of conditions and the following disclaimer.
- *
- *   - Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *
- *   - Neither the name of IBM nor the names of its contributors may be
- *     used to endorse or promote products derived from this software without
- *     specific prior written permission.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-
 #ifndef _SIW_H
 #define _SIW_H
 
@@ -121,6 +83,12 @@ struct siw_context {
 
 extern int siw_query_device(struct ibv_context *, struct ibv_device_attr *);
 extern int siw_query_port(struct ibv_context *, uint8_t, struct ibv_port_attr *);
+/* 
+ * atr: Adding support for ibv_query_qp
+ */
+extern int siw_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr,
+                        enum ibv_qp_attr_mask attr_mask,
+                        struct ibv_qp_init_attr *init_attr);
 
 extern struct ibv_pd *siw_alloc_pd(struct ibv_context *);
 extern int siw_free_pd(struct ibv_pd *);
