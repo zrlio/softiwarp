@@ -72,14 +72,15 @@ enum siw_if_type {
 #define SIW_SW_VERSION		1
 #define SIW_MAX_QP		(1024 * 100)
 #define SIW_MAX_QP_WR		(1024 * 32)
-#define SIW_MAX_ORD		64
-#define SIW_MAX_IRD		64
+#define SIW_MAX_ORD		128
+#define SIW_MAX_IRD		128
 #define SIW_MAX_SGE		10
 #define SIW_MAX_SGE_RD		1	/* iwarp limitation. we could relax */
-#define SIW_MAX_INLINE		(PAGE_SIZE * 100)	/* mvapich req. */
+#define SIW_MAX_INLINE		(PAGE_SIZE * 200)	/* mvapich req. */
 #define SIW_MAX_CQ		(1024 * 100)
 #define SIW_MAX_CQE		(SIW_MAX_QP_WR * 100)
-#define SIW_MAX_MR		(MLOCK_LIMIT / PAGE_SIZE) /* per user report */
+#define SIW_MAX_MR	\
+	(current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur >> PAGE_SHIFT)
 #define SIW_MAX_MR_SIZE		(1024 * 1024 * 1024)
 #define SIW_MAX_PD		SIW_MAX_QP
 #define SIW_MAX_MW		0	/* to be set if MW's are supported */
@@ -87,12 +88,8 @@ enum siw_if_type {
 #define SIW_MAX_SRQ		SIW_MAX_QP
 #define SIW_MAX_SRQ_WR		(SIW_MAX_QP_WR * 10)
 
-#define SIW_MIN_SENDBUF		(PAGE_SIZE * 40) /* Should be module param ? */
-#define SIW_MIN_RCVBUF		(PAGE_SIZE * 40) /* Should be module param ? */
-#define SIW_MIN_TX_SEGS		40	/* # DDP frames in socket sendbuf */
-#define SIW_MIN_RX_SEGS		40	/* # DDP frames in socket rcvbuf */
-
-#define SENDPAGE_THRESH		1024	/* min bytes for using sendpage() */
+#define SENDPAGE_THRESH		256	/* min bytes for using sendpage() */
+#define SOCKBUFSIZE		(PAGE_SIZE * 40)
 
 #define	SIW_NODE_DESC		"Software iWARP stack"
 
@@ -101,7 +98,7 @@ enum siw_if_type {
  * Softiwarp TX/RX configuration options
  */
 
-#define CONFIG_RDMA_SIW_CRC_ENFORCED  0
+#define CONFIG_RDMA_SIW_CRC_ENFORCED	0
 
 
 struct siw_devinfo {
@@ -259,7 +256,7 @@ enum siw_wr_opcode {
 
 struct siw_sge {
 	u64		addr;	/* HBO */
-	u32		len;	/* HBO */
+	unsigned int	len;	/* HBO */
 	u32		lkey;	/* HBO */
 	union {
 		struct siw_mem	*obj; /* reference to registered memory */
@@ -287,7 +284,6 @@ struct siw_wr_send {
 	struct siw_wr_common	hdr;
 	int			num_sge;
 	struct siw_sge		sge[SIW_MAX_SGE];
-	u32			rtag;
 	__be32			imm_data;
 };
 
@@ -295,9 +291,9 @@ struct siw_wr_rmda_write {
 	struct	siw_wr_common	hdr;
 	int			num_sge;
 	struct siw_sge		sge[SIW_MAX_SGE];
+	__be32			imm_data;
 	u64			raddr;
 	u32			rtag;
-	__be32			imm_data;
 };
 
 struct siw_wr_rdma_rread {
@@ -425,7 +421,6 @@ struct siw_sk_upcalls {
 
 struct siw_sq_work {
 	struct work_struct	work;
-	struct siw_qp		*qp;
 };
 
 struct siw_srq {
@@ -462,9 +457,10 @@ struct siw_qp_attrs {
 };
 
 enum siw_tx_state {
-	SIW_SEND_HDR,		/* start or continue sending HDR */
-	SIW_SEND_DATA,		/* start or continue sending DDP payload */
-	SIW_SEND_TRAILER	/* start or continue sending TRAILER */
+	SIW_SEND_HDR = 0,	/* start or continue sending HDR */
+	SIW_SEND_DATA = 1,	/* start or continue sending DDP payload */
+	SIW_SEND_TRAILER = 2,	/* start or continue sending TRAILER */
+	SIW_SEND_SHORT_FPDU = 3 /* send whole FPDU hdr|data|trailer at once */
 };
 
 enum siw_rx_state {
@@ -516,10 +512,10 @@ struct siw_iwarp_rx {
 	int			skb_copied;   /* processed bytes in skb */
 
 	int			sge_idx;	/* current sge in rx */
-	u32			sge_off; 	/* already rcvd in curr. sge */
+	unsigned int		sge_off; 	/* already rcvd in curr. sge */
 	struct ib_umem_chunk	*umem_chunk;	/* chunk used by sge and off */
 	int			pg_idx;		/* page used in chunk */
-	u32			pg_off;		/* offset within that page */
+	unsigned int		pg_off;		/* offset within that page */
 
 	enum siw_rx_state	state;
 
@@ -534,9 +530,66 @@ struct siw_iwarp_rx {
 #define siw_rx_data(qp, rctx)	\
 	(iwarp_pktinfo[rctx->hdr.ctrl.opcode].proc_data(qp, rctx))
 
+/*
+ * Shorthands for short packets to be transmitted more
+ * efficient.
+ */
+struct siw_send_imm_pkt {
+	struct iwarp_send	send;
+	__u32			data;
+	__u32			crc;
+} __attribute__((__packed__));
+
+struct siw_send_zero_pkt {
+	struct iwarp_send	send;
+	__u32			crc;
+} __attribute__((__packed__));
+
+struct siw_write_imm_pkt {
+	struct iwarp_rdma_write	write;
+	__u32			data;
+	__u32			crc;
+} __attribute__((__packed__));
+
+struct siw_write_zero_pkt {
+	struct iwarp_rdma_write	write;
+	__u32			crc;
+} __attribute__((__packed__));
+
+struct siw_rreq_pkt {
+	struct iwarp_rdma_rreq	rreq;
+	__u32			crc;
+} __attribute__((__packed__));
+
+struct siw_rresp_zero_pkt {
+	struct iwarp_rdma_rresp	rresp;
+	__u32			crc;
+} __attribute__((__packed__));
+
 struct siw_iwarp_tx {
-	union iwarp_hdrs	hdr;
-	struct mpa_trailer	trailer;
+	union {
+		/* Generic part of FPDU header */
+		struct iwarp_ctrl		ctrl;
+		struct iwarp_ctrl_untagged	c_untagged;
+		struct iwarp_ctrl_tagged	c_tagged;
+
+		/* FPDU headers */
+		struct iwarp_rdma_write		rwrite;
+		struct iwarp_rdma_rreq		rreq;
+		struct iwarp_rdma_rresp		rresp;
+		struct iwarp_terminate		terminate;
+		struct iwarp_send		send;
+		struct iwarp_send_inv		send_inv;
+
+		/* complete short FPDUs */
+		struct siw_send_imm_pkt		send_imm_pkt;
+		struct siw_send_zero_pkt	send_zero_pkt;
+		struct siw_write_imm_pkt	write_imm_pkt;
+		struct siw_write_zero_pkt	write_zero_pkt;
+		struct siw_rreq_pkt		rreq_pkt;
+		struct siw_rresp_zero_pkt	rresp_zero_pkt;
+	} pkt;
+	struct mpa_trailer			trailer;
 	enum siw_tx_state	state;
 	u16			ctrl_len;
 	u16			ctrl_sent;
@@ -549,11 +602,12 @@ struct siw_iwarp_tx {
 	char			pad;		/* # pad in current fpdu */
 	u8			crc_enabled:1,	/* compute and ship crc */
 				use_sendpage:1,	/* send w/o copy */
-				finish_tcpseg:1,/* fpdu ends tcp segment? */
+				new_tcpseg:1,	/* start new tcp segment */
 				wspace_update:1,/* new write space indicated */
 				tx_suspend:1,	/* stop sending DDP segs. */
 				rsvd:3;
-	u16			rsvd1;
+
+	u16			fpdu_len;	/* len of FPDU to tx */
 
 	int			tcp_seglen;	/* remaining tcp seg space */
 	struct siw_wqe		*wqe;
@@ -561,7 +615,7 @@ struct siw_iwarp_tx {
 	int			sge_idx;	/* current sge in tx */
 	u32			sge_off; 	/* already sent in curr. sge */
 	struct ib_umem_chunk	*umem_chunk;	/* chunk used by sge and off */
-	int			pg_idx;		/* page used in chunk */
+	int			pg_idx;		/* page used in mem chunk */
 
 	/* DDP MSN for untagged messages */
 	u32			ddp_msn[RDMAP_UNTAGGED_QN_COUNT];
@@ -578,6 +632,7 @@ struct siw_qp {
 
 	struct siw_cep		*cep;
 	struct rw_semaphore	state_lock;
+
 	struct siw_pd		*pd;
 	struct siw_cq		*scq;
 	struct siw_cq		*rcq;
@@ -603,12 +658,24 @@ struct siw_qp {
 	 * we must allow for two works since during work
 	 * execution we may have to schedule another work item
 	 */
-	struct siw_sq_work	*sq_work; /* points to current work */
-	struct siw_sq_work	work1;
-	struct siw_sq_work	work2;
+	struct siw_sq_work	sq_work;
 };
 
-/* for debugging only */
+#define lock_sq(qp)	spin_lock_bh(&qp->sq_lock)
+#define unlock_sq(qp)	spin_unlock_bh(&qp->sq_lock)
+
+#define lock_rq(qp)	spin_lock_bh(&qp->rq_lock)
+#define unlock_rq(qp)	spin_unlock_bh(&qp->rq_lock)
+
+#define lock_srq(srq)	spin_lock_bh(&srq->lock)
+#define unlock_srq(srq)	spin_unlock_bh(&srq->lock)
+
+#define lock_cq(cq)	spin_lock_bh(&cq->lock)
+#define unlock_cq(cq)	spin_unlock_bh(&cq->lock)
+
+#define lock_orq(qp)	spin_lock_bh(&qp->orq_lock)
+#define unlock_orq(qp)	spin_unlock_bh(&qp->orq_lock)
+
 #define RX_QP(rx)		container_of(rx, struct siw_qp, rx_info)
 #define TX_QP(tx)		container_of(tx, struct siw_qp, tx_info)
 #define QP_ID(qp)		((qp)->hdr.id)
@@ -617,7 +684,6 @@ struct siw_qp {
 #define TX_QPID(tx)		QP_ID(TX_QP(tx))
 
 /* helper macros */
-#define ORD_SUSPEND_SQ(qp) 	(!atomic_read(&(qp)->orq_space))
 #define tx_wqe(qp)		((qp)->tx_info.wqe)
 #define rx_wqe(qp)		((qp)->rx_info.dest.wqe)
 #define rx_mem(qp)		((qp)->rx_info.dest.mem)
@@ -626,6 +692,8 @@ struct siw_qp {
 #define wr_flags(wqe)		((wqe)->wr.hdr.flags)
 #define list_entry_wqe(pos)	list_entry(pos, struct siw_wqe, list)
 #define list_first_wqe(pos)	list_first_entry(pos, struct siw_wqe, list)
+
+#define ORD_SUSPEND_SQ(qp) 	(!atomic_read(&(qp)->orq_space))
 #define TX_ACTIVE(qp)		(tx_wqe(qp) != NULL)
 #define SQ_EMPTY(qp)		list_empty(&((qp)->sq))
 #define ORQ_EMPTY(qp)		list_empty(&((qp)->orq))
@@ -636,12 +704,11 @@ struct siw_qp {
 #define TX_IDLE(qp)		(!TX_ACTIVE(qp) && SQ_EMPTY(qp) && \
 				IRQ_EMPTY(qp) && ORQ_EMPTY(qp))
 
-#define TX_QUEUE_EMPTY(qp)	(SQ_EMPTY(qp) && IRQ_EMPTY(qp))
+#define TX_MORE_WQE(qp)		(!SQ_EMPTY(qp) || !IRQ_EMPTY(qp))
 
 struct iwarp_msg_info {
 	int			hdr_len;
 	struct iwarp_ctrl	ctrl;
-	__u32			ddp_qn; /* XXX consider removal */
 	int (*proc_data)	(struct siw_qp *, struct siw_iwarp_rx *);
 };
 
@@ -656,7 +723,7 @@ int siw_qp_modify(struct siw_qp *, struct siw_qp_attrs *,
 		  enum siw_qp_attr_mask);
 
 void siw_qp_llp_close(struct siw_qp *);
-void siw_qp_cm_drop(struct siw_qp *, int, int);
+void siw_qp_cm_drop(struct siw_qp *, int);
 
 
 struct ib_qp *siw_get_ofaqp(struct ib_device *, int);
@@ -688,12 +755,13 @@ void siw_sq_worker_exit(void);
 void siw_sq_queue_work(struct siw_qp *qp);
 
 /* QP RX path functions */
-int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *);
-int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *);
-int siw_proc_rreq(struct siw_qp *qp, struct siw_iwarp_rx *);
-int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *);
-int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *);
-int siw_proc_unsupp(struct siw_qp *qp, struct siw_iwarp_rx *rcx);
+int siw_proc_send(struct siw_qp *, struct siw_iwarp_rx *);
+int siw_init_rresp(struct siw_qp *, struct siw_iwarp_rx *);
+int siw_proc_rreq(struct siw_qp *, struct siw_iwarp_rx *);
+int siw_proc_rresp(struct siw_qp *, struct siw_iwarp_rx *);
+int siw_proc_write(struct siw_qp *, struct siw_iwarp_rx *);
+int siw_proc_terminate(struct siw_qp*, struct siw_iwarp_rx *);
+int siw_proc_unsupp(struct siw_qp *, struct siw_iwarp_rx *);
 
 int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 		    unsigned int off, size_t len);
@@ -729,37 +797,19 @@ siw_next_tx_wqe(struct siw_qp *qp) {
 static inline void
 siw_rreq_queue(struct siw_wqe *wqe, struct siw_qp *qp)
 {
-	spin_lock_bh(&qp->orq_lock);
+	lock_orq(qp);
 	list_move_tail(&wqe->list, &qp->orq);
 	atomic_dec(&qp->orq_space);
-	spin_unlock_bh(&qp->orq_lock);
+	unlock_orq(qp);
 }
 
 
 static inline struct ib_umem_chunk *
-ib_umem_chunk_next(struct ib_umem_chunk *chunk)
+mem_chunk_next(struct ib_umem_chunk *chunk)
 {
 	return list_entry(chunk->list.next, struct ib_umem_chunk, list);
 }
 
-/*
- * ib_umem_idx_to_chunk - Returns the n-th chunk for given user memory
- *
- * @umem:       The given user memory
- * @n:          A nonnegative chunk index, where 0 refers to the first chunk.
- */
-static inline struct ib_umem_chunk *
-ofa_umem_idx_to_chunk(struct ib_umem *umem, int n)
-{
-	struct ib_umem_chunk *chunk;
-
-	list_for_each_entry(chunk, &umem->chunk_list, list) {
-		if (n == 0)
-			break;
-		--n;
-	}
-	return chunk;
-}
 
 static inline struct siw_mr *siw_mem2mr(struct siw_mem *m)
 {

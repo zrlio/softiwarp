@@ -53,7 +53,6 @@ int siw_sock_nodelay(struct socket *sock)
 {
 	int ret, val = 1;
 	mm_segment_t oldfs;
-
 	oldfs = get_fs();
 	set_fs(KERNEL_DS);
 

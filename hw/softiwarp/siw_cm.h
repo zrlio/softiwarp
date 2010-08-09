@@ -133,6 +133,4 @@ int siw_cm_queue_work(struct siw_cep *, enum siw_work_type);
 int siw_cm_init(void);
 void siw_cm_exit(void);
 
-void siw_cm_release_user(struct siw_cep *);
-
 #endif

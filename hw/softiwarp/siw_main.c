@@ -147,6 +147,7 @@ int siw_register_device(struct siw_dev *dev)
 	    (1ull << IB_USER_VERBS_CMD_REQ_NOTIFY_CQ) |
 	    (1ull << IB_USER_VERBS_CMD_DESTROY_CQ) |
 	    (1ull << IB_USER_VERBS_CMD_CREATE_QP) |
+	    (1ull << IB_USER_VERBS_CMD_QUERY_QP) |
 	    (1ull << IB_USER_VERBS_CMD_MODIFY_QP) |
 	    (1ull << IB_USER_VERBS_CMD_DESTROY_QP) |
 	    (1ull << IB_USER_VERBS_CMD_POST_SEND) |
@@ -178,6 +179,7 @@ int siw_register_device(struct siw_dev *dev)
 	ibdev->dma_device = dev->l2dev->dev.parent;
 	ibdev->query_device = siw_query_device;
 	ibdev->query_port = siw_query_port;
+	ibdev->query_qp = siw_query_qp;
 	ibdev->modify_port = NULL;
 	ibdev->query_pkey = siw_query_pkey;
 	ibdev->query_gid = siw_query_gid;
@@ -370,7 +372,12 @@ static __init int siw_init_module(void)
 
 		in_dev = in_dev_get(dev);
 		if (!in_dev) {
-			dprint(DBG_DM, ": Skip %p, type %d\n", dev, dev->type);
+			dprint(DBG_DM, ": Skipped %s (no in_dev)\n", dev->name);
+			continue;
+		}
+		if (!in_dev->ifa_list) {
+			dprint(DBG_DM, ": Skipped %s (no ifa)\n", dev->name);
+			in_dev_put(in_dev);
 			continue;
 		}
 		/*

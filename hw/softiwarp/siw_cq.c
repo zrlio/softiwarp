@@ -69,8 +69,6 @@ static int siw_wc_op_siw2ofa[SIW_WR_NUM] = {
 
 /*
  * translate wc into ofa syntax
- *
- * routine does not set ib_wc->opcode (expected to be done by caller)
  */
 static void siw_wc_siw2ofa(struct siw_wqe *siw_wc, struct ib_wc *ofa_wc)
 {
@@ -95,7 +93,7 @@ static void siw_wc_siw2ofa(struct siw_wqe *siw_wc, struct ib_wc *ofa_wc)
 	 * ofa_wc->port_num = 0;
 	 */
 }
-
+#if 1
 /*
  * Reap one CQE from the CQ.
  *
@@ -107,15 +105,15 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 {
 	struct siw_wqe	*cqe = NULL;
 
-	spin_lock_bh(&cq->lock);
+	lock_cq(cq);
 
 	if (!list_empty(&cq->queue)) {
 		cqe = list_first_wqe(&cq->queue);
 		list_del(&cqe->list);
 		atomic_dec(&cq->qlen);
-		spin_unlock_bh(&cq->lock);
+		unlock_cq(cq);
 	}  else {
-		spin_unlock_bh(&cq->lock);
+		unlock_cq(cq);
 		return 0;
 	}
 	siw_wc_siw2ofa(cqe, ofa_wc);
@@ -127,9 +125,38 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 
 	return 1;
 }
+#else
+int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
+{
+	struct siw_wqe	*cqe;
 
+	if (list_empty(&cq->queue))
+		return 0;
+
+	cqe = list_first_wqe(&cq->queue);
+
+	if (list_is_last(&cqe->list, &cq->queue)) {
+		lock_cq(cq);
+		list_del(&cqe->list);
+		unlock_cq(cq);
+	} else
+		list_del(&cqe->list);
+
+	atomic_dec(&cq->qlen);
+
+	siw_wc_siw2ofa(cqe, ofa_wc);
+
+	dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d, p: %p\n",
+		  QP_ID(cqe->qp), OBJ_ID(cq), wr_type(cqe), cqe);
+
+	siw_wqe_put(cqe);
+
+	return 1;
+}
+#endif
 /*
  * siw_cq_flush()
+ *
  * Flush all CQ elements. No CQ lock is taken.
  */
 void siw_cq_flush(struct siw_cq *cq)
@@ -159,7 +186,8 @@ void siw_cq_flush(struct siw_cq *cq)
 
 /*
  * siw_rq_complete()
- * Appends RQ/SRQ  WQE to CQ, if assigned.
+ *
+ * Appends RQ/SRQ WQE to CQ, if assigned.
  * Must be called with qp state read locked
  */
 void siw_rq_complete(struct siw_wqe *wqe, struct siw_qp *qp)
@@ -171,12 +199,12 @@ void siw_rq_complete(struct siw_wqe *wqe, struct siw_qp *qp)
 		(unsigned long long)wr_id(wqe), wr_type(wqe), wqe);
 
 	if (cq) {
-		spin_lock_bh(&cq->lock);
+		lock_cq(cq);
 
 		list_add_tail(&wqe->list, &cq->queue);
 		atomic_inc(&cq->qlen); /* FIXME: test overflow */
 
-		spin_unlock_bh(&cq->lock);
+		unlock_cq(cq);
 
 		/*
 		 * SRQ space was already incremented when WQE was fetched
@@ -211,7 +239,7 @@ void siw_sq_complete(struct list_head *c_list, struct siw_qp *qp, int num,
 	struct siw_cq		*cq = qp->scq;
 
 	if (cq) {
-		spin_lock_bh(&cq->lock);
+		lock_cq(cq);
 
 		list_splice_tail(c_list, &cq->queue);
 		atomic_add(num, &cq->qlen); /* FIXME: test overflow */
@@ -231,7 +259,7 @@ void siw_sq_complete(struct list_head *c_list, struct siw_qp *qp, int num,
 				(*cq->ofa_cq.comp_handler)
 					(&cq->ofa_cq, cq->ofa_cq.cq_context);
 		}
-		spin_unlock_bh(&cq->lock);
+		unlock_cq(cq);
 	} else {
 		struct list_head *pos;
 

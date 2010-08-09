@@ -167,7 +167,7 @@ struct iwarp_rdma_write {
 	struct iwarp_ctrl	ctrl;
 	__u32			sink_stag;
 	__u64			sink_to;
-};
+} __attribute__((__packed__));
 
 struct iwarp_rdma_rreq {
 	struct iwarp_ctrl	ctrl;
@@ -180,13 +180,13 @@ struct iwarp_rdma_rreq {
 	__u32			read_size;
 	__u32			source_stag;
 	__u64			source_to;
-};
+} __attribute__((__packed__));
 
 struct iwarp_rdma_rresp {
 	struct iwarp_ctrl	ctrl;
 	__u32			sink_stag;
 	__u64			sink_to;
-};
+} __attribute__((__packed__));
 
 struct iwarp_send {
 	struct iwarp_ctrl	ctrl;
@@ -194,7 +194,7 @@ struct iwarp_send {
 	__u32			ddp_qn;
 	__u32			ddp_msn;
 	__u32			ddp_mo;
-};
+} __attribute__((__packed__));
 
 struct iwarp_send_inv {
 	struct iwarp_ctrl	ctrl;
@@ -202,7 +202,7 @@ struct iwarp_send_inv {
 	__u32			ddp_qn;
 	__u32			ddp_msn;
 	__u32			ddp_mo;
-};
+} __attribute__((__packed__));
 
 struct iwarp_terminate {
 	struct iwarp_ctrl	ctrl;
@@ -211,7 +211,7 @@ struct iwarp_terminate {
 	__u32				ddp_msn;
 	__u32				ddp_mo;
 	struct rdmap_terminate_ctrl	term_ctrl;
-};
+} __attribute__((__packed__));
 
 
 /*
@@ -224,7 +224,7 @@ struct iwarp_ctrl_untagged {
 	__u32			ddp_qn;
 	__u32			ddp_msn;
 	__u32			ddp_mo;
-};
+} __attribute__((__packed__));
 
 /*
  * Common portion of iWARP headers (MPA, DDP, RDMAP)
@@ -234,7 +234,7 @@ struct iwarp_ctrl_tagged {
 	struct iwarp_ctrl	ctrl;
 	__u32			ddp_stag;
 	__u64			ddp_to;
-};
+} __attribute__((__packed__));
 
 union iwarp_hdrs {
 	struct iwarp_ctrl		ctrl;

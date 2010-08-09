@@ -39,7 +39,7 @@
 #ifndef _SIW_DEBUG_H
 #define _SIW_DEBUG_H
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/hardirq.h>	/* in_interrupt() */
 
 /*
@@ -115,8 +115,8 @@ DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|DBG_DM|DBG_ON)
 #define DPRINT_MASK	DBG_DM
 #define DPRINT_MASK	(~DBG_ALL)
 #endif
-/* #define DPRINT_MASK	(DBG_ON|DBG_CM) */
 #define DPRINT_MASK	(DBG_ON)
+/* #define DPRINT_MASK	(DBG_ON|DBG_DM|DBG_TX|DBG_CQ) */
 
 
 /**

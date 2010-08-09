@@ -65,6 +65,8 @@ extern struct ib_ah *siw_create_ah(struct ib_pd *, struct ib_ah_attr *);
 extern int siw_destroy_ah(struct ib_ah *);
 extern struct ib_qp *siw_create_qp(struct ib_pd *, struct ib_qp_init_attr *,
 				   struct ib_udata *);
+extern int siw_query_qp(struct ib_qp *, struct ib_qp_attr *, int,
+			struct ib_qp_init_attr *);
 extern int siw_ofed_modify_qp(struct ib_qp *, struct ib_qp_attr *, int,
 			      struct ib_udata *);
 extern int siw_destroy_qp(struct ib_qp *);

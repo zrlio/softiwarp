@@ -390,10 +390,11 @@ inline struct siw_wqe *siw_srq_wqe_get(struct siw_srq *srq)
 	struct siw_wqe *wqe = kzalloc(sizeof(struct siw_wqe), GFP_KERNEL);
 
 	dprint(DBG_OBJ|DBG_WR, "(SRQ%p): New WQE p: %p\n", srq, wqe);
-	if (wqe)
+	if (wqe) {
 		/* implicite: wqe->qp = NULL; */
 		INIT_LIST_HEAD(&wqe->list);
-
+		wqe->qp = NULL;
+	}
 	return wqe;
 }
 
@@ -409,12 +410,12 @@ inline struct siw_wqe *siw_srq_fetch_wqe(struct siw_qp *qp)
 	struct siw_srq *srq = qp->srq;
 	int qlen;
 
-	spin_lock_bh(&srq->lock);
+	lock_srq(srq);
 	if (!list_empty(&srq->rq)) {
 		wqe = list_first_wqe(&srq->rq);
 		list_del_init(&wqe->list);
 		qlen = srq->max_wr - atomic_inc_return(&srq->space);
-		spin_unlock_bh(&srq->lock);
+		unlock_srq(srq);
 		wqe->qp = qp;
 		if (srq->armed && qlen < srq->limit) {
 			srq->armed = 0;
@@ -422,7 +423,7 @@ inline struct siw_wqe *siw_srq_fetch_wqe(struct siw_qp *qp)
 		}
 		return wqe;
 	}
-	spin_unlock_bh(&srq->lock);
+	unlock_srq(srq);
 	return NULL;
 }
 
@@ -448,7 +449,7 @@ void siw_wqe_put(struct siw_wqe *wqe)
 {
 	struct siw_qp *qp = wqe->qp;
 
-	dprint(DBG_OBJ|DBG_WR, " WQE: 0x%llu:, type: %d, p: %p\n",
+	dprint(DBG_OBJ|DBG_WR, " WQE: %llu:, type: %d, p: %p\n",
 		(unsigned long long)wr_id(wqe), wr_type(wqe), wqe);
 
 	switch (wr_type(wqe)) {
@@ -461,6 +462,8 @@ void siw_wqe_put(struct siw_wqe *wqe)
 		else
 			siw_free_inline_sgl(wqe->wr.sgl.sge,
 					    wqe->wr.sgl.num_sge);
+	case SIW_WR_RDMA_WRITE_WITH_IMM:
+	case SIW_WR_SEND_WITH_IMM:
 		kfree(wqe);
 		break;
 

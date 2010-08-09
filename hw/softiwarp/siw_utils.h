@@ -59,8 +59,8 @@ extern void __siw_dump_bytes(void *, int);
 extern void __siw_print_hdr(union iwarp_hdrs *, int, void *);
 extern int __siw_drain_pkt(struct siw_qp *qp, struct siw_iwarp_rx *);
 
-extern char siw_qp_state_to_string[SIW_QP_STATE_COUNT][9];
-extern char ib_qp_state_to_string[IB_QPS_ERR+1][5];
+extern char siw_qp_state_to_string[SIW_QP_STATE_COUNT][10];
+extern char ib_qp_state_to_string[IB_QPS_ERR+1][6];
 extern int ib_qp_state_to_siw_qp_state[IB_QPS_ERR+1];
 
 #endif

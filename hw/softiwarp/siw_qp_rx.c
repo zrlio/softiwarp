@@ -224,7 +224,8 @@ static int siw_qp_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 	while (len) {
 		bytes  = min(len, (int)PAGE_SIZE - pg_off);
 		p_list = &chunk->page_list[rctx->pg_idx];
-		dest   = kmap_atomic(sg_page(p_list), KM_SOFTIRQ0);
+
+		dest = kmap_atomic(sg_page(p_list), KM_SOFTIRQ0);
 
 		rv = skb_copy_bits(rctx->skb, rctx->skb_offset, dest + pg_off,
 				   bytes);
@@ -240,14 +241,10 @@ static int siw_qp_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 			 * FIXME:
 			 * It looks like skb_copy_bits() cannot fail at all
 			 * given the way we call it.
-			 * But let's at least do the kunmap_atomic() ...
-			 * and adjust skb_copied and skb_offset
 			 */
-			rctx->skb_copied += copied;
-			rctx->skb_offset += copied;
-			rctx->skb_new -= copied;
-
 			kunmap_atomic(dest, KM_SOFTIRQ0);
+
+			rctx->skb_offset += bytes; /* ?? */
 
 			WARN_ON(rv);
 			break;
@@ -285,7 +282,7 @@ static int siw_qp_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 				(len > 0 || !umem_ends)) {
 
 				rctx->pg_idx = 0;
-				chunk = ib_umem_chunk_next(chunk);
+				chunk = mem_chunk_next(chunk);
 			}
 		}
 	}
@@ -294,6 +291,9 @@ static int siw_qp_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 	 */
 	rctx->umem_chunk = chunk;
 	rctx->pg_off = pg_off;
+
+	rctx->skb_copied += copied;
+	rctx->skb_new -= copied;
 
 	return copied;
 }
@@ -378,7 +378,7 @@ static inline int siw_write_check_ntoh(struct siw_iwarp_rx *rctx)
 	} else {
 		if (rctx->ddp_stag != write->sink_stag) {
 			dprint(DBG_RX|DBG_ON,
-				"received STAG=%08x, expected STAG=%08x\n",
+				" received STAG=%08x, expected STAG=%08x\n",
 				write->sink_stag, rctx->ddp_stag);
 			/*
 			 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
@@ -387,7 +387,7 @@ static inline int siw_write_check_ntoh(struct siw_iwarp_rx *rctx)
 		}
 		if (rctx->ddp_to !=  write->sink_to) {
 			dprint(DBG_RX|DBG_ON,
-				"received TO=%016llx, expected TO=%016llx\n",
+				" received TO=%016llx, expected TO=%016llx\n",
 				(unsigned long long)write->sink_to,
 				(unsigned long long)rctx->ddp_to);
 			/*
@@ -492,13 +492,13 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		 * fetch one RECEIVE wqe
 		 */
 		if (!qp->srq) {
-			spin_lock_bh(&qp->rq_lock);
+			lock_rq(qp);
 			if (!list_empty(&qp->rq)) {
 				wqe = list_first_wqe(&qp->rq);
 				list_del_init(&wqe->list);
-				spin_unlock_bh(&qp->rq_lock);
+				unlock_rq(qp);
 			} else {
-				spin_unlock_bh(&qp->rq_lock);
+				unlock_rq(qp);
 				dprint(DBG_RX,
 					"QP(%d): RQ empty!\n", QP_ID(qp));
 				return -ENOENT;
@@ -610,9 +610,6 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rctx->fpdu_part_rem -= rv;
 		rctx->fpdu_part_rcvd += rv;
 	}
-	rctx->skb_new -= rcvd_bytes;
-	rctx->skb_copied += rcvd_bytes;
-
 	wqe->processed += rcvd_bytes;
 
 	if (!rctx->fpdu_part_rem)
@@ -723,9 +720,6 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			 QP_ID(qp), rv, bytes);
 		return -EINVAL;
 	}
-	rctx->skb_new -= rv;
-	rctx->skb_copied += rv;
-
 	rctx->fpdu_part_rem -= rv;
 	rctx->fpdu_part_rcvd += rv;
 
@@ -774,8 +768,11 @@ int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	rsp = siw_wqe_get(qp, SIW_WR_RDMA_READ_RESP);
 	if (rsp) {
 		rsp->wr.rresp.sge.len = be32_to_cpu(rctx->hdr.rreq.read_size);
+		rsp->bytes = rsp->wr.rresp.sge.len;	/* redundant */
+		rsp->processed = 0;
+
 		rsp->wr.rresp.sge.addr = be64_to_cpu(rctx->hdr.rreq.source_to);
-		rsp->wr.rresp.num_sge = 1;
+		rsp->wr.rresp.num_sge = rsp->bytes ? 1 : 0;
 
 		rsp->wr.rresp.sge.mem.obj = NULL;	/* defer lookup */
 		rsp->wr.rresp.sge.lkey =
@@ -784,8 +781,6 @@ int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rsp->wr.rresp.raddr = be64_to_cpu(rctx->hdr.rreq.sink_to);
 		rsp->wr.rresp.rtag = rctx->hdr.rreq.sink_stag; /* NBO */
 
-		rsp->bytes = rsp->wr.rresp.sge.len;	/* redundant */
-		rsp->processed = 0;
 	} else {
 		dprint(DBG_RX|DBG_ON, "(QP%d): IRD exceeded!\n", QP_ID(qp));
 		return -EPROTO;
@@ -803,10 +798,10 @@ int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	 * The current logic favours Read Responses over SQ work requests
 	 * that are queued but not already in progress.
 	 */
-	spin_lock_bh(&qp->sq_lock);
+	lock_sq(qp);
 	if (!tx_wqe(qp)) {
 		tx_wqe(qp) = rsp;
-		spin_unlock_bh(&qp->sq_lock);
+		unlock_sq(qp);
 		/*
 		 * schedule TX work, even if SQ was supended due to
 		 * ORD limit: it is always OK (and may even prevent peers
@@ -815,7 +810,7 @@ int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		siw_sq_queue_work(qp);
 	} else {
 		list_add_tail(&rsp->list, &qp->irq);
-		spin_unlock_bh(&qp->sq_lock);
+		unlock_sq(qp);
 	}
 	return 0;
 }
@@ -844,12 +839,12 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		/*
 		 * fetch pending RREQ from orq
 		 */
-		spin_lock_bh(&qp->orq_lock);
+		lock_orq(qp);
 		if (!list_empty(&qp->orq)) {
 			wqe = list_first_entry(&qp->orq, struct siw_wqe, list);
 			list_del_init(&wqe->list);
 		} else {
-			spin_unlock_bh(&qp->orq_lock);
+			unlock_orq(qp);
 			dprint(DBG_RX|DBG_ON, "(QP%d): RResp: ORQ empty\n",
 				QP_ID(qp));
 			/*
@@ -857,7 +852,7 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			 */
 			return -ENODATA; /* or -ENOENT ? */
 		}
-		spin_unlock_bh(&qp->orq_lock);
+		unlock_orq(qp);
 
 		rx_wqe(qp) = wqe;
 
@@ -938,9 +933,6 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		wqe->wc_status = IB_WC_GENERAL_ERR;
 		return -EINVAL;
 	}
-	rctx->skb_new -= rv;
-	rctx->skb_copied += rv;
-
 	rctx->fpdu_part_rem -= rv;
 	rctx->fpdu_part_rcvd += rv;
 
@@ -959,6 +951,17 @@ int siw_proc_unsupp(struct siw_qp *qp, struct siw_iwarp_rx *rcx)
 }
 
 
+int siw_proc_terminate(struct siw_qp *qp, struct siw_iwarp_rx *rcx)
+{
+	struct iwarp_terminate	*term = &rcx->hdr.terminate;
+
+	dprint(DBG_ON, "(QP%d): RX Terminate: etype=%d, layer=%d, ecode=%d\n",
+		QP_ID(qp), term->term_ctrl.etype, term->term_ctrl.layer,
+		term->term_ctrl.ecode);
+
+	return __siw_drain_pkt(qp, rcx);
+}
+
 
 static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
@@ -966,16 +969,17 @@ static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	u8		*tbuf = (u8 *)&rctx->trailer.crc - rctx->pad;
 	int		avail;
 
-	avail = min(rctx->skb_new, rctx->fpdu_part_rem - rctx->fpdu_part_rcvd);
+	avail = min(rctx->skb_new, rctx->fpdu_part_rem);
 
 	skb_copy_bits(skb, rctx->skb_offset,
 		      tbuf + rctx->fpdu_part_rcvd, avail);
 
 	rctx->fpdu_part_rcvd += avail;
+	rctx->fpdu_part_rem -= avail;
+
 	rctx->skb_new -= avail;
 	rctx->skb_offset += avail;
 	rctx->skb_copied += avail;
-	rctx->fpdu_part_rem -= avail;
 
 	dprint(DBG_RX, " (QP%d): %d remaining (%d)\n",
 		QP_ID(qp), rctx->fpdu_part_rem, avail);
@@ -1031,13 +1035,15 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 			      (char *)c_hdr + rctx->fpdu_part_rcvd, bytes);
 
 		rctx->fpdu_part_rcvd += bytes;
-		rctx->skb_new    -= bytes;
+
+		rctx->skb_new -= bytes;
 		rctx->skb_offset += bytes;
 		rctx->skb_copied += bytes;
 
 		if (!rctx->skb_new ||
-			rctx->fpdu_part_rcvd < sizeof(struct iwarp_ctrl))
+			rctx->fpdu_part_rcvd < sizeof(struct iwarp_ctrl)) {
 			return -EAGAIN;
+		}
 
 		if (c_hdr->opcode > RDMAP_TERMINATE) {
 			dprint(DBG_RX|DBG_ON, " opcode %d\n", c_hdr->opcode);
@@ -1065,6 +1071,7 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 		      (char *)c_hdr + rctx->fpdu_part_rcvd, bytes);
 
 	rctx->fpdu_part_rcvd += bytes;
+
 	rctx->skb_new -= bytes;
 	rctx->skb_offset += bytes;
 	rctx->skb_copied += bytes;
@@ -1154,7 +1161,7 @@ static void siw_rreq_complete(struct siw_qp *qp, int error)
 
 	list_add(&wqe->list, &c_list);
 
-	spin_lock_bh(&qp->orq_lock);
+	lock_orq(qp);
 
 	/* More WQE's to complete following this RREQ? */
 	if (!list_empty(&qp->orq)) {
@@ -1171,7 +1178,7 @@ static void siw_rreq_complete(struct siw_qp *qp, int error)
 			list_move_tail(pos, &c_list);
 		}
 	}
-	spin_unlock_bh(&qp->orq_lock);
+	unlock_orq(qp);
 
 	siw_sq_complete(&c_list, qp, c_num, flags);
 
@@ -1179,7 +1186,7 @@ static void siw_rreq_complete(struct siw_qp *qp, int error)
 	 * Check if SQ processing was stalled due to ORD limit
 	 */
 	if (ORD_SUSPEND_SQ(qp)) {
-		spin_lock_bh(&qp->sq_lock);
+		lock_sq(qp);
 
 		wqe = siw_next_tx_wqe(qp);
 
@@ -1190,16 +1197,16 @@ static void siw_rreq_complete(struct siw_qp *qp, int error)
 
 			list_add_tail(&wqe->list, &qp->orq);
 
-			spin_unlock_bh(&qp->sq_lock);
+			unlock_sq(qp);
 
-			dprint(DBG_RX|DBG_ON, "(QP%d): SQ resume\n",
-				QP_ID(qp));
+			dprint(DBG_RX, "(QP%d): SQ resume (%d)\n",
+				QP_ID(qp), atomic_read(&qp->sq_space));
 
 			siw_sq_queue_work(qp);
 		} else {
 			/* only new ORQ space if not next RREQ queued */
 			atomic_inc(&qp->orq_space);
-			spin_unlock_bh(&qp->sq_lock);
+			unlock_sq(qp);
 		}
 	} else
 		atomic_inc(&qp->orq_space);
@@ -1493,7 +1500,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 			 * by the siw_work_handler() workqueue handler
 			 * after we return from siw_qp_llp_data_ready().
 			 */
-			siw_qp_cm_drop(qp, 1, 1);
+			siw_qp_cm_drop(qp, 1);
 
 			break;
 		}
