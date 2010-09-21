@@ -54,7 +54,11 @@ extern void siw_socket_disassoc(struct socket *);
  */
 static inline unsigned int get_tcp_mss(struct sock *sk)
 {
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+	return ((struct tcp_sock *)sk)->xmit_size_goal;
+#else
 	return ((struct tcp_sock *)sk)->xmit_size_goal_segs * ((struct tcp_sock *)sk)->mss_cache;
+#endif 
 
 }
 
