@@ -71,6 +71,7 @@ static inline int siw_add_obj(spinlock_t *lock, struct idr *idr,
 			      struct siw_objhdr *obj)
 {
 	u32		pre_id, id;
+	unsigned long	flags;
 	int		rv;
 
 	get_random_bytes(&pre_id, sizeof pre_id);
@@ -80,9 +81,9 @@ again:
 		if (!(idr_pre_get(idr, GFP_KERNEL)))
 			return -ENOMEM;
 
-		spin_lock_bh(lock);
+		spin_lock_irqsave(lock, flags);
 		rv = idr_get_new_above(idr, obj, pre_id, &id);
-		spin_unlock_bh(lock);
+		spin_unlock_irqrestore(lock, flags);
 
 	} while  (rv == -EAGAIN);
 
@@ -138,10 +139,11 @@ struct siw_qp *siw_qp_id2obj(struct siw_dev *dev, int id)
 struct siw_mem *siw_mem_id2obj(struct siw_dev *dev, int id)
 {
 	struct siw_objhdr *obj;
+	unsigned long flags;
 
-	spin_lock_bh(&dev->idr_lock);
+	spin_lock_irqsave(&dev->idr_lock, flags);
 	obj = siw_get_obj(&dev->mem_idr, id);
-	spin_unlock_bh(&dev->idr_lock);
+	spin_unlock_irqrestore(&dev->idr_lock, flags);
 
 	if (obj) {
 		dprint(DBG_MM|DBG_OBJ, "(MEM%d): New refcount: %d\n",
@@ -194,8 +196,9 @@ int siw_pd_add(struct siw_dev *dev, struct siw_pd *pd)
  */
 int siw_mem_add(struct siw_dev *dev, struct siw_mem *m)
 {
-	u32	id, pre_id;
-	int	rv;
+	u32		id, pre_id;
+	unsigned long	flags;
+	int		rv;
 
 	do {
 		get_random_bytes(&pre_id, sizeof pre_id);
@@ -206,17 +209,17 @@ again:
 		if (!(idr_pre_get(&dev->mem_idr, GFP_KERNEL)))
 			return -ENOMEM;
 
-		spin_lock_bh(&dev->idr_lock);
+		spin_lock_irqsave(&dev->idr_lock, flags);
 		rv = idr_get_new_above(&dev->mem_idr, m, pre_id, &id);
-		spin_unlock_bh(&dev->idr_lock);
+		spin_unlock_irqrestore(&dev->idr_lock, flags);
 
 	} while (rv == -EAGAIN);
 
 	if (rv == -ENOSPC || (rv == 0 && id > SIW_STAG_MAX)) {
 		if (rv == 0) {
-			spin_lock_bh(&dev->idr_lock);
+			spin_lock_irqsave(&dev->idr_lock, flags);
 			idr_remove(&dev->mem_idr, id);
-			spin_unlock_bh(&dev->idr_lock);
+			spin_unlock_irqrestore(&dev->idr_lock, flags);
 		}
 		if (pre_id == 1) {
 			dprint(DBG_OBJ|DBG_MM|DBG_ON,
@@ -241,11 +244,13 @@ again:
 void siw_remove_obj(spinlock_t *lock, struct idr *idr,
 		      struct siw_objhdr *hdr)
 {
+	unsigned long	flags;
+
 	dprint(DBG_OBJ, "(OBJ%d): IDR Remove Object\n", hdr->id);
 
-	spin_lock_bh(lock);
+	spin_lock_irqsave(lock, flags);
 	idr_remove(idr, hdr->id);
-	spin_unlock_bh(lock);
+	spin_unlock_irqrestore(lock, flags);
 }
 
 
@@ -356,18 +361,18 @@ inline struct siw_wqe *siw_wqe_get(struct siw_qp *qp, enum siw_wr_opcode op)
 	struct siw_wqe *wqe;
 
 	if (op == SIW_WR_RDMA_READ_RESP) {
-		spin_lock_bh(&qp->freelist_lock);
+		spin_lock(&qp->freelist_lock);
 		if (!(list_empty(&qp->wqe_freelist))) {
 			wqe = list_entry(qp->wqe_freelist.next,
 					 struct siw_wqe, list);
 			list_del(&wqe->list);
-			spin_unlock_bh(&qp->freelist_lock);
+			spin_unlock(&qp->freelist_lock);
 			wqe->processed = 0;
 			dprint(DBG_OBJ|DBG_WR,
 				"(QP%d): WQE from FreeList p: %p\n",
 				QP_ID(qp), wqe);
 		} else {
-			spin_unlock_bh(&qp->freelist_lock);
+			spin_unlock(&qp->freelist_lock);
 			wqe = NULL;
 			dprint(DBG_ON|DBG_OBJ|DBG_WR,
 				"(QP%d): FreeList empty!\n", QP_ID(qp));
@@ -448,6 +453,7 @@ inline void siw_unref_mem_sgl(struct siw_sge *sge, int num_sge)
 void siw_wqe_put(struct siw_wqe *wqe)
 {
 	struct siw_qp *qp = wqe->qp;
+	unsigned long flags;
 
 	dprint(DBG_OBJ|DBG_WR, " WQE: %llu:, type: %d, p: %p\n",
 		(unsigned long long)wr_id(wqe), wr_type(wqe), wqe);
@@ -481,9 +487,9 @@ void siw_wqe_put(struct siw_wqe *wqe)
 		 * and rx softirq (get new wqe for rresponse scheduling)
 		 */
 		INIT_LIST_HEAD(&wqe->list);
-		spin_lock_bh(&wqe->qp->freelist_lock);
+		spin_lock_irqsave(&wqe->qp->freelist_lock, flags);
 		list_add_tail(&wqe->list, &wqe->qp->wqe_freelist);
-		spin_unlock_bh(&wqe->qp->freelist_lock);
+		spin_unlock_irqrestore(&wqe->qp->freelist_lock, flags);
 		break;
 
 	default:

@@ -63,10 +63,6 @@ static int mpa_crc_enabled;
 module_param(mpa_crc_enabled, int, 0644);
 MODULE_PARM_DESC(mpa_crc_enabled, "MPA CRC enabled");
 
-static int mpa_markers_enabled; /*  = 0; */
-module_param(mpa_markers_enabled, int, 0644);
-MODULE_PARM_DESC(mpa_markers_enabled, "MPA markers enabled");
-
 static int mpa_revision = 1;
 
 static void siw_cm_llp_state_change(struct sock *);
@@ -116,7 +112,7 @@ static struct siw_cep *siw_cep_alloc(void)
 		INIT_LIST_HEAD(&cep->work_freelist);
 
 		cep->mpa.hdr.params.c = mpa_crc_enabled ? 1 : 0;
-		cep->mpa.hdr.params.m = mpa_markers_enabled ? 1 : 0;
+		cep->mpa.hdr.params.m = 0;
 		cep->mpa.hdr.params.rev = mpa_revision ? 1 : 0;
 		kref_init(&cep->ref);
 		cep->state = SIW_EPSTATE_IDLE;
@@ -260,8 +256,8 @@ void siw_qp_cm_drop(struct siw_qp *qp, int schedule)
 {
 	struct siw_cep *cep = qp->cep;
 
-	qp->rx_info.rx_suspend = 1;
-	qp->tx_info.tx_suspend = 1;
+	qp->rx_ctx.rx_suspend = 1;
+	qp->tx_ctx.tx_suspend = 1;
 
 	if (cep && !siw_cep_in_close(cep)) {
 		if (schedule) {
@@ -1125,7 +1121,7 @@ static void siw_cm_llp_state_change(struct sock *sk)
 			break;
 		}
 		if (cep->qp)
-			cep->qp->tx_info.tx_suspend = 1;
+			cep->qp->tx_ctx.tx_suspend = 1;
 
 		if (!siw_cep_in_close(cep))
 			siw_cm_queue_work(cep, SIW_CM_WORK_PEER_CLOSE);

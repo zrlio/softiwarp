@@ -137,16 +137,17 @@ static void siw_print_rctx(struct siw_iwarp_rx *rctx)
 }
 
 
-static inline void siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
+static inline int siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
 {
 	crypto_hash_init(&ctx->mpa_crc_hd);
-	siw_crc_array(&ctx->mpa_crc_hd, (u8 *)&ctx->hdr,
-			ctx->fpdu_part_rcvd);
+
+	return siw_crc_array(&ctx->mpa_crc_hd, (u8 *)&ctx->hdr,
+			     ctx->fpdu_part_rcvd);
 }
 
 
 /*
- * siw_qp_rx_umem_init()
+ * siw_rx_umem_init()
  *
  * Given memory region @mr and tagged offset @t_off within @mr,
  * resolve corresponding ib_umem_chunk memory chunk pointer
@@ -162,8 +163,8 @@ static inline void siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
  * @t_off:	Offset within Memory Region
  *
  */
-static int siw_qp_rx_umem_init(struct siw_iwarp_rx *rctx,
-			       struct siw_mr *mr, u64 t_off)
+static int siw_rx_umem_init(struct siw_iwarp_rx *rctx, struct siw_mr *mr,
+			    u64 t_off)
 {
 	struct ib_umem_chunk	*chunk;
 	u64			off_mr;   /* offset into MR */
@@ -199,7 +200,7 @@ static int siw_qp_rx_umem_init(struct siw_iwarp_rx *rctx,
 
 
 /*
- * siw_qp_rx_umem()
+ * siw_rx_umem()
  *
  * Receive data of @len into target referenced by @rctx.
  * This function does not check if umem is within bounds requested by
@@ -211,7 +212,7 @@ static int siw_qp_rx_umem_init(struct siw_iwarp_rx *rctx,
  * @len:	Number of bytes to place
  * @umen_ends:	1, if rctx chunk pointer should not be updated after len.
  */
-static int siw_qp_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
+static int siw_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 {
 	struct scatterlist	*p_list;
 	void			*dest;
@@ -234,37 +235,30 @@ static int siw_qp_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 			"bytes=%u, rv=%d returned by skb_copy_bits()\n",
 			RX_QPID(rctx), rctx->pg_idx, bytes, rv);
 
-		if (rv) {
-			/*
-			 * should be -EFAULT.
-			 *
-			 * FIXME:
-			 * It looks like skb_copy_bits() cannot fail at all
-			 * given the way we call it.
-			 */
-			kunmap_atomic(dest, KM_SOFTIRQ0);
+		if (likely(!rv)) {
+			if (rctx->crc_enabled)
+				rv = siw_crc_sg(&rctx->mpa_crc_hd, p_list,
+						pg_off, bytes);
 
-			rctx->skb_offset += bytes; /* ?? */
+			dprint_mem_irq(DBG_DATA, "Page data received",
+					dest + pg_off, bytes, "(QP%d): ",
+					RX_QPID(rctx));
 
-			WARN_ON(rv);
-			break;
+			rctx->skb_offset += bytes;
+			copied += bytes;
+			len -= bytes;
+			pg_off += bytes;
 		}
-		dprint_mem_irq(DBG_DATA, "Page data received",
-				dest + pg_off, bytes, "(QP%d): ",
-				RX_QPID(rctx));
-
-		if (rctx->crc_enabled)
-			siw_crc_array(&rctx->mpa_crc_hd, dest + pg_off,
-					bytes);
 
 		kunmap_atomic(dest, KM_SOFTIRQ0);
 
-		rctx->skb_offset += bytes;
-		copied += bytes;
-		len -= bytes;
+		if (unlikely(rv)) {
+			rctx->skb_copied += copied;
+			rctx->skb_new -= copied;
+			copied = -EFAULT;
 
-		pg_off += bytes;
-
+			goto out;
+		}
 		if (pg_off == PAGE_SIZE) {
 			/*
 			 * end of page
@@ -294,7 +288,7 @@ static int siw_qp_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 
 	rctx->skb_copied += copied;
 	rctx->skb_new -= copied;
-
+out:
 	return copied;
 }
 
@@ -462,6 +456,32 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 	return 0;
 }
 
+static inline struct siw_wqe *siw_get_rqe(struct siw_qp *qp)
+{
+	struct siw_wqe	*wqe = NULL;
+
+	if (!qp->srq) {
+		lock_rq(qp);
+		if (!list_empty(&qp->rq)) {
+			wqe = list_first_wqe(&qp->rq);
+			list_del_init(&wqe->list);
+			unlock_rq(qp);
+		} else {
+			unlock_rq(qp);
+			dprint(DBG_RX,
+				"QP(%d): RQ empty!\n", QP_ID(qp));
+		}
+	} else {
+		wqe = siw_srq_fetch_wqe(qp);
+		if (!wqe) {
+			dprint(DBG_RX, "QP(%d): SRQ empty!\n",
+				QP_ID(qp));
+		}
+	}
+	return wqe;
+}
+
+
 /*
  * siw_proc_send:
  *
@@ -488,29 +508,11 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 	if (rctx->first_ddp_seg) {
 		WARN_ON(rx_wqe(qp) != NULL);
-		/*
-		 * fetch one RECEIVE wqe
-		 */
-		if (!qp->srq) {
-			lock_rq(qp);
-			if (!list_empty(&qp->rq)) {
-				wqe = list_first_wqe(&qp->rq);
-				list_del_init(&wqe->list);
-				unlock_rq(qp);
-			} else {
-				unlock_rq(qp);
-				dprint(DBG_RX,
-					"QP(%d): RQ empty!\n", QP_ID(qp));
-				return -ENOENT;
-			}
-		} else {
-			wqe = siw_srq_fetch_wqe(qp);
-			if (!wqe) {
-				dprint(DBG_RX, "QP(%d): SRQ empty!\n",
-					QP_ID(qp));
-				return -ENOENT;
-			}
-		}
+
+		wqe = siw_get_rqe(qp);
+		if (!wqe)
+			return -ENOENT;
+
 		rx_wqe(qp) = wqe;
 		wqe->wr_status = SR_WR_INPROGRESS;
 	} else  {
@@ -545,6 +547,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		if (!sge->len) {
 			/* just skip empty sge's */
 			rctx->sge_idx++;
+			rctx->sge_off = 0;
 			continue;
 		}
 		sge_bytes = min(data_bytes, sge->len - rctx->sge_off);
@@ -566,7 +569,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			/*
 			 * started a new sge: update receive pointers
 			 */
-			rv = siw_qp_rx_umem_init(rctx, mr, sge->addr);
+			rv = siw_rx_umem_init(rctx, mr, sge->addr);
 			if (rv)
 				break;
 		}
@@ -575,7 +578,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		 * - the last fragment of the current SGE or
 		 * - the last DDP segment (L=1) of the current RDMAP message?
 		 *
-		 * siw_qp_rx_umem() must advance umem page_chunk position
+		 * siw_rx_umem() must advance umem page_chunk position
 		 * after sucessful receive only, if receive into current
 		 * umem does not end. umem ends, if:
 		 * - current SGE gets completely filled, OR
@@ -586,13 +589,13 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			       rctx->fpdu_part_rcvd + sge_bytes ==
 					rctx->fpdu_part_rem)) ? 1 : 0;
 
-		rv = siw_qp_rx_umem(rctx, sge_bytes, umem_ends);
+		rv = siw_rx_umem(rctx, sge_bytes, umem_ends);
 		if (rv != sge_bytes) {
 			dprint(DBG_RX|DBG_ON, "(QP%d): "
-				"siw_qp_rx_umem failed with %d != %d\n",
+				"siw_rx_umem failed with %d != %d\n",
 				QP_ID(qp), rv, sge_bytes);
 			/*
-			 * siw_qp_rx_umem() must have updated
+			 * siw_rx_umem() must have updated
 			 * skb_new and skb_copied
 			 */
 			wqe->processed += rcvd_bytes;
@@ -686,10 +689,10 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		return rv;
 	}
 	if (rctx->first_ddp_seg) {
-		rv = siw_qp_rx_umem_init(rctx, siw_mem2mr(mem), write->sink_to);
+		rv = siw_rx_umem_init(rctx, siw_mem2mr(mem), write->sink_to);
 		if (rv) {
 			dprint(DBG_RX|DBG_ON, "(QP%d): "
-				" siw_qp_rx_umem_init!\n", QP_ID(qp));
+				" siw_rx_umem_init!\n", QP_ID(qp));
 			return -EINVAL;
 		}
 	} else if (!rctx->umem_chunk) {
@@ -713,10 +716,10 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	last_write = ((rctx->fpdu_part_rem <= rctx->skb_new) &&
 		      !rctx->more_ddp_segs) ? 1 : 0;
 
-	rv = siw_qp_rx_umem(rctx, bytes, last_write);
+	rv = siw_rx_umem(rctx, bytes, last_write);
 	if (rv != bytes) {
 		dprint(DBG_RX|DBG_ON, "(QP%d): "
-			"siw_qp_rx_umem failed with %d != %d\n",
+			"siw_rx_umem failed with %d != %d\n",
 			 QP_ID(qp), rv, bytes);
 		return -EINVAL;
 	}
@@ -850,14 +853,19 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			/*
 			 * TODO: Should generate an async error
 			 */
-			return -ENODATA; /* or -ENOENT ? */
+			rv = -ENODATA; /* or -ENOENT ? */
+			goto done;
 		}
 		unlock_orq(qp);
 
 		rx_wqe(qp) = wqe;
 
-		WARN_ON(wr_type(wqe) != SIW_WR_RDMA_READ_REQ);
-		WARN_ON(wqe->processed);
+		if (wr_type(wqe) != SIW_WR_RDMA_READ_REQ || wqe->processed) {
+			WARN_ON(wqe->processed);
+			WARN_ON(wr_type(wqe) != SIW_WR_RDMA_READ_REQ);
+			rv = -EINVAL;
+			goto done;
+		}
 
 		wqe->wr_status = SR_WR_INPROGRESS;
 
@@ -867,13 +875,14 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 				"siw_rresp_check_ntoh failed: %d\n",
 				QP_ID(qp), rv);
 			siw_async_ev(qp, NULL, IB_EVENT_QP_FATAL);
-			return rv;
+			goto done;
 		}
 	} else {
 		wqe = rx_wqe(qp);
 		if (!wqe) {
 			WARN_ON(1);
-			return -ENODATA;
+			rv = -ENODATA;
+			goto done;
 		}
 	}
 	if (!rctx->fpdu_part_rem) /* zero length RRESPONSE */
@@ -891,18 +900,18 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			QP_ID(qp), rv);
 		wqe->wc_status = IB_WC_LOC_PROT_ERR;
 		siw_async_ev(qp, NULL, IB_EVENT_QP_ACCESS_ERR);
-		return rv;
+		goto done;
 	}
 	mr = siw_mem2mr(sge->mem.obj);
 
 	if (rctx->first_ddp_seg) {
-		rv = siw_qp_rx_umem_init(rctx, mr, sge->addr);
+		rv = siw_rx_umem_init(rctx, mr, sge->addr);
 		if (rv) {
 			dprint(DBG_RX|DBG_ON, "(QP%d): "
-				"siw_qp_rx_umem_init failed: %d\n",
+				"siw_rx_umem_init failed: %d\n",
 				QP_ID(qp), rv);
 			wqe->wc_status = IB_WC_LOC_PROT_ERR;
-			return rv;
+			goto done;
 		}
 	} else if (!rctx->umem_chunk) {
 		/*
@@ -913,7 +922,8 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		dprint(DBG_RX|DBG_ON, "(QP%d): Umem chunk not resolved!\n",
 			QP_ID(qp));
 		wqe->wc_status = IB_WC_GENERAL_ERR;
-		return -EPROTO;
+		rv = -EPROTO;
+		goto done;
 	}
 	/*
 	 * Are we going to finish placing the last DDP segment (L=1)
@@ -925,13 +935,14 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	 */
 	is_last = (bytes + wqe->processed == wqe->bytes) ? 1 : 0;
 
-	rv = siw_qp_rx_umem(rctx,  bytes, is_last);
+	rv = siw_rx_umem(rctx,  bytes, is_last);
 	if (rv != bytes) {
 		dprint(DBG_RX|DBG_ON, "(QP%d): "
-			"siw_qp_rx_umem failed with %d != %d\n",
+			"siw_rx_umem failed with %d != %d\n",
 			 QP_ID(qp), rv, bytes);
 		wqe->wc_status = IB_WC_GENERAL_ERR;
-		return -EINVAL;
+		rv = -EINVAL;
+		goto done;
 	}
 	rctx->fpdu_part_rem -= rv;
 	rctx->fpdu_part_rcvd += rv;
@@ -940,26 +951,26 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 	if (!rctx->fpdu_part_rem)
 		return 0;
-
+done:
 	return (rv < 0) ? rv : -EAGAIN;
 }
 
-int siw_proc_unsupp(struct siw_qp *qp, struct siw_iwarp_rx *rcx)
+int siw_proc_unsupp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
 	WARN_ON(1);
-	return __siw_drain_pkt(qp, rcx);
+	return __siw_drain_pkt(qp, rctx);
 }
 
 
-int siw_proc_terminate(struct siw_qp *qp, struct siw_iwarp_rx *rcx)
+int siw_proc_terminate(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	struct iwarp_terminate	*term = &rcx->hdr.terminate;
+	struct iwarp_terminate	*term = &rctx->hdr.terminate;
 
 	dprint(DBG_ON, "(QP%d): RX Terminate: etype=%d, layer=%d, ecode=%d\n",
 		QP_ID(qp), term->term_ctrl.etype, term->term_ctrl.layer,
 		term->term_ctrl.ecode);
 
-	return __siw_drain_pkt(qp, rcx);
+	return __siw_drain_pkt(qp, rctx);
 }
 
 
@@ -985,17 +996,16 @@ static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		QP_ID(qp), rctx->fpdu_part_rem, avail);
 
 	if (!rctx->fpdu_part_rem) {
-		u32	crc_in, crc_own;
+		u32	crc_in, crc_own = 0;
 		/*
 		 * check crc if required
 		 */
 		if (!rctx->crc_enabled)
 			return 0;
 
-		if (rctx->pad)
-			siw_crc_array(&rctx->mpa_crc_hd,
-				      (u8 *)&rctx->trailer.crc - rctx->pad,
-				      rctx->pad);
+		if (rctx->pad && siw_crc_array(&rctx->mpa_crc_hd,
+					       tbuf, rctx->pad) != 0)
+			return -EINVAL;
 
 		crypto_hash_final(&rctx->mpa_crc_hd, (u8 *)&crc_own);
 
@@ -1093,7 +1103,7 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 		 *   RDMAP message is not supported. It is probably not
 		 *   needed with most peers.
 		 */
-		dprint_mem_irq(DBG_RX, "Complete HDR received: ",
+		dprint_mem_irq(DBG_RX|DBG_DATA, "Complete HDR received: ",
 				(void *)&rctx->hdr, rctx->fpdu_part_rcvd,
 				"(QP%d): ", RX_QPID(rctx));
 
@@ -1370,7 +1380,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 		    unsigned int off, size_t len)
 {
 	struct siw_qp		*qp = rd_desc->arg.data;
-	struct siw_iwarp_rx	*rctx = &qp->rx_info;
+	struct siw_iwarp_rx	*rctx = &qp->rx_ctx;
 	int			rv;
 
 	rctx->skb = skb;
@@ -1384,7 +1394,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 	if (unlikely(rctx->rx_suspend == 1 ||
 		     qp->attrs.state != SIW_QP_STATE_RTS)) {
 		dprint(DBG_RX|DBG_ON, "(QP%d): failed. state rx:%d, qp:%d\n",
-			QP_ID(qp), qp->rx_info.state, qp->attrs.state);
+			QP_ID(qp), qp->rx_ctx.state, qp->attrs.state);
 		return 0;
 	}
 	while (rctx->skb_new) {
@@ -1394,9 +1404,11 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 		case SIW_GET_HDR:
 			rv = siw_get_hdr(rctx);
 			if (!rv) {
-				if (rctx->crc_enabled)
-					siw_crc_rxhdr(rctx);
-
+				if (rctx->crc_enabled &&
+				    siw_crc_rxhdr(rctx) != 0) {
+					rv = -EINVAL;
+					break;
+				}
 				rctx->hdr.ctrl.mpa_len =
 					ntohs(rctx->hdr.ctrl.mpa_len);
 

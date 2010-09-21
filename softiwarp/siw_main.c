@@ -223,7 +223,7 @@ int siw_register_device(struct siw_dev *dev)
 
 	ibdev->iwcm = kmalloc(sizeof(struct iw_cm_verbs), GFP_KERNEL);
 	if (!ibdev->iwcm)
-		return ENOMEM;
+		return -ENOMEM;
 
 	ibdev->iwcm->connect = siw_connect;
 	ibdev->iwcm->accept = siw_accept;
@@ -353,7 +353,7 @@ void siw_deregister_device(struct siw_dev *dev)
 static __init int siw_init_module(void)
 {
 	struct net_device	*dev;
-	struct siw_dev		*srdev;
+	struct siw_dev		*siw_p;
 	int rv = 0;
 
 	/*
@@ -390,49 +390,51 @@ static __init int siw_init_module(void)
 		 *
 		 * NOTE: ARPHRD_TUNNEL/6 are excluded.
 		 */
-		if (dev->type != ARPHRD_ETHER &&
-		    dev->type != ARPHRD_IEEE802 &&
-		    (!loopback_enabled || dev->type != ARPHRD_LOOPBACK)) {
+		if (dev->type == ARPHRD_ETHER ||
+		    dev->type == ARPHRD_IEEE802 ||
+		    (dev->type == ARPHRD_LOOPBACK && loopback_enabled)) {
+#ifdef CHECK_DMA_CAPABILITIES
+			if (!dev->dev.parent || !get_dma_ops(dev->dev.parent)) {
+				dprint(DBG_DM|DBG_ON,
+					": No DMA capabilities: %s (skipped)\n",
+					dev->name);
+				in_dev_put(in_dev);
+				continue;
+			}
+#endif
+			siw_p =
+			      (struct siw_dev *)ib_alloc_device(sizeof *siw_p);
+
+			if (!siw_p) {
+				in_dev_put(in_dev);
+				rv = -ENOMEM;
+				break;
+			}
+			if (!siw_device) {
+				siw_device = siw_p;
+				siw_p->next = NULL;
+			} else {
+				siw_p->next = siw_device->next;
+				siw_device->next = siw_p;
+			}
+			siw_p->l2dev = dev;
+
+			rv = siw_register_device(siw_p);
+			if (rv) {
+				if (siw_device != siw_p)
+					siw_device->next = siw_p->next;
+				else
+					siw_device = NULL;
+
+				in_dev_put(in_dev);
+				ib_dealloc_device(&siw_p->ofa_dev);
+
+				break;
+			}
+		} else {
 			dprint(DBG_DM, ": Skipped %s (type %d)\n",
 				dev->name, dev->type);
 			in_dev_put(in_dev);
-			continue;
-		}
-#ifdef CHECK_DMA_CAPABILITIES
-		if (!dev->dev.parent || !dev->dev.parent->archdata.dma_ops) {
-			dprint(DBG_DM|DBG_ON,
-				": No DMA capabilities - skipped %s (%d)\n",
-				dev->name, dev->type);
-			in_dev_put(in_dev);
-			continue;
-		}
-#endif
-		srdev = (struct siw_dev *)ib_alloc_device(sizeof *srdev);
-		if (!srdev) {
-			in_dev_put(in_dev);
-			rv = -ENOMEM;
-			break;
-		}
-		if (!siw_device) {
-			siw_device = srdev;
-			srdev->next = NULL;
-		} else {
-			srdev->next = siw_device->next;
-			siw_device->next = srdev;
-		}
-		srdev->l2dev = dev;
-
-		rv = siw_register_device(srdev);
-		if (rv) {
-			if (siw_device != srdev)
-				siw_device->next = srdev->next;
-			else
-				siw_device = NULL;
-
-			in_dev_put(in_dev);
-			ib_dealloc_device(&srdev->ofa_dev);
-
-			break;
 		}
 	}
 	rtnl_unlock();
@@ -458,17 +460,17 @@ static __init int siw_init_module(void)
 
 static void __exit siw_exit_module(void)
 {
-	struct siw_dev	*srdev;
+	struct siw_dev	*siw_p;
 
 	siw_sq_worker_exit();
 	siw_cm_exit();
 
 	while (siw_device) {
-		srdev = siw_device->next;
+		siw_p = siw_device->next;
 		siw_deregister_device(siw_device);
 		in_dev_put(siw_device->l2dev->ip_ptr);
 		ib_dealloc_device(&siw_device->ofa_dev);
-		siw_device = srdev;
+		siw_device = siw_p;
 	}
 	printk(KERN_INFO "SoftIWARP detached\n");
 }

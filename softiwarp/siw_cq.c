@@ -93,7 +93,7 @@ static void siw_wc_siw2ofa(struct siw_wqe *siw_wc, struct ib_wc *ofa_wc)
 	 * ofa_wc->port_num = 0;
 	 */
 }
-#if 1
+
 /*
  * Reap one CQE from the CQ.
  *
@@ -104,56 +104,29 @@ static void siw_wc_siw2ofa(struct siw_wqe *siw_wc, struct ib_wc *ofa_wc)
 int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 {
 	struct siw_wqe	*cqe = NULL;
+	unsigned long flags;
 
-	lock_cq(cq);
+	lock_cq_rxsave(cq, flags);
 
 	if (!list_empty(&cq->queue)) {
 		cqe = list_first_wqe(&cq->queue);
 		list_del(&cqe->list);
 		atomic_dec(&cq->qlen);
-		unlock_cq(cq);
-	}  else {
-		unlock_cq(cq);
-		return 0;
 	}
-	siw_wc_siw2ofa(cqe, ofa_wc);
+	unlock_cq_rxsave(cq, flags);
 
-	dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d, p: %p\n",
-		  QP_ID(cqe->qp), OBJ_ID(cq), wr_type(cqe), cqe);
+	if (cqe) {
+		siw_wc_siw2ofa(cqe, ofa_wc);
 
-	siw_wqe_put(cqe);
+		dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d, p: %p\n",
+			  QP_ID(cqe->qp), OBJ_ID(cq), wr_type(cqe), cqe);
 
-	return 1;
-}
-#else
-int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
-{
-	struct siw_wqe	*cqe;
-
-	if (list_empty(&cq->queue))
-		return 0;
-
-	cqe = list_first_wqe(&cq->queue);
-
-	if (list_is_last(&cqe->list, &cq->queue)) {
-		lock_cq(cq);
-		list_del(&cqe->list);
-		unlock_cq(cq);
+		siw_wqe_put(cqe);
+		return 1;
 	} else
-		list_del(&cqe->list);
-
-	atomic_dec(&cq->qlen);
-
-	siw_wc_siw2ofa(cqe, ofa_wc);
-
-	dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d, p: %p\n",
-		  QP_ID(cqe->qp), OBJ_ID(cq), wr_type(cqe), cqe);
-
-	siw_wqe_put(cqe);
-
-	return 1;
+		return 0;
 }
-#endif
+
 /*
  * siw_cq_flush()
  *
@@ -193,18 +166,19 @@ void siw_cq_flush(struct siw_cq *cq)
 void siw_rq_complete(struct siw_wqe *wqe, struct siw_qp *qp)
 {
 	struct siw_cq	*cq = qp->rcq;
+	unsigned long flags;
 
 	dprint(DBG_OBJ|DBG_WR, " QP%d WQE: 0x%llu:, type: %d, p: %p\n",
 		QP_ID(qp),
 		(unsigned long long)wr_id(wqe), wr_type(wqe), wqe);
 
 	if (cq) {
-		lock_cq(cq);
+		lock_cq_rxsave(cq, flags);
 
 		list_add_tail(&wqe->list, &cq->queue);
 		atomic_inc(&cq->qlen); /* FIXME: test overflow */
 
-		unlock_cq(cq);
+		unlock_cq_rxsave(cq, flags);
 
 		/*
 		 * SRQ space was already incremented when WQE was fetched
@@ -234,12 +208,13 @@ void siw_rq_complete(struct siw_wqe *wqe, struct siw_qp *qp)
  * Must be called with qp state read locked
  */
 void siw_sq_complete(struct list_head *c_list, struct siw_qp *qp, int num,
-		     enum ib_send_flags flags)
+		     enum ib_send_flags send_flags)
 {
 	struct siw_cq		*cq = qp->scq;
+	unsigned long flags;
 
 	if (cq) {
-		lock_cq(cq);
+		lock_cq_rxsave(cq, flags);
 
 		list_splice_tail(c_list, &cq->queue);
 		atomic_add(num, &cq->qlen); /* FIXME: test overflow */
@@ -254,12 +229,12 @@ void siw_sq_complete(struct list_head *c_list, struct siw_qp *qp, int num,
 		if (cq->ofa_cq.comp_handler != NULL &&
 			((cq->notify & SIW_CQ_NOTIFY_ALL) ||
 			 (cq->notify == SIW_CQ_NOTIFY_SOLICITED &&
-			  flags & IB_SEND_SOLICITED))) {
+			  send_flags & IB_SEND_SOLICITED))) {
 				cq->notify = SIW_CQ_NOTIFY_NOT;
 				(*cq->ofa_cq.comp_handler)
 					(&cq->ofa_cq, cq->ofa_cq.cq_context);
 		}
-		unlock_cq(cq);
+		unlock_cq_rxsave(cq, flags);
 	} else {
 		struct list_head *pos;
 

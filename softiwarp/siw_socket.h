@@ -54,7 +54,8 @@ extern void siw_socket_disassoc(struct socket *);
  */
 static inline unsigned int get_tcp_mss(struct sock *sk)
 {
-	return ((struct tcp_sock *)sk)->xmit_size_goal;
+	return ((struct tcp_sock *)sk)->xmit_size_goal_segs * ((struct tcp_sock *)sk)->mss_cache;
+
 }
 
 #define sk_to_qp(sk)	(((struct siw_cep *)((sk)->sk_user_data))->qp)

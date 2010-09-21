@@ -231,8 +231,8 @@ void siw_qp_llp_close(struct siw_qp *qp)
 
 	down_write(&qp->state_lock);
 
-	qp->rx_info.rx_suspend = 1;
-	qp->tx_info.tx_suspend = 1;
+	qp->rx_ctx.rx_suspend = 1;
+	qp->tx_ctx.tx_suspend = 1;
 	qp->attrs.llp_stream_handle = NULL;
 
 	switch (qp->attrs.state) {
@@ -290,7 +290,7 @@ static void siw_qp_llp_write_space(struct sock *sk)
 	 */
 #ifdef SIW_TX_FULLSEGS
 	struct socket *sock = sk->sk_socket;
-	if (sk_stream_wspace(sk) >= ((int)qp->tx_info.fpdu_len && sock) {
+	if (sk_stream_wspace(sk) >= (int)qp->tx_ctx.fpdu_len && sock) {
 		clear_bit(SOCK_NOSPACE, &sock->flags);
 		siw_sq_queue_work(qp);
 	}
@@ -430,16 +430,16 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			/*
 			 * Initialize global iWARP TX state
 			 */
-			qp->tx_info.ddp_msn[RDMAP_UNTAGGED_QN_SEND] = 0;
-			qp->tx_info.ddp_msn[RDMAP_UNTAGGED_QN_RDMA_READ] = 0;
-			qp->tx_info.ddp_msn[RDMAP_UNTAGGED_QN_TERMINATE] = 0;
+			qp->tx_ctx.ddp_msn[RDMAP_UNTAGGED_QN_SEND] = 0;
+			qp->tx_ctx.ddp_msn[RDMAP_UNTAGGED_QN_RDMA_READ] = 0;
+			qp->tx_ctx.ddp_msn[RDMAP_UNTAGGED_QN_TERMINATE] = 0;
 
 			/*
 			 * Initialize global iWARP RX state
 			 */
-			qp->rx_info.ddp_msn[RDMAP_UNTAGGED_QN_SEND] = 1;
-			qp->rx_info.ddp_msn[RDMAP_UNTAGGED_QN_RDMA_READ] = 1;
-			qp->rx_info.ddp_msn[RDMAP_UNTAGGED_QN_TERMINATE] = 1;
+			qp->rx_ctx.ddp_msn[RDMAP_UNTAGGED_QN_SEND] = 1;
+			qp->rx_ctx.ddp_msn[RDMAP_UNTAGGED_QN_RDMA_READ] = 1;
+			qp->rx_ctx.ddp_msn[RDMAP_UNTAGGED_QN_TERMINATE] = 1;
 
 			/*
 			 * init IRD freequeue, caller has already checked
@@ -463,7 +463,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			/*
 			 * set initial mss
 			 */
-			qp->tx_info.tcp_seglen =
+			qp->tx_ctx.tcp_seglen =
 				get_tcp_mss(attrs->llp_stream_handle->sk);
 
 			break;
@@ -656,11 +656,7 @@ int siw_check_mem(struct siw_pd *pd, struct siw_mem *mem, u64 addr,
 		dprint(DBG_WR|DBG_ON, "(PD%d): PD mismatch %p : %p\n",
 			OBJ_ID(pd),
 			siw_mem2mr(mem)->pd, pd);
-		/*
-		 * TODO: Can we return something more meaningful
-		 *       for a work completion
-		 *       such as WC_STATUS_INVALID_PD_ERROR
-		 */
+
 		return -EINVAL;
 	}
 	if (mem->stag_state == STAG_INVALID) {
@@ -678,7 +674,7 @@ int siw_check_mem(struct siw_pd *pd, struct siw_mem *mem, u64 addr,
 		return -EPERM;
 	}
 	/*
-	 * check address interval: we relax check to allow memory shrinked
+	 * Check address interval: we relax check to allow memory shrinked
 	 * from the start address _after_ placing or fetching len bytes.
 	 * TODO: this relaxation is probably overdone
 	 */
@@ -691,11 +687,7 @@ int siw_check_mem(struct siw_pd *pd, struct siw_mem *mem, u64 addr,
 			(unsigned long long)mem->va,
 			(unsigned long long)(mem->va + mem->len),
 			OBJ_ID(mem));
-		/*
-		 * TODO: Can we return something more meaningful
-		 *       for a work completion
-		 *       such as WC_STATUS_BASE_BOUNDS_VIOLATION
-		 */
+
 		return -EINVAL;
 	}
 	return 0;
@@ -812,63 +804,29 @@ int siw_check_sgl(struct siw_pd *pd, struct siw_sge *sge,
 	return rv;
 }
 
-/*
- * siw_qp_umem_chunk_get()
- *
- * Resolve memory chunk and update page index pointer
- *
- * @mr:		Memory Region
- * @va:		Virtual Address within MR
- * @idx:	Page index the virtual address belongs to
- *
- */
-struct ib_umem_chunk *
-siw_qp_umem_chunk_get(struct siw_mr *mr, u64 va, int *idx)
+int siw_crc_array(struct hash_desc *desc, u8 *start, size_t len)
 {
-	struct ib_umem_chunk	*chunk;
-	int			p_idx; /* Index of PSGE */
+	struct scatterlist sg;
 
-	BUG_ON(va < mr->mem.va);
-	va -= mr->mem.va & PAGE_MASK;
-	/*
-	 * equivalent to
-	 * va += mr->umem->offset;
-	 * va = va >> PAGE_SHIFT;
-	 */
+	sg_init_one(&sg, start, len);
+	return crypto_hash_update(desc, &sg, len);
+}
 
-	p_idx = va >> PAGE_SHIFT;
+int siw_crc_sg(struct hash_desc *desc, struct scatterlist *sg,
+	       int off, int len)
+{
+	int rv;
 
-	list_for_each_entry(chunk, &mr->umem->chunk_list, list) {
-		if (p_idx < chunk->nents)
-			break;
-		p_idx -= chunk->nents;
+	if (off == 0)
+		rv = crypto_hash_update(desc, sg, len);
+	else {
+		struct scatterlist t_sg;
+
+		sg_init_table(&t_sg, 1);
+		sg_set_page(&t_sg, sg_page(sg), len, off);
+		rv = crypto_hash_update(desc, &t_sg, len);
 	}
-	if (p_idx >= chunk->nents)
-		return NULL;
-
-	*idx = p_idx;
-
-	dprint(DBG_MM, "(): New chunk 0x%p: Page idx %d, nents %d\n",
-		chunk, p_idx, chunk->nents);
-	return chunk;
-}
-
-void siw_crc_array(struct hash_desc *desc, u8 *start, size_t len)
-{
-	struct scatterlist temp;
-
-	sg_init_one(&temp, start, len);
-	crypto_hash_update(desc, &temp, len);
-}
-
-void siw_crc_sg(struct hash_desc *desc, struct scatterlist *sg,
-		int off, int len)
-{
-	struct scatterlist temp;
-
-	sg_init_table(&temp, 1);
-	sg_set_page(&temp, sg_page(sg), len, off);
-	crypto_hash_update(desc, &temp, len);
+	return rv;
 }
 
 /*
@@ -1023,7 +981,7 @@ void siw_rq_flush(struct siw_qp *qp)
 	 * Flush an in-progess WQE if present
 	 */
 	if (rx_wqe(qp)) {
-		if (qp->rx_info.hdr.ctrl.opcode != RDMAP_RDMA_WRITE)
+		if (qp->rx_ctx.hdr.ctrl.opcode != RDMAP_RDMA_WRITE)
 			list_add(&rx_wqe(qp)->list, &qp->rq);
 		else
 			siw_mem_put(rx_mem(qp));

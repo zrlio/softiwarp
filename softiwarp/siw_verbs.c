@@ -407,6 +407,8 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 	spin_lock_init(&qp->rq_lock);
 	spin_lock_init(&qp->orq_lock);
 
+	init_waitqueue_head(&qp->tx_ctx.waitq);
+
 	qp->pd  = pd;
 	qp->scq = scq;
 	qp->rcq = rcq;
@@ -452,8 +454,8 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 		if (rv)
 			goto remove_qp;
 	}
-	c_tx = &qp->tx_info;
-	c_rx = &qp->rx_info;
+	c_tx = &qp->tx_ctx;
+	c_rx = &qp->rx_ctx;
 
 	c_tx->crc_enabled = c_rx->crc_enabled = CONFIG_RDMA_SIW_CRC_ENFORCED;
 
@@ -476,7 +478,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 			goto remove_qp;
 		}
 	}
-	atomic_set(&qp->tx_info.in_use, 0);
+	atomic_set(&qp->tx_ctx.in_use, 0);
 
 	qp->ofa_qp.qp_num = QP_ID(qp);
 
@@ -550,7 +552,7 @@ int siw_ofed_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
 		new_attrs.state = ib_qp_state_to_siw_qp_state[attr->qp_state];
 
 		if (new_attrs.state > SIW_QP_STATE_RTS)
-			qp->tx_info.tx_suspend = 1;
+			qp->tx_ctx.tx_suspend = 1;
 
 		/* TODO: SIW_QP_STATE_UNDEF is currently not possible ... */
 		if (new_attrs.state == SIW_QP_STATE_UNDEF)
@@ -585,7 +587,7 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 	 * callbacks to OFA core
 	 */
 	qp->attrs.flags |= SIW_QP_IN_DESTROY;
-	qp->rx_info.rx_suspend = 1;
+	qp->rx_ctx.rx_suspend = 1;
 
 	down_write(&qp->state_lock);
 
@@ -611,10 +613,10 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 		siw_cep_put(cep);
 	}
 
-	if (qp->rx_info.crc_enabled)
-		crypto_free_hash(qp->rx_info.mpa_crc_hd.tfm);
-	if (qp->tx_info.crc_enabled)
-		crypto_free_hash(qp->tx_info.mpa_crc_hd.tfm);
+	if (qp->rx_ctx.crc_enabled)
+		crypto_free_hash(qp->rx_ctx.mpa_crc_hd.tfm);
+	if (qp->tx_ctx.crc_enabled)
+		crypto_free_hash(qp->tx_ctx.mpa_crc_hd.tfm);
 
 	siw_remove_obj(&dev->idr_lock, &dev->qp_idr, &qp->hdr);
 
@@ -668,8 +670,7 @@ static int siw_copy_sgl(struct ib_sge *ofa_sge, struct siw_sge *si_sge,
  * if the given buffer addresses and len's are within process context
  * bounds and copies data into one kernel buffer. This implies dual copy
  * operation in the tx path since TCP will make another copy for
- * retransmission. There is room for improvement: copy user data
- * only after first attempt to send data fails.
+ * retransmission. There is room for efficiency improvement.
  */
 static int siw_copy_inline_sgl(struct ib_sge *ofa_sge, struct siw_sge *si_sge,
 			       int num_sge)
@@ -732,6 +733,8 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 {
 	struct siw_wqe	*wqe = NULL;
 	struct siw_qp	*qp = siw_qp_ofa2siw(ofa_qp);
+
+	unsigned long flags;
 	int rv = 0;
 
 	dprint(DBG_WR|DBG_TX, "(QP%d): state=%d\n",
@@ -752,10 +755,6 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 	}
 	dprint(DBG_WR|DBG_TX, "(QP%d): sq_space(#1)=%d\n",
 		QP_ID(qp), atomic_read(&qp->sq_space));
-
-#ifdef TX_FROM_APPL_CPU
-	qp->cpu = current_thread_info()->cpu;
-#endif
 
 	while (wr) {
 		if (!atomic_read(&qp->sq_space)) {
@@ -787,12 +786,6 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			dprint(DBG_WR, "(QP%d): INLINE DATA\n", QP_ID(qp));
 
 		switch (wr->opcode) {
-
-		case IB_WR_SEND_WITH_IMM:
-			wqe->wr.send.num_sge = 0;
-			wqe->wr.send.imm_data = wr->ex.imm_data;
-			wqe->bytes = 4;
-			break;
 
 		case IB_WR_SEND:
 			if (!SIW_INLINED_DATA(wqe)) {
@@ -835,14 +828,6 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			wqe->bytes = rv;
 			break;
 
-		case IB_WR_RDMA_WRITE_WITH_IMM:
-			wqe->wr.write.num_sge = 0;
-			wqe->wr.write.imm_data = wr->ex.imm_data;
-			wqe->wr.write.raddr = wr->wr.rdma.remote_addr;
-			wqe->wr.write.rtag = wr->wr.rdma.rkey;
-			wqe->bytes = 4;
-			break;
-
 		case IB_WR_RDMA_WRITE:
 			if (!SIW_INLINED_DATA(wqe)) {
 				rv = siw_copy_sgl(wr->sg_list, wqe->wr.send.sge,
@@ -882,10 +867,10 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 
 		wqe->wr_status = SR_WR_QUEUED;
 
-		lock_sq(qp);
+		lock_sq_rxsave(qp, flags);
 		list_add_tail(&wqe->list, &qp->sq);
 		atomic_dec(&qp->sq_space);
-		unlock_sq(qp);
+		unlock_sq_rxsave(qp, flags);
 
 		wr = wr->next;
 	}
@@ -896,7 +881,7 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 	 * processing, if new work is already pending. But rv must be passed
 	 * to caller.
 	 */
-	lock_sq(qp);
+	lock_sq_rxsave(qp, flags);
 
 	if (tx_wqe(qp) == NULL) {
 		struct siw_wqe	*next = siw_next_tx_wqe(qp);
@@ -909,21 +894,21 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 				else
 					siw_rreq_queue(next, qp);
 
-				unlock_sq(qp);
+				unlock_sq_rxsave(qp, flags);
 
 				dprint(DBG_WR|DBG_TX,
 					"(QP%d): Direct sending...\n",
 					QP_ID(qp));
 
 				if (siw_qp_sq_process(qp, 1) != 0 &&
-				    !(qp->tx_info.tx_suspend))
+				    !(qp->tx_ctx.tx_suspend))
 					siw_qp_cm_drop(qp, 0);
 			} else
-				unlock_sq(qp);
+				unlock_sq_rxsave(qp, flags);
 		} else
-			unlock_sq(qp);
+			unlock_sq_rxsave(qp, flags);
 	} else
-		unlock_sq(qp);
+		unlock_sq_rxsave(qp, flags);
 
 	up_read(&qp->state_lock);
 
@@ -956,6 +941,7 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 {
 	struct siw_wqe	*wqe = NULL;
 	struct siw_qp	*qp = siw_qp_ofa2siw(ofa_qp);
+	unsigned long	flags;
 	int rv = 0;
 
 	dprint(DBG_WR|DBG_TX, "(QP%d): state=%d\n", QP_ID(qp),
@@ -1008,13 +994,13 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 		wqe->wr.recv.num_sge = wr->num_sge;
 		wqe->bytes = rv;
 
-		lock_rq(qp);
+		lock_rq_rxsave(qp, flags);
 
 		list_add_tail(&wqe->list, &qp->rq);
 		wqe->wr_status = SR_WR_QUEUED;
 		atomic_dec(&qp->rq_space);
 
-		unlock_rq(qp);
+		unlock_rq_rxsave(qp, flags);
 
 		wr = wr->next;
 	}
@@ -1377,9 +1363,10 @@ int siw_modify_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs,
 		   enum ib_srq_attr_mask attr_mask, struct ib_udata *udata)
 {
 	struct siw_srq 	*srq = siw_srq_ofa2siw(ofa_srq);
+	unsigned long	flags;
 	int rv = 0;
 
-	lock_srq(srq);
+	lock_srq_rxsave(srq, flags);
 
 	if (attr_mask & IB_SRQ_MAX_WR) {
 		/* resize request */
@@ -1412,7 +1399,7 @@ int siw_modify_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs,
 		srq->limit = attrs->srq_limit;
 	}
 out:
-	unlock_srq(srq);
+	unlock_srq_rxsave(srq, flags);
 	return rv;
 }
 
@@ -1424,14 +1411,15 @@ out:
 int siw_query_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs)
 {
 	struct siw_srq 	*srq = siw_srq_ofa2siw(ofa_srq);
+	unsigned long	flags;
 
-	lock_srq(srq);
+	lock_srq_rxsave(srq, flags);
 
 	attrs->max_wr = srq->max_wr;
 	attrs->max_sge = srq->max_sge;
 	attrs->srq_limit = srq->limit;
 
-	unlock_srq(srq);
+	unlock_srq_rxsave(srq, flags);
 
 	return 0;
 }
@@ -1450,13 +1438,14 @@ int siw_destroy_srq(struct ib_srq *ofa_srq)
 	struct list_head	*listp, *tmp;
 	struct siw_srq		*srq = siw_srq_ofa2siw(ofa_srq);
 	struct siw_dev		*dev = srq->pd->hdr.dev;
+	unsigned long flags;
 
-	lock_srq(srq); /* probably not necessary */
+	lock_srq_rxsave(srq, flags); /* probably not necessary */
 	list_for_each_safe(listp, tmp, &srq->rq) {
 		list_del(listp);
 		siw_wqe_put(list_entry(listp, struct siw_wqe, list));
 	}
-	unlock_srq(srq);
+	unlock_srq_rxsave(srq, flags);
 
 	siw_pd_put(srq->pd);
 	kfree(srq);
@@ -1482,6 +1471,7 @@ int siw_post_srq_recv(struct ib_srq *ofa_srq, struct ib_recv_wr *wr,
 {
 	struct siw_srq	*srq = siw_srq_ofa2siw(ofa_srq);
 	struct siw_wqe	*wqe = NULL;
+	unsigned long flags;
 	int rv = 0;
 
 	while (wr) {
@@ -1513,12 +1503,12 @@ int siw_post_srq_recv(struct ib_srq *ofa_srq, struct ib_recv_wr *wr,
 		wqe->wr.recv.num_sge = wr->num_sge;
 		wqe->bytes = rv;
 
-		lock_srq(srq);
+		lock_srq_rxsave(srq, flags);
 
 		list_add_tail(&wqe->list, &srq->rq);
 		atomic_dec(&srq->space);
 
-		unlock_srq(srq);
+		unlock_srq_rxsave(srq, flags);
 
 		wr = wr->next;
 	}

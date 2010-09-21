@@ -1,0 +1,43 @@
+The softiwarp kernel module can be build now without access
+to the kernel source tree. This directory contains all files
+needed to build a SoftiWARP kernel module 'siw.ko' which was
+tested to fit with a running 2.6.34 kernel:
+
+use <make> to build a siw.ko kernel module in the current directory
+
+use <make install> to install the kernel module as
+	/lib/modules/<kernel_version>/extra/siw.ko 
+
+use <make clean> to cleanup things
+
+use <insmod /lib/modules/<kernel_version>/extra/siw.ko> to insert
+the softiwarp kernel module. Please load rdma_cm, ib_uverbs, and rdma_ucm
+kernel modules before.
+
+compile time flags:
+	-DCHECK_DMA_CAPABILITIES
+		Checks if the device siw wants to attach to provides
+		DMA capabilities. While DMA capabilities are currently not
+		needed (siw works on top of a kernel tcp socket), siw
+		uses ib_umem_get() which performs a (not used) DMA address
+		translation. Writing a siw private memory reservation and
+		pinning routine would solve the issue.
+
+module parameters:
+	loopback_enabled: if set, attaches siw also to the looback device.
+		To be set only during module insertion.
+
+	mpa_crc_enabled:  if set, the MPA CRC gets generated and checked 
+		both in tx and rx path (kills all throughput).
+		To be set only during module insertion.
+
+	zcopy_tx:	  if set, payload of non signalled work requests
+		(such as non signalled WRITE or SEND as well as all READ
+		 responses) are transferred using the TCP sockets
+		sendpage interface. This parameter can be switched on and
+		off dynamically (echo 1 >> /sys/module/siw/parameters/zcopy_tx
+		for enablement, 0 for disabling). System load benefits from
+		using 0copy data transmission: a servers load of
+		one 2.5 GHz CPU may drop from 55 percent down to 23 percent
+		if serving 100KByte READ responses at 10GbE's line speed.
+
