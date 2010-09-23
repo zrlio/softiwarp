@@ -23,6 +23,16 @@ compile time flags:
 		translation. Writing a siw private memory reservation and
 		pinning routine would solve the issue.
 
+	-DSIW_TX_FULLSEGS
+		experimental, not used by default:
+		siw tries not to overrun the socket (not sending until
+		-EAGAIN comes back), but stops sending if the current
+		segment would not fit into the socket's tx buffer. With that,
+		wire FPDUs are truncated by the TCP stack far less often.
+		Since this feature manipulates the sock's SOCK_NOSPACE
+		bit, it violates strict layering and is therefore considered
+		proprietary.
+
 module parameters:
 	loopback_enabled: if set, attaches siw also to the looback device.
 		To be set only during module insertion.

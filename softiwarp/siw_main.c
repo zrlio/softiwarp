@@ -233,8 +233,11 @@ int siw_register_device(struct siw_dev *dev)
 	ibdev->iwcm->add_ref = siw_qp_get_ref;
 	ibdev->iwcm->rem_ref = siw_qp_put_ref;
 	ibdev->iwcm->get_qp = siw_get_ofaqp;
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 34)
+	rv = ib_register_device(ibdev, NULL);
+#else
 	rv = ib_register_device(ibdev);
+#endif
 	if (rv) {
 		dprint(DBG_DM|DBG_ON, "(dev=%s): "
 			"ib_register_device failed: rv=%d\n", ibdev->name, rv);
