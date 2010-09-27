@@ -1150,26 +1150,22 @@ static inline int siw_fpdu_trailer_len(struct siw_iwarp_rx *rctx)
  * due to ORD exhaustion (see verbs 8.2.2.18)
  * Function stops completion when next READ REQUEST found or ORQ empty.
  */
-static void siw_rreq_complete(struct siw_qp *qp, int error)
+static void siw_rreq_complete(struct siw_wqe *wqe, int error)
 {
-	struct siw_wqe		*wqe = rx_wqe(qp);
-	int			c_num = 1;
+	struct siw_qp		*qp = wqe->qp;
+	int			num_wc = 1;
 	enum ib_send_flags	flags;
 	LIST_HEAD(c_list);
 
-	if (!wqe) {
-		WARN_ON(1);
-		return;
-	}
-	if (!error)
-		wqe->wc_status = IB_WC_SUCCESS;
-	else if (wqe->wc_status == 0)
-		wqe->wc_status = IB_WC_GENERAL_ERR; /* well... */
-
-	wqe->wr_status = SR_WR_DONE;
 	flags = wr_flags(wqe);
 
-	list_add(&wqe->list, &c_list);
+	if (flags & IB_SEND_SIGNALED)
+		list_add(&wqe->list, &c_list);
+	else {
+		atomic_inc(&qp->sq_space);
+		siw_wqe_put(wqe);
+		num_wc = 0;
+	}
 
 	lock_orq(qp);
 
@@ -1181,7 +1177,7 @@ static void siw_rreq_complete(struct siw_qp *qp, int error)
 			if (wr_type(wqe) == SIW_WR_RDMA_READ_REQ)
 				break;
 			flags |= wr_flags(wqe);
-			c_num++;
+			num_wc++;
 			dprint(DBG_WR|DBG_ON,
 				"(QP%d): Resume completion, wr_type %d\n",
 				QP_ID(qp), wr_type(wqe));
@@ -1190,7 +1186,8 @@ static void siw_rreq_complete(struct siw_qp *qp, int error)
 	}
 	unlock_orq(qp);
 
-	siw_sq_complete(&c_list, qp, c_num, flags);
+	if (num_wc)
+		siw_sq_complete(&c_list, qp, num_wc, flags);
 
 	/*
 	 * Check if SQ processing was stalled due to ORD limit
@@ -1259,7 +1256,12 @@ static inline int siw_rdmap_complete(struct siw_qp *qp,
 	case RDMAP_RDMA_READ_RESP:
 		rctx->ddp_msn[RDMAP_UNTAGGED_QN_RDMA_READ]++;
 
-		siw_rreq_complete(qp, 0);
+		wqe = rx_wqe(qp);
+
+		wqe->wc_status = IB_WC_SUCCESS;
+		wqe->wr_status = SR_WR_DONE;
+
+		siw_rreq_complete(wqe, 0);
 
 		break;
 
@@ -1323,8 +1325,8 @@ siw_rdmap_error(struct siw_qp *qp, struct siw_iwarp_rx *rctx, int status)
 
 		if (!wqe->wc_status)
 			wqe->wc_status = IB_WC_GENERAL_ERR;
-		wqe->wr_status = SR_WR_DONE;
 
+		wqe->wr_status = SR_WR_DONE;
 		siw_rq_complete(wqe, qp);
 
 		break;
@@ -1340,8 +1342,20 @@ siw_rdmap_error(struct siw_qp *qp, struct siw_iwarp_rx *rctx, int status)
 			/*  eventual RREQ left untouched */
 			break;
 
-		siw_rreq_complete(qp, status);
+		wqe = rx_wqe(qp);
+		if (wqe) {
+			if (status)
+				wqe->wc_status = status;
+			else
+				wqe->wc_status = IB_WC_GENERAL_ERR;
 
+			wqe->wr_status = SR_WR_DONE;
+			/*
+			 * All errors turn the wqe into signalled.
+			 */
+			wr_flags(wqe) |= IB_SEND_SIGNALED;
+			siw_rreq_complete(wqe, status);
+		}
 		break;
 
 	case RDMAP_RDMA_WRITE:
