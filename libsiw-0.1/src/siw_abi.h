@@ -26,13 +26,11 @@ struct siw_cmd_reg_umr_req {
 	struct ibv_reg_mr ofa_req;
 	uint8_t	 stag_key;
 	uint8_t reserved[3];
-	uint32_t pbl_addr;
 };
 
 struct siw_cmd_reg_umr_resp {
 	struct ibv_reg_mr_resp ofa_resp;
 	uint32_t stag;
-	uint32_t pbl_addr;
 };
 
 struct siw_cmd_create_cq {

@@ -99,8 +99,6 @@ struct ibv_mr *siw_reg_mr(struct ibv_pd *pd, void *addr,
 	if (!mr)
 		return NULL;
 
-	//printf("SIW_TRACE: %s going to call ibv_cmd_reg_mr\n", __func__);
-
 	rv = ibv_cmd_reg_mr(pd, addr, len, (uintptr_t)addr, access, &mr->ofa_mr,
 			    &req.ofa_req, sizeof req, &resp.ofa_resp, sizeof resp);
 
@@ -108,8 +106,6 @@ struct ibv_mr *siw_reg_mr(struct ibv_pd *pd, void *addr,
 		free(mr);
 		return NULL;
 	}
-	mr->pbl_addr = resp.pbl_addr;
-
 	return &mr->ofa_mr;
 }
 
