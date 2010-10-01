@@ -55,8 +55,6 @@
 #include "siw.h"
 #include "siw_obj.h"
 #include "siw_cm.h"
-#include "siw_socket.h"
-#include "siw_utils.h"
 
 
 /*
@@ -103,39 +101,6 @@
  * and reports an error if DDP segments of the same RDMAP message
  * do not arrive in sequence.
  */
-
-static void siw_print_rctx(struct siw_iwarp_rx *rctx)
-{
-	if (!(DPRINT_MASK & DBG_ON))
-		return;
-	printk(KERN_INFO "RECEIVE CONTEXT*************************\n");
-	printk(KERN_INFO "QP: %d\n", RX_QPID(rctx));
-	printk(KERN_INFO "skb: %p\n", rctx->skb);
-	printk(KERN_INFO "HDR: (%d)\n", rctx->hdr.ctrl.opcode);
-	printk(KERN_INFO "WQE/UMEM = %p\n", rctx->dest.wqe);
-	printk(KERN_INFO "STAG = %x (MEM%x)\n", rctx->ddp_stag,
-		rctx->ddp_stag>>8);
-	printk(KERN_INFO "DDP_TO: %016llx\n",
-		(unsigned long long)rctx->ddp_to);
-	printk(KERN_INFO "fpdu_part_rcvd: %d\n", rctx->fpdu_part_rcvd);
-	printk(KERN_INFO "fpdu_part_rem: %d\n", rctx->fpdu_part_rem);
-	printk(KERN_INFO "skb_new: %d\n", rctx->skb_new);
-	printk(KERN_INFO "skb_offset: %d\n", rctx->skb_offset);
-	printk(KERN_INFO "skb_copied: %d\n", rctx->skb_copied);
-	printk(KERN_INFO "sge_idx: %d\n", rctx->sge_idx);
-	printk(KERN_INFO "sge_off: %d\n", rctx->sge_off);
-	printk(KERN_INFO "umem_chunk: %p\n", rctx->umem_chunk);
-	printk(KERN_INFO "pg_idx: %d\n", rctx->pg_idx);
-	printk(KERN_INFO "pg_off: %d\n", rctx->pg_off);
-	printk(KERN_INFO "state: %d\n", rctx->state);
-	printk(KERN_INFO "crc_enabled: %d\n", rctx->crc_enabled);
-	printk(KERN_INFO "pad: %d\n", rctx->pad);
-	printk(KERN_INFO "prev_ddp_opcode: %d\n", rctx->prev_ddp_opcode);
-	printk(KERN_INFO "more_ddp_segs: %d\n", rctx->more_ddp_segs);
-	printk(KERN_INFO "first_ddp_seg: %d\n", rctx->first_ddp_seg);
-	printk(KERN_INFO "****************************************\n");
-}
-
 
 static inline int siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
 {
@@ -186,15 +151,15 @@ static int siw_rx_umem_init(struct siw_iwarp_rx *rctx, struct siw_mr *mr,
 		psge_idx -= chunk->nents;
 	}
 	if (psge_idx >= chunk->nents) {
-		dprint(DBG_MM|DBG_ON, "(QP ?): Short chunk list\n");
+		dprint(DBG_MM|DBG_ON, "(QP%d): Short chunk list\n",
+			RX_QPID(rctx));
 		return -EINVAL;
 	}
 	rctx->pg_idx = psge_idx;
 	rctx->pg_off = off_mr & ~PAGE_MASK;
 	rctx->umem_chunk = chunk;
 
-	dprint(DBG_MM, "(QP%d): New chunk with Page idx %d\n", RX_QPID(rctx),
-		psge_idx);
+	dprint(DBG_MM, "(QP%d): New chunk, idx %d\n", RX_QPID(rctx), psge_idx);
 	return 0;
 }
 
@@ -240,10 +205,6 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 				rv = siw_crc_sg(&rctx->mpa_crc_hd, p_list,
 						pg_off, bytes);
 
-			dprint_mem_irq(DBG_DATA, "Page data received",
-					dest + pg_off, bytes, "(QP%d): ",
-					RX_QPID(rctx));
-
 			rctx->skb_offset += bytes;
 			copied += bytes;
 			len -= bytes;
@@ -256,6 +217,9 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 			rctx->skb_copied += copied;
 			rctx->skb_new -= copied;
 			copied = -EFAULT;
+
+			dprint(DBG_RX|DBG_ON, "(QP%d): failed with %d\n",
+				RX_QPID(rctx), rv);
 
 			goto out;
 		}
@@ -420,12 +384,12 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 	send->ddp_qn  = be32_to_cpu(send->ddp_qn);
 
 	if (send->ddp_qn != RDMAP_UNTAGGED_QN_SEND) {
-		dprint(DBG_RX|DBG_ON, "Invalid DDP QN %d for SEND\n",
+		dprint(DBG_RX|DBG_ON, " Invalid DDP QN %d for SEND\n",
 			send->ddp_qn);
 		return -EINVAL;
 	}
 	if (send->ddp_msn != rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]) {
-		dprint(DBG_RX|DBG_ON, "received MSN=%d, expected MSN=%d\n",
+		dprint(DBG_RX|DBG_ON, " received MSN=%d, expected MSN=%d\n",
 			rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND], send->ddp_msn);
 		/*
 		 * TODO: Error handling
@@ -435,7 +399,7 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		return -EINVAL;
 	}
 	if (send->ddp_mo != wqe->processed) {
-		dprint(DBG_RX|DBG_ON, "Received MO=%u, expected MO=%u\n",
+		dprint(DBG_RX|DBG_ON, " Received MO=%u, expected MO=%u\n",
 			send->ddp_mo, wqe->processed);
 		/*
 		 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
@@ -448,7 +412,7 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		rctx->sge_off = 0;
 	}
 	if (wqe->bytes < wqe->processed + rctx->fpdu_part_rem) {
-		dprint(DBG_RX|DBG_ON, "Receive space short: %d < %d\n",
+		dprint(DBG_RX|DBG_ON, " Receive space short: %d < %d\n",
 			wqe->bytes - wqe->processed, rctx->fpdu_part_rem);
 		wqe->wc_status = IB_WC_LOC_LEN_ERR;
 		return -EINVAL;
@@ -468,15 +432,12 @@ static inline struct siw_wqe *siw_get_rqe(struct siw_qp *qp)
 			unlock_rq(qp);
 		} else {
 			unlock_rq(qp);
-			dprint(DBG_RX,
-				"QP(%d): RQ empty!\n", QP_ID(qp));
+			dprint(DBG_RX, " QP(%d): RQ empty!\n", QP_ID(qp));
 		}
 	} else {
 		wqe = siw_srq_fetch_wqe(qp);
-		if (!wqe) {
-			dprint(DBG_RX, "QP(%d): SRQ empty!\n",
-				QP_ID(qp));
-		}
+		if (!wqe)
+			dprint(DBG_RX, " QP(%d): SRQ empty!\n", QP_ID(qp));
 	}
 	return wqe;
 }
@@ -503,8 +464,6 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	u32		data_bytes,	/* all data bytes available */
 			rcvd_bytes;	/* sum of data bytes rcvd */
 	int		rv = 0;
-
-	dprint(DBG_RX, "(QP%d): Enter\n", QP_ID(qp));
 
 	if (rctx->first_ddp_seg) {
 		WARN_ON(rx_wqe(qp) != NULL);
@@ -591,9 +550,6 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 		rv = siw_rx_umem(rctx, sge_bytes, umem_ends);
 		if (rv != sge_bytes) {
-			dprint(DBG_RX|DBG_ON, "(QP%d): "
-				"siw_rx_umem failed with %d != %d\n",
-				QP_ID(qp), rv, sge_bytes);
 			/*
 			 * siw_rx_umem() must have updated
 			 * skb_new and skb_copied
@@ -643,8 +599,6 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 				last_write,
 				rv;
 
-	dprint(DBG_RX, "(QP%d): Enter\n", QP_ID(qp));
-
 	if (rctx->state == SIW_GET_DATA_START) {
 
 		if (!rctx->fpdu_part_rem) /* zero length WRITE */
@@ -690,11 +644,9 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	}
 	if (rctx->first_ddp_seg) {
 		rv = siw_rx_umem_init(rctx, siw_mem2mr(mem), write->sink_to);
-		if (rv) {
-			dprint(DBG_RX|DBG_ON, "(QP%d): "
-				" siw_rx_umem_init!\n", QP_ID(qp));
+		if (rv)
 			return -EINVAL;
-		}
+
 	} else if (!rctx->umem_chunk) {
 		/*
 		 * This should never happen.
@@ -717,12 +669,9 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		      !rctx->more_ddp_segs) ? 1 : 0;
 
 	rv = siw_rx_umem(rctx, bytes, last_write);
-	if (rv != bytes) {
-		dprint(DBG_RX|DBG_ON, "(QP%d): "
-			"siw_rx_umem failed with %d != %d\n",
-			 QP_ID(qp), rv, bytes);
+	if (rv != bytes)
 		return -EINVAL;
-	}
+
 	rctx->fpdu_part_rem -= rv;
 	rctx->fpdu_part_rcvd += rv;
 
@@ -765,8 +714,6 @@ int siw_proc_rreq(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
 	struct siw_wqe 	*rsp;
-
-	dprint(DBG_RX, "(QP%d): Enter\n", QP_ID(qp));
 
 	rsp = siw_wqe_get(qp, SIW_WR_RDMA_READ_RESP);
 	if (rsp) {
@@ -835,8 +782,6 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			is_last,
 			rv;
 
-	dprint(DBG_RX, "(QP%d): Enter\n", QP_ID(qp));
-
 	if (rctx->first_ddp_seg) {
 		WARN_ON(rx_wqe(qp) != NULL);
 		/*
@@ -848,7 +793,7 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			list_del_init(&wqe->list);
 		} else {
 			unlock_orq(qp);
-			dprint(DBG_RX|DBG_ON, "(QP%d): RResp: ORQ empty\n",
+			dprint(DBG_RX|DBG_ON, "(QP%d): ORQ empty\n",
 				QP_ID(qp));
 			/*
 			 * TODO: Should generate an async error
@@ -871,9 +816,6 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 		rv = siw_rresp_check_ntoh(rctx);
 		if (rv) {
-			dprint(DBG_RX|DBG_ON, "(QP%d): "
-				"siw_rresp_check_ntoh failed: %d\n",
-				QP_ID(qp), rv);
 			siw_async_ev(qp, NULL, IB_EVENT_QP_FATAL);
 			goto done;
 		}
@@ -907,9 +849,6 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	if (rctx->first_ddp_seg) {
 		rv = siw_rx_umem_init(rctx, mr, sge->addr);
 		if (rv) {
-			dprint(DBG_RX|DBG_ON, "(QP%d): "
-				"siw_rx_umem_init failed: %d\n",
-				QP_ID(qp), rv);
 			wqe->wc_status = IB_WC_LOC_PROT_ERR;
 			goto done;
 		}
@@ -919,8 +858,7 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		 *
 		 * TODO: Remove tentative debug aid.
 		 */
-		dprint(DBG_RX|DBG_ON, "(QP%d): Umem chunk not resolved!\n",
-			QP_ID(qp));
+		dprint(DBG_RX|DBG_ON, "(QP%d): No target mem!\n", QP_ID(qp));
 		wqe->wc_status = IB_WC_GENERAL_ERR;
 		rv = -EPROTO;
 		goto done;
@@ -937,9 +875,6 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 	rv = siw_rx_umem(rctx,  bytes, is_last);
 	if (rv != bytes) {
-		dprint(DBG_RX|DBG_ON, "(QP%d): "
-			"siw_rx_umem failed with %d != %d\n",
-			 QP_ID(qp), rv, bytes);
 		wqe->wc_status = IB_WC_GENERAL_ERR;
 		rv = -EINVAL;
 		goto done;
@@ -955,10 +890,32 @@ done:
 	return (rv < 0) ? rv : -EAGAIN;
 }
 
+static void siw_drain_pkt(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
+{
+	char	buf[4096];
+	int	len;
+
+	dprint(DBG_ON|DBG_RX, " (QP%d): drain %d bytes\n",
+		QP_ID(qp), rctx->fpdu_part_rem);
+
+	while (rctx->fpdu_part_rem) {
+		len = min(rctx->fpdu_part_rem, 4096);
+
+		skb_copy_bits(rctx->skb, rctx->skb_offset,
+				      buf, rctx->fpdu_part_rem);
+
+		rctx->skb_copied += len;
+		rctx->skb_offset += len;
+		rctx->skb_new -= len;
+		rctx->fpdu_part_rem -= len;
+	}
+}
+
 int siw_proc_unsupp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
 	WARN_ON(1);
-	return __siw_drain_pkt(qp, rctx);
+	siw_drain_pkt(qp, rctx);
+	return 0;
 }
 
 
@@ -966,11 +923,12 @@ int siw_proc_terminate(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
 	struct iwarp_terminate	*term = &rctx->hdr.terminate;
 
-	dprint(DBG_ON, "(QP%d): RX Terminate: etype=%d, layer=%d, ecode=%d\n",
+	printk(KERN_INFO "(QP%d): RX Terminate: etype=%d, layer=%d, ecode=%d\n",
 		QP_ID(qp), term->term_ctrl.etype, term->term_ctrl.layer,
 		term->term_ctrl.ecode);
 
-	return __siw_drain_pkt(qp, rctx);
+	siw_drain_pkt(qp, rctx);
+	return 0;
 }
 
 
@@ -992,8 +950,8 @@ static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	rctx->skb_offset += avail;
 	rctx->skb_copied += avail;
 
-	dprint(DBG_RX, " (QP%d): %d remaining (%d)\n",
-		QP_ID(qp), rctx->fpdu_part_rem, avail);
+	dprint(DBG_RX, " (QP%d): %d remaining (%d)\n", QP_ID(qp),
+		rctx->fpdu_part_rem, avail);
 
 	if (!rctx->fpdu_part_rem) {
 		u32	crc_in, crc_own = 0;
@@ -1086,10 +1044,6 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 	rctx->skb_offset += bytes;
 	rctx->skb_copied += bytes;
 
-	dprint(DBG_RX, " (QP%d): %d remaining (%d)\n", RX_QPID(rctx),
-		iwarp_pktinfo[c_hdr->opcode].hdr_len - rctx->fpdu_part_rcvd,
-		bytes);
-
 	if (rctx->fpdu_part_rcvd == iwarp_pktinfo[c_hdr->opcode].hdr_len) {
 		/*
 		 * HDR receive completed. Check if the current DDP segment
@@ -1103,16 +1057,14 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 		 *   RDMAP message is not supported. It is probably not
 		 *   needed with most peers.
 		 */
-		dprint_mem_irq(DBG_RX|DBG_DATA, "Complete HDR received: ",
-				(void *)&rctx->hdr, rctx->fpdu_part_rcvd,
-				"(QP%d): ", RX_QPID(rctx));
+		siw_dprint_hdr(&rctx->hdr, RX_QPID(rctx), "HDR received");
 
 		if (rctx->more_ddp_segs != 0) {
 			rctx->first_ddp_seg = 0;
 			if (rctx->prev_ddp_opcode != c_hdr->opcode) {
 				dprint(DBG_ON,
-				"packet intersection: %d <> %d\n",
-				rctx->prev_ddp_opcode, c_hdr->opcode);
+					"packet intersection: %d <> %d\n",
+					rctx->prev_ddp_opcode, c_hdr->opcode);
 				return -EPROTO;
 			}
 		} else {
@@ -1494,7 +1446,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 			rv = -EAGAIN;
 		}
 
-		if (rv != 0 && rv != -EAGAIN) {
+		if (unlikely(rv != 0 && rv != -EAGAIN)) {
 			/*
 			 * TODO: implement graceful error handling including
 			 *       generation (and processing) of TERMINATE
@@ -1518,7 +1470,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 				"(QP%d): RX ERROR %d at RX state %d\n",
 				QP_ID(qp), rv, rctx->state);
 
-			siw_print_rctx(rctx);
+			siw_dprint_rctx(rctx);
 			/*
 			 * Calling siw_cm_queue_work() is safe without
 			 * releasing qp->state_lock because the QP state

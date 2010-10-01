@@ -52,31 +52,13 @@
 
 #include <rdma/ib_verbs.h>
 
+#include "siw_debug.h"
+
 
 static inline struct siw_dev *siw_dev_ofa2siw(struct ib_device *ofa_dev)
 {
 	return container_of(ofa_dev, struct siw_dev, ofa_dev);
 }
-
-
-void siw_objhdr_init(struct siw_objhdr *);
-void siw_idr_init(struct siw_dev *);
-void siw_idr_release(struct siw_dev *);
-
-
-struct siw_cq *siw_cq_id2obj(struct siw_dev *, int);
-struct siw_qp *siw_qp_id2obj(struct siw_dev *, int);
-struct siw_mem *siw_mem_id2obj(struct siw_dev *, int);
-
-int siw_qp_add(struct siw_dev *, struct siw_qp *);
-int siw_cq_add(struct siw_dev *, struct siw_cq *);
-int siw_pd_add(struct siw_dev *, struct siw_pd *);
-int siw_mem_add(struct siw_dev *, struct siw_mem *m);
-
-
-void siw_remove_obj(spinlock_t *lock, struct idr *idr,
-		      struct siw_objhdr *hdr);
-
 
 static inline void siw_cq_get(struct siw_cq *cq)
 {
@@ -87,7 +69,7 @@ static inline void siw_cq_get(struct siw_cq *cq)
 static inline void siw_qp_get(struct siw_qp *qp)
 {
 	kref_get(&qp->hdr.ref);
-	dprint(DBG_OBJ|DBG_QP, "(QP%d): New refcount: %d\n",
+	dprint(DBG_OBJ, "(QP%d): New refcount: %d\n",
 		OBJ_ID(qp), atomic_read(&qp->hdr.ref.refcount));
 }
 static inline void siw_pd_get(struct siw_pd *pd)
@@ -103,14 +85,30 @@ static inline void siw_mem_get(struct siw_mem *mem)
 		OBJ_ID(mem), atomic_read(&mem->hdr.ref.refcount));
 }
 
-struct siw_wqe *siw_wqe_get(struct siw_qp *, enum siw_wr_opcode);
-struct siw_wqe *siw_srq_wqe_get(struct siw_srq *);
-struct siw_wqe *siw_srq_fetch_wqe(struct siw_qp *);
+extern void siw_remove_obj(spinlock_t *lock, struct idr *idr,
+				struct siw_objhdr *hdr);
 
-void siw_cq_put(struct siw_cq *);
-void siw_qp_put(struct siw_qp *);
-void siw_pd_put(struct siw_pd *);
-void siw_mem_put(struct siw_mem *);
-void siw_wqe_put(struct siw_wqe *);
+extern void siw_objhdr_init(struct siw_objhdr *);
+extern void siw_idr_init(struct siw_dev *);
+extern void siw_idr_release(struct siw_dev *);
+
+extern struct siw_cq *siw_cq_id2obj(struct siw_dev *, int);
+extern struct siw_qp *siw_qp_id2obj(struct siw_dev *, int);
+extern struct siw_mem *siw_mem_id2obj(struct siw_dev *, int);
+
+extern int siw_qp_add(struct siw_dev *, struct siw_qp *);
+extern int siw_cq_add(struct siw_dev *, struct siw_cq *);
+extern int siw_pd_add(struct siw_dev *, struct siw_pd *);
+extern int siw_mem_add(struct siw_dev *, struct siw_mem *m);
+
+extern struct siw_wqe *siw_wqe_get(struct siw_qp *, enum siw_wr_opcode);
+extern struct siw_wqe *siw_srq_wqe_get(struct siw_srq *);
+extern struct siw_wqe *siw_srq_fetch_wqe(struct siw_qp *);
+
+extern void siw_cq_put(struct siw_cq *);
+extern void siw_qp_put(struct siw_qp *);
+extern void siw_pd_put(struct siw_pd *);
+extern void siw_mem_put(struct siw_mem *);
+extern void siw_wqe_put(struct siw_wqe *);
 
 #endif

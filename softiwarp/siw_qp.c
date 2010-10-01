@@ -56,9 +56,6 @@
 #include "siw.h"
 #include "siw_obj.h"
 #include "siw_cm.h"
-#include "siw_tcp.h"
-#include "siw_utils.h"
-#include "siw_socket.h"
 
 
 char siw_qp_state_to_string[SIW_QP_STATE_COUNT][sizeof "TERMINATE"] = {
@@ -70,26 +67,6 @@ char siw_qp_state_to_string[SIW_QP_STATE_COUNT][sizeof "TERMINATE"] = {
 	[SIW_QP_STATE_ERROR]		= "ERROR",
 	[SIW_QP_STATE_MORIBUND]		= "MORIBUND",
 	[SIW_QP_STATE_UNDEF]		= "UNDEF"
-};
-
-char ib_qp_state_to_string[IB_QPS_ERR+1][sizeof "RESET"] = {
-	[IB_QPS_RESET]	= "RESET",
-	[IB_QPS_INIT]	= "INIT",
-	[IB_QPS_RTR]	= "RTR",
-	[IB_QPS_RTS]	= "RTS",
-	[IB_QPS_SQD]	= "SQD",
-	[IB_QPS_SQE]	= "SQE",
-	[IB_QPS_ERR]	= "ERR"
-};
-
-int ib_qp_state_to_siw_qp_state[IB_QPS_ERR+1] = {
-	[IB_QPS_RESET]	= SIW_QP_STATE_IDLE,
-	[IB_QPS_INIT]	= SIW_QP_STATE_IDLE,
-	[IB_QPS_RTR]	= SIW_QP_STATE_RTR,
-	[IB_QPS_RTS]	= SIW_QP_STATE_RTS,
-	[IB_QPS_SQD]	= SIW_QP_STATE_CLOSING,
-	[IB_QPS_SQE]	= SIW_QP_STATE_TERMINATE,
-	[IB_QPS_ERR]	= SIW_QP_STATE_ERROR
 };
 
 
@@ -623,7 +600,7 @@ struct ib_qp *siw_get_ofaqp(struct ib_device *dev, int id)
 {
 	struct siw_qp *qp =  siw_qp_id2obj(siw_dev_ofa2siw(dev), id);
 
-	dprint(DBG_OBJ, " dev_name: %s, OFA QPID: %d, QP: %p\n",
+	dprint(DBG_OBJ, ": dev_name: %s, OFA QPID: %d, QP: %p\n",
 		dev->name, id, qp);
 	if (qp) {
 		/*
@@ -717,8 +694,6 @@ siw_check_sge(struct siw_pd *pd, struct siw_sge *sge,
 	struct siw_mem	*mem;
 	int		new_ref = 0, rv = 0;
 
-	dprint(DBG_WR, "(PD%d): Enter\n", OBJ_ID(pd));
-
 	if (len + off > sge->len) {
 		rv = -EPERM;
 		goto fail;
@@ -798,9 +773,6 @@ int siw_check_sgl(struct siw_pd *pd, struct siw_sge *sge,
 		off = 0;
 		sge++;
 	}
-
-	if (rv)
-		dprint(DBG_WR, "(PD%d): rv=%d\n", OBJ_ID(pd), rv);
 	return rv;
 }
 

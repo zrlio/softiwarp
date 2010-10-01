@@ -54,8 +54,6 @@
 #include "siw.h"
 #include "siw_obj.h"
 #include "siw_cm.h"
-#include "siw_utils.h"
-#include "siw_socket.h"
 
 /*
  * siw_async_ev()

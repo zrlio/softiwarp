@@ -54,9 +54,6 @@
 #include "siw.h"
 #include "siw_obj.h"
 #include "siw_cm.h"
-#include "siw_socket.h"
-#include "siw_tcp.h"
-#include "siw_utils.h"
 
 static int zcopy_tx = 1;
 module_param(zcopy_tx, int, 0644);
@@ -219,12 +216,13 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 static inline int siw_tx_ctrl(struct siw_iwarp_tx *c_tx, struct socket *s,
 			      int flags)
 {
-	char	*buf = (char *)&c_tx->pkt.ctrl;
-	int	len, rv;
+	struct msghdr msg = {.msg_flags = flags};
+	struct kvec iov = {
+		.iov_base = (char *)&c_tx->pkt.ctrl + c_tx->ctrl_sent,
+		.iov_len = c_tx->ctrl_len - c_tx->ctrl_sent};
 
-	len = c_tx->ctrl_len - c_tx->ctrl_sent;
-
-	rv = ksock_send(s, buf + c_tx->ctrl_sent, len, flags);
+	int rv = kernel_sendmsg(s, &msg, &iov, 1,
+				c_tx->ctrl_len - c_tx->ctrl_sent);
 
 	dprint(DBG_TX, " (QP%d): op=%d, %d of %d sent (%d)\n",
 		TX_QPID(c_tx), c_tx->pkt.ctrl.opcode,
@@ -234,9 +232,8 @@ static inline int siw_tx_ctrl(struct siw_iwarp_tx *c_tx, struct socket *s,
 		c_tx->ctrl_sent += rv;
 
 		if (c_tx->ctrl_sent == c_tx->ctrl_len) {
-			dprint_mem(DBG_TX, "Complete CTRL sent: ",
-					buf, c_tx->ctrl_len,
-					"(QP%d): ", TX_QPID(c_tx));
+			siw_dprint_hdr(&c_tx->pkt.hdr, TX_QPID(c_tx),
+					"CTRL sent");
 			if (!(flags & MSG_MORE))
 				c_tx->new_tcpseg = 1;
 			rv = 0;
@@ -474,9 +471,8 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 			iov[0].iov_len = hdr_len =
 				c_tx->ctrl_len - c_tx->ctrl_sent;
 			seg = 1;
-			dprint_mem(DBG_DATA, "HDR to send: ",
-					iov[0].iov_base, hdr_len,
-					"(QP%d): ", TX_QPID(c_tx));
+			siw_dprint_hdr(&c_tx->pkt.hdr, TX_QPID(c_tx),
+					"HDR to send: ");
 		}
 	}
 
@@ -488,24 +484,22 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 
 		BUG_ON(!sge_len);
 
-		data_len -= sge_len;
-
 		if (kbuf) {
 			/*
 			 * In kernel buffers to be tx'ed.
 			 */
-			iov[seg].iov_base = (void *)(sge->addr + sge_off);
+			iov[seg].iov_base =
+				(void *)(unsigned long)(sge->addr + sge_off);
 			iov[seg].iov_len = sge_len;
 			if (do_crc)
 				siw_crc_array(&c_tx->mpa_crc_hd,
 					      iov[seg].iov_base, sge_len);
 			sge_off += sge_len;
-			dprint_mem_irq(DBG_DATA, "Kernel buffer to transmit ",
-					iov[seg].iov_base, sge_len, "(QP%d): ",
-					TX_QPID(c_tx));
+			data_len -= sge_len;
 			seg++;
-
-		} else while (sge_len) {
+			goto sge_done;
+		}
+		while (sge_len) {
 			struct scatterlist *sl;
 			size_t plen;
 
@@ -529,16 +523,13 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 			if (!c_tx->use_sendpage) {
 				iov[seg].iov_base = kmap(sg_page(sl)) + fp_off;
 				iov[seg].iov_len = plen;
-				dprint_mem_irq(DBG_DATA,
-						"Page data to transmit ",
-						iov[seg].iov_base, plen,
-						"(QP%d): ", TX_QPID(c_tx));
 			}
 			if (do_crc)
 				siw_crc_sg(&c_tx->mpa_crc_hd, sl, fp_off, plen);
 
 			sge_len -= plen;
 			sge_off += plen;
+			data_len -= plen;
 
 			if (plen + fp_off == PAGE_SIZE &&
 			    sge_off < sge->len && ++pg_idx == chunk->nents) {
@@ -560,6 +551,7 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 				goto done_crc;
 			}
 		}
+sge_done:
 		/* Update SGE variables at end of SGE */
 		if (sge_off == sge->len && wqe->processed < wqe->bytes) {
 			sge_idx++;
@@ -730,8 +722,6 @@ int siw_prepare_fpdu(struct siw_qp *qp, struct siw_wqe *wqe)
 {
 	struct siw_iwarp_tx	*c_tx  = &qp->tx_ctx;
 	int			rv = 0;
-
-	dprint(DBG_TX, "(QP%d)\n", QP_ID(qp));
 
 	/*
 	 * TODO: TCP Fragmentation dynamics needs for further investigation.
@@ -987,8 +977,6 @@ int siw_qp_sq_process(struct siw_qp *qp, int user_ctx)
 	unsigned long		flags;
 	int			rv = 0;
 	int			max_burst;
-
-	dprint(DBG_WR|DBG_TX, "(QP%d): Enter\n", QP_ID(qp));
 
 	if (user_ctx)
 		max_burst = SQ_USER_MAXBURST;

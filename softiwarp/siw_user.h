@@ -44,16 +44,8 @@
  * in user land.
  */
 
-struct siw_ureq_create_cq {
-	__u32	dummy;
-};
-
 struct siw_uresp_create_cq {
 	__u32	cq_id;
-};
-
-struct siw_ureq_create_qp {
-
 };
 
 struct siw_uresp_create_qp {
@@ -64,13 +56,11 @@ struct siw_uresp_create_qp {
 
 struct siw_uresp_reg_mr {
 	__u32	stag;
-	__u32	pbl_addr;
 };
 
 struct siw_ureq_reg_mr {
 	__u8	stag_key;
 	__u8	reserved[3];
-	__u32	pbl_addr;
 };
 
 #endif

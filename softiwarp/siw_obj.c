@@ -273,7 +273,7 @@ static void siw_free_qp(struct kref *ref)
 		container_of(container_of(ref, struct siw_objhdr, ref),
 			     struct siw_qp, hdr);
 
-	dprint(DBG_OBJ|DBG_CM|DBG_QP, "(QP%d): Free Object\n", QP_ID(qp));
+	dprint(DBG_OBJ|DBG_CM, "(QP%d): Free Object\n", QP_ID(qp));
 
 	if (qp->cep)
 		siw_cep_put(qp->cep);
@@ -322,7 +322,7 @@ void siw_cq_put(struct siw_cq *cq)
 
 void siw_qp_put(struct siw_qp *qp)
 {
-	dprint(DBG_OBJ|DBG_QP, "(QP%d): Old refcount: %d\n",
+	dprint(DBG_OBJ, "(QP%d): Old refcount: %d\n",
 		QP_ID(qp), atomic_read(&qp->hdr.ref.refcount));
 	kref_put(&qp->hdr.ref, siw_free_qp);
 }

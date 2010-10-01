@@ -48,7 +48,6 @@
 #include "siw.h"
 #include "siw_obj.h"
 #include "siw_cm.h"
-#include "siw_utils.h"
 
 static int siw_wc_op_siw2ofa[SIW_WR_NUM] = {
 	[SIW_WR_RDMA_WRITE]		= IB_WC_RDMA_WRITE,

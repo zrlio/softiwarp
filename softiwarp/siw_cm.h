@@ -39,6 +39,9 @@
 #ifndef _SIW_CM_H
 #define _SIW_CM_H
 
+#include <net/sock.h>
+#include <linux/tcp.h>
+
 #include <rdma/iw_cm.h>
 
 
@@ -113,24 +116,46 @@ struct siw_cm_work {
 	struct siw_cep	*cep;
 };
 
-int siw_connect(struct iw_cm_id *, struct iw_cm_conn_param *);
-int siw_accept(struct iw_cm_id *, struct iw_cm_conn_param *);
-int siw_reject(struct iw_cm_id *, const void *, u8);
-int siw_create_listen(struct iw_cm_id *, int);
-int siw_destroy_listen(struct iw_cm_id *);
+extern int siw_connect(struct iw_cm_id *, struct iw_cm_conn_param *);
+extern int siw_accept(struct iw_cm_id *, struct iw_cm_conn_param *);
+extern int siw_reject(struct iw_cm_id *, const void *, u8);
+extern int siw_create_listen(struct iw_cm_id *, int);
+extern int siw_destroy_listen(struct iw_cm_id *);
 
-int siw_cm_upcall(struct siw_cep *, enum iw_cm_event_type,
+extern int siw_cm_upcall(struct siw_cep *, enum iw_cm_event_type,
 			    enum iw_cm_event_status);
 
-void siw_cep_upcall(struct siw_cep *, enum iw_cm_event_type);
+extern void siw_cep_upcall(struct siw_cep *, enum iw_cm_event_type);
 
-void siw_cep_put(struct siw_cep *);
-void siw_cep_get(struct siw_cep *);
-int siw_cep_in_close(struct siw_cep *);
+extern void siw_cep_put(struct siw_cep *);
+extern void siw_cep_get(struct siw_cep *);
+extern int siw_cep_in_close(struct siw_cep *);
 
-int siw_cm_queue_work(struct siw_cep *, enum siw_work_type);
+extern int siw_cm_queue_work(struct siw_cep *, enum siw_work_type);
 
-int siw_cm_init(void);
-void siw_cm_exit(void);
+extern int siw_cm_init(void);
+extern void siw_cm_exit(void);
+
+/*
+ * TCP socket interface
+ */
+#define sk_to_qp(sk)	(((struct siw_cep *)((sk)->sk_user_data))->qp)
+#define sk_to_cep(sk)	((struct siw_cep *)((sk)->sk_user_data))
+
+/*
+ * Should we use tcp_current_mss()?
+ * But its not exported by kernel.
+ */
+static inline unsigned int get_tcp_mss(struct sock *sk)
+{
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+	return ((struct tcp_sock *)sk)->xmit_size_goal;
+#else
+	return ((struct tcp_sock *)sk)->xmit_size_goal_segs *
+			((struct tcp_sock *)sk)->mss_cache;
+#endif
+
+}
+
 
 #endif

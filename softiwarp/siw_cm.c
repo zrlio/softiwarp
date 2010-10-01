@@ -44,7 +44,7 @@
 #include <linux/inetdevice.h>
 #include <linux/workqueue.h>
 #include <net/sock.h>
-#include <net/tcp_states.h>
+#include <linux/tcp.h>
 
 
 #include <rdma/iw_cm.h>
@@ -54,10 +54,7 @@
 
 #include "siw.h"
 #include "siw_cm.h"
-#include "siw_tcp.h"
-#include "siw_utils.h"
 #include "siw_obj.h"
-#include "siw_socket.h"
 
 static int mpa_crc_enabled;
 module_param(mpa_crc_enabled, int, 0644);
@@ -65,13 +62,36 @@ MODULE_PARM_DESC(mpa_crc_enabled, "MPA CRC enabled");
 
 static int mpa_revision = 1;
 
+
+/*
+ * siw_sock_nodelay() - Disable Nagle algorithm
+ *
+ * See also fs/ocfs2/cluster/tcp.c, o2net_set_nodelay()
+ */
+static int siw_sock_nodelay(struct socket *sock)
+{
+	int ret, val = 1;
+	mm_segment_t oldfs;
+	oldfs = get_fs();
+	set_fs(KERNEL_DS);
+
+	/*
+	 * Don't use sock_setsockopt() for SOL_TCP. It doesn't check its level
+	 * argument and assumes SOL_SOCKET so, say, your TCP_NODELAY will
+	 * silently turn into SO_DEBUG.
+	 */
+	ret = sock->ops->setsockopt(sock, SOL_TCP, TCP_NODELAY,
+				    (char __user *)&val, sizeof(val));
+	set_fs(oldfs);
+	return ret;
+}
+
 static void siw_cm_llp_state_change(struct sock *);
 static void siw_cm_llp_data_ready(struct sock *, int);
 static void siw_cm_llp_write_space(struct sock *);
 static void siw_cm_llp_error_report(struct sock *);
-
-
 static void siw_sk_assign_cm_upcalls(struct sock *sk)
+
 {
 	write_lock_bh(&sk->sk_callback_lock);
 	sk->sk_state_change = siw_cm_llp_state_change;
@@ -80,6 +100,46 @@ static void siw_sk_assign_cm_upcalls(struct sock *sk)
 	sk->sk_error_report = siw_cm_llp_error_report;
 	write_unlock_bh(&sk->sk_callback_lock);
 }
+
+static void siw_sk_save_upcalls(struct sock *sk)
+{
+	struct siw_cep *cep = sk_to_cep(sk);
+	BUG_ON(!cep);
+
+	write_lock_bh(&sk->sk_callback_lock);
+	cep->sk_state_change = sk->sk_state_change;
+	cep->sk_data_ready   = sk->sk_data_ready;
+	cep->sk_write_space  = sk->sk_write_space;
+	cep->sk_error_report = sk->sk_error_report;
+	write_unlock_bh(&sk->sk_callback_lock);
+}
+
+static void siw_sk_restore_upcalls(struct sock *sk, struct siw_cep *cep)
+{
+	sk->sk_state_change	= cep->sk_state_change;
+	sk->sk_data_ready	= cep->sk_data_ready;
+	sk->sk_write_space	= cep->sk_write_space;
+	sk->sk_error_report	= cep->sk_error_report;
+	sk->sk_user_data 	= NULL;
+	sk->sk_no_check 	= 0;
+}
+
+static void siw_socket_disassoc(struct socket *s)
+{
+	struct sock	*sk = s->sk;
+	struct siw_cep	*cep;
+
+	if (sk) {
+		write_lock_bh(&sk->sk_callback_lock);
+		cep = sk_to_cep(sk);
+		if (cep) {
+			siw_sk_restore_upcalls(sk, cep);
+			siw_cep_put(cep);
+		}
+		write_unlock_bh(&sk->sk_callback_lock);
+	}
+}
+
 
 static inline int kernel_peername(struct socket *s, struct sockaddr_in *addr)
 {
@@ -377,10 +437,19 @@ void siw_cep_get(struct siw_cep *cep)
 		cep, atomic_read(&cep->ref.refcount));
 }
 
-static struct workqueue_struct *siw_cm_wq;
+
+
+static inline int ksock_recv(struct socket *sock, char *buf, size_t size,
+			     int flags)
+{
+	struct kvec iov = {buf, size};
+	struct msghdr msg = {.msg_name = NULL, .msg_flags = flags};
+
+	return kernel_recvmsg(sock, &msg, &iov, 1, size, flags);
+}
 
 /*
- * Receive MPA Request/Reply haeder.
+ * Receive MPA Request/Reply heder.
  *
  * Returns 0 if complete MPA Request/Reply haeder including
  * eventual private data was received. Returns -EAGAIN if
@@ -468,9 +537,8 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 	cep->mpa.bytes_rcvd += rcvd;
 
 	if (to_rcv == rcvd) {
-		dprint_mem(DBG_CM, "private_data",
-				cep->mpa.pdata, hdr->params.pd_len,
-				"(): ");
+		dprint(DBG_CM, "%d bytes private_data received",
+			hdr->params.pd_len);
 		return 0;
 	}
 	return -EAGAIN;
@@ -699,15 +767,13 @@ static void siw_accept_newconn(struct siw_cep *cep)
 
 	new_cep->state = SIW_EPSTATE_AWAIT_MPAREQ;
 
-	rv = siw_skb_queue_datalen(&new_s->sk->sk_receive_queue);
-	if (rv > 0) {
+	if (atomic_read(&new_s->sk->sk_rmem_alloc)) {
 		/*
 		 * MPA REQ already queued
 		 */
-		dprint(DBG_CM, "(cep=0x%p): new sock has %d bytes\n", cep, rv);
+		dprint(DBG_CM, "(cep=0x%p): Immediate MPA req.\n", cep);
 
 		siw_proc_mpareq(new_cep);
-
 	}
 	return;
 
@@ -994,6 +1060,8 @@ static void siw_cm_work_handler(struct work_struct *w)
 	siw_cep_put(cep);
 }
 
+static struct workqueue_struct *siw_cm_wq;
+
 int siw_cm_queue_work(struct siw_cep *cep, enum siw_work_type type)
 {
 	struct siw_cm_work *work = siw_get_work(cep);
@@ -1269,11 +1337,8 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		goto error;
 
 	dprint(DBG_CM, "(id=0x%p, QP%d): pd_len = %u\n", id, QP_ID(qp), pd_len);
-	if (pd_len) {
-		dprint_mem(DBG_CM, "private_data",
-				(unsigned char *)params->private_data, pd_len,
-				"(id=0x%p, QP%d): ", id, QP_ID(qp));
-	}
+	if (pd_len)
+		dprint(DBG_CM, "%d bytes private_data\n", pd_len);
 	/*
 	 * Associate CEP with socket
 	 */
@@ -1293,7 +1358,6 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 
 	if (rv >= 0) {
 		dprint(DBG_CM, "(id=0x%p, QP%d): Exit\n", id, QP_ID(qp));
-
 		up_write(&qp->state_lock);
 		return 0;
 	}
@@ -1352,14 +1416,12 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 retry:
 	rv = siw_cep_set_inuse(cep);
 	if (rv < 0) {
-		dprint(DBG_CM, "(id=0x%p, cep=0x%p): CEP in use\n",
-			id, cep);
+		dprint(DBG_CM, "(id=0x%p, cep=0x%p): CEP in use\n", id, cep);
 		wait_event(cep->waitq, !cep->in_use);
 		goto retry;
 	}
 	if (!rv) {
-		dprint(DBG_CM, "(id=0x%p, cep=0x%p): CEP in close\n",
-			id, cep);
+		dprint(DBG_CM, "(id=0x%p, cep=0x%p): CEP in close\n", id, cep);
 		(void) siw_cep_set_free(cep);
 		return -EINVAL;
 	}
@@ -1454,9 +1516,8 @@ retry:
 	if (params->private_data_len) {
 		pdata = (char *)params->private_data;
 
-		dprint_mem(DBG_CM, "private_data",
-				pdata, params->private_data_len,
-				"(id=0x%p, QP%d): ", id, QP_ID(qp));
+		dprint(DBG_CM, "(id=0x%p, QP%d): %d bytes private_data\n",
+				id, QP_ID(qp), params->private_data_len);
 	}
 	cep->mpa.hdr.params.pd_len = params->private_data_len;
 
@@ -1531,12 +1592,8 @@ unlock:
 int siw_reject(struct iw_cm_id *id, const void *pdata, u8 plen)
 {
 	struct siw_cep	*cep = (struct siw_cep *)id->provider_data;
-	struct siw_dev	*dev = siw_dev_ofa2siw(id->device);
 
-	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, cep->state=%d\n",
-		id, dev->ofa_dev.name, cep->state);
-
-
+	dprint(DBG_CM, "(id=0x%p): cep->state=%d\n", id, cep->state);
 	dprint(DBG_CM, " Reject: %s\n", plen ? (char *)pdata:"(no data)");
 
 	if (!siw_cep_in_close(cep)) {
@@ -1564,8 +1621,6 @@ int siw_reject(struct iw_cm_id *id, const void *pdata, u8 plen)
 
 int siw_listen_address(struct iw_cm_id *id, int backlog, struct sockaddr *laddr)
 {
-	struct ib_device	*ofa_dev = id->device;
-	struct siw_dev		*dev = siw_dev_ofa2siw(ofa_dev);
 	struct socket 		*s;
 	struct siw_cep		*cep = NULL;
 	int 			rv = 0, s_val;
@@ -1676,7 +1731,8 @@ int siw_listen_address(struct iw_cm_id *id, int backlog, struct sockaddr *laddr)
 
 	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, l2dev=%s, "
 		"id->provider_data=0x%p, cep=0x%p\n",
-		id, ofa_dev->name, dev->l2dev->name,
+		id, id->device->name,
+		siw_dev_ofa2siw(id->device)->l2dev->name,
 		id->provider_data, cep);
 
 	list_add_tail(&cep->list, (struct list_head *)id->provider_data);
@@ -1837,13 +1893,12 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 
 int siw_destroy_listen(struct iw_cm_id *id)
 {
-	struct ib_device	*ofa_dev = id->device;
-	struct siw_dev		*dev = siw_dev_ofa2siw(ofa_dev);
 	struct list_head	*p, *tmp;
 	struct siw_cep		*cep;
 
 	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, l2dev=%s\n",
-		id, ofa_dev->name, dev->l2dev->name);
+		id, id->device->name,
+		siw_dev_ofa2siw(id->device)->l2dev->name);
 
 	if (!id->provider_data) {
 		/*

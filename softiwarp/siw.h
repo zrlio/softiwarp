@@ -52,7 +52,6 @@
 #include <rdma/ib_umem.h>	/* struct ib_umem_chunk */
 
 #include "siw_user.h"
-#include "siw_debug.h"
 #include "iwarp.h"
 
 #include <linux/version.h>
@@ -199,9 +198,9 @@ struct siw_mem {
 
 	struct siw_mr	*mr;		/* assoc. MR if MW, NULL if MR */
 
-	__u32	stag_state	:1,	/* VALID or INVALID */
-		is_zbva		:1,	/* zero based virt. addr. */
-		mw_bind_enabled	:1,	/* check only if MR */
+	__u32	stag_state:1,		/* VALID or INVALID */
+		is_zbva:1,		/* zero based virt. addr. */
+		mw_bind_enabled:1,	/* check only if MR */
 		remote_inval_enabled:1,	/* VALID or INVALID */
 		consumer_owns_key:1,	/* key/index split ? */
 		rsvd:27;
@@ -552,6 +551,8 @@ struct siw_rresp_pkt {
 
 struct siw_iwarp_tx {
 	union {
+		union iwarp_hdrs		hdr;
+
 		/* Generic part of FPDU header */
 		struct iwarp_ctrl		ctrl;
 		struct iwarp_ctrl_untagged	c_untagged;
@@ -571,13 +572,14 @@ struct siw_iwarp_tx {
 		struct siw_rreq_pkt		rreq_pkt;
 		struct siw_rresp_pkt		rresp_pkt;
 	} pkt;
+
 	struct mpa_trailer			trailer;
 	/* DDP MSN for untagged messages */
 	u32			ddp_msn[RDMAP_UNTAGGED_QN_COUNT];
 
 	enum siw_tx_ctx	state;
 	wait_queue_head_t	waitq;
-	
+
 	u16			ctrl_len;	/* ddp+rdmap hdr */
 	u16			ctrl_sent;
 	int			bytes_unsent;	/* ddp payload bytes */
@@ -672,7 +674,8 @@ struct siw_qp {
 #define unlock_orq(qp)	spin_unlock(&qp->orq_lock)
 
 #define lock_orq_rxsave(qp, flags)	spin_lock_irqsave(&qp->orq_lock, flags)
-#define unlock_orq_rxsave(qp, flags)	spin_unlock_irqrestore(&qp->orq_lock, flags)
+#define unlock_orq_rxsave(qp, flags)\
+	spin_unlock_irqrestore(&qp->orq_lock, flags)
 
 #define RX_QP(rx)		container_of(rx, struct siw_qp, rx_ctx)
 #define TX_QP(tx)		container_of(tx, struct siw_qp, tx_ctx)

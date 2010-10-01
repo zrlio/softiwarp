@@ -63,8 +63,7 @@
  * DBG_KT	Kernel threads
  * DBG_IRQ	Interrupt context (SoftIRQ or HardIRQ)
  * DBG_DM	Device management
- * DBG_DATA	Application data (payload)
- * DBG_QP	QP references (tentative dbg code)
+ * DBG_HDR	Packet HDRs
  * DBG_ALL	All categories above
  */
 #define DBG_ON		0x00000001
@@ -80,13 +79,12 @@
 #define DBG_KT		0x00000400
 #define DBG_IRQ		0x00000800
 #define DBG_DM		0x00001000
-#define DBG_DATA	0x00002000
-#define DBG_QP		0x00004000
+#define DBG_HDR		0x00002000
 #define DBG_ALL		(DBG_IRQ|DBG_KT|DBG_SK|DBG_RX|DBG_TX|DBG_WR|\
-DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|DBG_DM|DBG_ON|DBG_DATA|DBG_QP)
-#define DBG_ALL_NODATA	(DBG_IRQ|DBG_KT|DBG_SK|DBG_RX|DBG_TX|DBG_WR|\
+DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|DBG_DM|DBG_ON|DBG_HDR)
+#define DBG_ALL_NOHDR	(DBG_IRQ|DBG_KT|DBG_SK|DBG_RX|DBG_TX|DBG_WR|\
 DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|DBG_DM|DBG_ON)
-#define DBG_CTRL	(DBG_ON|DBG_CM|DBG_DM|DBG_QP)
+#define DBG_CTRL	(DBG_ON|DBG_CM|DBG_DM)
 
 /*
  * Set DPRINT_MASK to tailor your debugging needs:
@@ -99,25 +97,13 @@ DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|DBG_DM|DBG_ON)
  * DBG_KT|DBG_ON		Kernel threads
  * DBG_ALL			All categories
  */
-#if 0
-#define DPRINT_MASK	DBG_ON
-#define DPRINT_MASK	(DBG_KT|DBG_ON)
-#define DPRINT_MASK	(DBG_OBJ|DBG_ON)
-#define DPRINT_MASK	(DBG_MM|DBG_ON)
-#define DPRINT_MASK	(DBG_EH|DBG_ON)
-#define DPRINT_MASK	(DBG_TX|DBG_CM|DBG_TMP|DBG_ON)
-#define DPRINT_MASK	(DBG_RX|DBG_CM|DBG_TMP|DBG_ON)
-#define DPRINT_MASK	(DBG_CM|DBG_TMP|DBG_ON)
-#define DPRINT_MASK	(DBG_KT|DBG_CM|DBG_TMP|DBG_ON)
-#define DPRINT_MASK	(DBG_CM|DBG_ON)
-#define DPRINT_MASK	(DBG_WR|DBG_ON)
-#define DPRINT_MASK	(DBG_CM|DBG_MM|DBG_EH|DBG_OBJ|DBG_WR)
-#define DPRINT_MASK	DBG_DM
-#define DPRINT_MASK	(~DBG_ALL)
-#endif
-#define DPRINT_MASK	(DBG_ON)
-/* #define DPRINT_MASK	(DBG_ON|DBG_DM|DBG_TX|DBG_CQ) */
+#define DPRINT_MASK	0
 
+extern void siw_print_hdr(union iwarp_hdrs *, int, char *);
+extern void siw_print_rctx(struct siw_iwarp_rx *);
+extern void siw_print_qp_attr_mask(enum ib_qp_attr_mask, char *);
+
+#if DPRINT_MASK > 0
 
 /**
  * dprint - Selective debug print for process, SoftIRQ or HardIRQ context
@@ -142,113 +128,32 @@ DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|DBG_DM|DBG_ON)
 					__func__, ## args);		\
 			else						\
 				printk(KERN_INFO "( irq /%1d) %s" fmt,	\
-						current_thread_info()->cpu,\
-						__func__, ## args);	\
+					current_thread_info()->cpu,	\
+					__func__, ## args);		\
 		}							\
 	} while (0)
 
 
-/**
- * dprint_mem - Selective debug print for memory
- *
- * Debug print with selectable debug categories,
- * starting with header
- *	"( pid /cpu) __func__" fmt "dprint_mem(start)\n"
- * and ending with trailer
- *	"( pid /cpu) __func__" fmt "dprint_mem(end)\n"
- *
- * @dbgcat	: Set of debug categories (OR-ed combination of DBG_* above),
- *		  to which this debug message is assigned.
- * TODO: Complete this ...
- *
- * @fmt		: printf compliant format string for header/trailer
- * @args	: printf compliant argument list for header/trailer
- */
-#define dprint_mem(dbgcat, mem_name, kva, num_bytes, fmt, args...) {\
-	do {								\
-		if ((dbgcat) & DPRINT_MASK) {				\
-			printk(KERN_INFO "(%5d/%1d) %s" fmt		\
-					"dprint_mem(start)\n",		\
-					current->pid,			\
-					current_thread_info()->cpu,	\
-					__func__, ## args);		\
-			__siw_utils_mem_print(mem_name, kva, num_bytes);\
-			printk(KERN_INFO "(%5d/%1d) %s" fmt		\
-					"dprint_mem(end)\n",		\
-					current->pid,			\
-					current_thread_info()->cpu,	\
-					 __func__, ## args);	\
-		}							\
-	} while (0);							\
-}
+#define siw_dprint_rctx(r)	siw_print_rctx(r)
+extern char ib_qp_state_to_string[IB_QPS_ERR+1][sizeof "RESET"];
+
+#else
+#define dprint(dbgcat, fmt, args...)	do { } while (0)
+#define siw_dprint_rctx(r)	do { } while (0)
+#endif
 
 
-/**
- * dprint_mem_irq - Selective debug print for memory for SoftIRQ/HardIRQ context
- *
- * Debug print with selectable debug categories,
- * starting with header
- *	"( irq /cpu) __func__" fmt "dprint_mem(start)\n"
- * and ending with trailer
- *	"( irq /cpu) __func__" fmt "dprint_mem(end)\n"
- *
- * @dbgcat	: Set of debug categories (OR-ed combination of DBG_* above),
- *		  to which this debug message is assigned.
- * TODO: Complete this ...
- *
- * @fmt		: printf compliant format string for header/trailer
- * @args	: printf compliant argument list for header/trailer
- */
-#define dprint_mem_irq(dbgcat, mem_name, kva, num_bytes,		\
-		fmt, args...) {						\
-	do {								\
-		if ((dbgcat) & DPRINT_MASK) {				\
-			printk(KERN_INFO "( irq /%1d) %s" fmt		\
-					"dprint_mem(start)\n",		\
-					current_thread_info()->cpu,	\
-					__func__, ## args);		\
-			__siw_utils_mem_print(mem_name, kva, num_bytes);\
-			printk(KERN_INFO "( irq /%1d) %s" fmt		\
-					"dprint_mem(end)\n",		\
-					current_thread_info()->cpu,	\
-					 __func__, ## args);		\
-		}							\
-	} while (0);							\
-}
+#if DPRINT_MASK & DBG_HDR
+#define siw_dprint_hdr(h, i, m)	siw_print_hdr(h, i, m)
+#else
+#define siw_dprint_hdr(h, i, m)	do { } while (0)
+#endif
 
+#if DPRINT_MASK & DBG_CM
+#define siw_dprint_qp_attr_mask(mask)\
+		siw_print_qp_attr_mask(mask, (char *)__func__)
+#else
+#define siw_dprint_qp_attr_mask(mask)	do { } while (0)
+#endif
 
-/**
- * dprint_kvec - Selective debug print for a struct kvec array
- *
- * Debug print with selectable debug categories,
- * starting with header "( pid /cpu) __func__".
- * starting with header
- *	"( pid /cpu) __func__" fmt "dprint_kvec(start)\n"
- * and ending with trailer
- *	"( pid /cpu) __func__" fmt "dprint_kvec(end)\n"
- *
- * @dbgcat	: Set of debug categories (OR-ed combination of DBG_* above),
- *		  to which this debug message is assigned.
- * TODO: Complete this ...
- *
- * @fmt		: printf compliant format string for header/trailer
- * @args	: printf compliant argument list for header/trailer
- */
-#define dprint_kvec(dbgcat, vec_name, vec, num_elts, fmt, args...) {	\
-	do {								\
-		if ((dbgcat) & DPRINT_MASK) {				\
-			printk(KERN_INFO "(%5d/%1d) %s" fmt		\
-					"dprint_kvec(start)\n",		\
-					current->pid,			\
-					current_thread_info()->cpu,	\
-					__func__, ## args);		\
-			__siw_utils_kvec_print(vec_name, vec, num_elts);\
-			printk(KERN_INFO "(%5d/%1d) %s" fmt		\
-					"dprint_kvec(end)\n",		\
-					current->pid,			\
-					current_thread_info()->cpu,	\
-					 __func__, ## args);		\
-		}							\
-	} while (0);							\
-}
 #endif
