@@ -416,7 +416,7 @@ siw_umem_chunk_update(struct siw_iwarp_tx *c_tx, struct siw_mr *mr,
 }
 
 #define MAX_TRAILER 8
-#define MAX_ARRAY 130	/* Max number of kernel_sendmsg elements */
+#define MAX_ARRAY 64	/* Max number of kernel_sendmsg elements */
 
 static inline void
 siw_save_txstate(struct siw_iwarp_tx *c_tx, struct ib_umem_chunk *chunk,
@@ -1284,24 +1284,30 @@ int siw_sq_queue_work(struct siw_qp *qp)
 
 	cpu = get_cpu();
 
+#if NR_CPUS > 1
 	if (in_softirq()) {
+		int sq_cpu;
 		if (cpu == qp->cpu) {
 			/*
 			 * Try not to use the current CPU for tx traffic.
 			 */
-			for_each_online_cpu(cpu) {
-				if (cpu != qp->cpu)
+			for_each_online_cpu(sq_cpu) {
+				if (sq_cpu != cpu)
 					break;
 			}
 		} else
-			cpu = qp->cpu;
+			sq_cpu = qp->cpu;
+
+		if (cpu_online(sq_cpu))
+			cpu = sq_cpu;
 	}
+#endif
 	atomic_inc(&per_cpu(siw_workq_len, cpu));
-	rv = queue_work_on(cpu, siw_sq_wq, &qp->sq_work.work);
 	/*
 	 * Remember CPU: Avoid spreading SQ work of QP over WQ's
 	 */
 	qp->cpu = cpu;
+	rv = queue_work_on(cpu, siw_sq_wq, &qp->sq_work.work);
 
 	put_cpu();
 
