@@ -942,14 +942,14 @@ done:
 
 static void siw_drain_pkt(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	char	buf[4096];
+	char	buf[128];
 	int	len;
 
 	dprint(DBG_ON|DBG_RX, " (QP%d): drain %d bytes\n",
 		QP_ID(qp), rctx->fpdu_part_rem);
 
 	while (rctx->fpdu_part_rem) {
-		len = min(rctx->fpdu_part_rem, 4096);
+		len = min(rctx->fpdu_part_rem, 128);
 
 		skb_copy_bits(rctx->skb, rctx->skb_offset,
 				      buf, rctx->fpdu_part_rem);

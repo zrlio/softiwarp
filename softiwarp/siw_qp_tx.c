@@ -1283,25 +1283,30 @@ int siw_sq_queue_work(struct siw_qp *qp)
 	INIT_WORK(&qp->sq_work.work, siw_sq_work_handler);
 
 	cpu = get_cpu();
-
+#if NR_CPUS > 1
 	if (in_softirq()) {
+		int sq_cpu;
 		if (cpu == qp->cpu) {
 			/*
 			 * Try not to use the current CPU for tx traffic.
 			 */
-			for_each_online_cpu(cpu) {
-				if (cpu != qp->cpu)
+			for_each_online_cpu(sq_cpu) {
+				if (sq_cpu != cpu)
 					break;
 			}
 		} else
-			cpu = qp->cpu;
+			sq_cpu = qp->cpu;
+
+		if (cpu_online(sq_cpu))
+			cpu = sq_cpu;
 	}
+#endif
 	atomic_inc(&per_cpu(siw_workq_len, cpu));
-	rv = queue_work_on(cpu, siw_sq_wq, &qp->sq_work.work);
 	/*
 	 * Remember CPU: Avoid spreading SQ work of QP over WQ's
 	 */
 	qp->cpu = cpu;
+	rv = queue_work_on(cpu, siw_sq_wq, &qp->sq_work.work);
 
 	put_cpu();
 
