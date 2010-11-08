@@ -85,6 +85,26 @@ static inline void siw_mem_get(struct siw_mem *mem)
 		OBJ_ID(mem), atomic_read(&mem->hdr.ref.refcount));
 }
 
+static inline void siw_add_wqe(struct siw_wqe *wqe, struct list_head *wq,
+			       spinlock_t *lock)
+{
+	unsigned long flags;
+
+	INIT_LIST_HEAD(&wqe->list);
+	spin_lock_irqsave(lock, flags);
+	list_add(&wqe->list, wq);
+	spin_unlock_irqrestore(lock, flags);
+}
+
+static inline void siw_drain_wq(struct list_head *wq)
+{
+	while (!list_empty(wq)) {
+		struct siw_wqe *wqe = list_first_wqe(wq);
+		list_del(&wqe->list);
+		kfree(wqe);
+	}
+}
+
 extern void siw_remove_obj(spinlock_t *lock, struct idr *idr,
 				struct siw_objhdr *hdr);
 
@@ -101,9 +121,7 @@ extern int siw_cq_add(struct siw_dev *, struct siw_cq *);
 extern int siw_pd_add(struct siw_dev *, struct siw_pd *);
 extern int siw_mem_add(struct siw_dev *, struct siw_mem *m);
 
-extern struct siw_wqe *siw_wqe_get(struct siw_qp *, enum siw_wr_opcode);
-extern struct siw_wqe *siw_srq_wqe_get(struct siw_srq *);
-extern struct siw_wqe *siw_srq_fetch_wqe(struct siw_qp *);
+extern struct siw_wqe *siw_freeq_wqe_get(struct siw_qp *);
 
 extern void siw_cq_put(struct siw_cq *);
 extern void siw_qp_put(struct siw_qp *);

@@ -179,13 +179,6 @@ void siw_rq_complete(struct siw_wqe *wqe, struct siw_qp *qp)
 
 		unlock_cq_rxsave(cq, flags);
 
-		/*
-		 * SRQ space was already incremented when WQE was fetched
-		 * by some QP
-		 */
-		if (!qp->srq)	/* XXX to be deferred to reaping ? */
-			atomic_inc(&qp->rq_space);
-
 		if (cq->ofa_cq.comp_handler != NULL &&
 			((cq->notify & SIW_CQ_NOTIFY_ALL) ||
 			 (cq->notify == SIW_CQ_NOTIFY_SOLICITED &&
@@ -194,11 +187,8 @@ void siw_rq_complete(struct siw_wqe *wqe, struct siw_qp *qp)
 				(*cq->ofa_cq.comp_handler)
 					(&cq->ofa_cq, cq->ofa_cq.cq_context);
 		}
-	} else {
-		if (!qp->srq)
-			atomic_inc(&qp->rq_space);
+	} else
 		siw_wqe_put(wqe);
-	}
 }
 
 /*
@@ -222,9 +212,6 @@ void siw_sq_complete(struct list_head *c_list, struct siw_qp *qp, int num,
 		dprint(DBG_WR, " CQ%d: add %d from QP%d, CQ len %d\n",
 			OBJ_ID(cq), num, QP_ID(qp), atomic_read(&cq->qlen));
 
-		/* XXX to be deferred to reaping */
-		atomic_add(num, &qp->sq_space);
-
 		if (cq->ofa_cq.comp_handler != NULL &&
 			((cq->notify & SIW_CQ_NOTIFY_ALL) ||
 			 (cq->notify == SIW_CQ_NOTIFY_SOLICITED &&
@@ -239,7 +226,5 @@ void siw_sq_complete(struct list_head *c_list, struct siw_qp *qp, int num,
 
 		list_for_each(pos, c_list)
 			siw_wqe_put(list_entry_wqe(pos));
-
-		atomic_add(num, &qp->sq_space);
 	}
 }

@@ -420,6 +420,34 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 	return 0;
 }
 
+
+/*
+ * siw_srq_fetch_wqe()
+ *
+ * Get one RQ wqe from SRQ and inform user
+ * if SRQ lower watermark reached
+ */
+static inline struct siw_wqe *siw_srq_fetch_wqe(struct siw_srq *srq)
+{
+	struct siw_wqe *wqe = NULL;
+	int qlen;
+
+	lock_srq(srq);
+	if (!list_empty(&srq->rq)) {
+		wqe = list_first_wqe(&srq->rq);
+		list_del_init(&wqe->list);
+		qlen = srq->max_wr - atomic_inc_return(&srq->space);
+		unlock_srq(srq);
+		if (srq->armed && qlen < srq->limit) {
+			srq->armed = 0;
+			siw_async_srq_ev(srq, IB_EVENT_SRQ_LIMIT_REACHED);
+		}
+	} else
+		unlock_srq(srq);
+
+	return wqe;
+}
+
 static inline struct siw_wqe *siw_get_rqe(struct siw_qp *qp)
 {
 	struct siw_wqe	*wqe = NULL;
@@ -435,8 +463,11 @@ static inline struct siw_wqe *siw_get_rqe(struct siw_qp *qp)
 			dprint(DBG_RX, " QP(%d): RQ empty!\n", QP_ID(qp));
 		}
 	} else {
-		wqe = siw_srq_fetch_wqe(qp);
-		if (!wqe)
+		wqe = siw_srq_fetch_wqe(qp->srq);
+		if (wqe) {
+			siw_qp_get(qp);
+			wqe->qp = qp;
+		} else
 			dprint(DBG_RX, " QP(%d): SRQ empty!\n", QP_ID(qp));
 	}
 	return wqe;
@@ -695,6 +726,26 @@ int siw_proc_rreq(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	return -EPROTO;
 }
 
+static inline struct siw_wqe *siw_irq_wqe_get(struct siw_qp *qp)
+{
+	struct siw_wqe *wqe = NULL;
+
+	if (atomic_dec_return(&qp->irq_space) >= 0) {
+		wqe = siw_freeq_wqe_get(qp);
+		if (wqe) {
+			INIT_LIST_HEAD(&wqe->list);
+			wqe->processed = 0;
+			siw_qp_get(qp);
+			wqe->qp = qp;
+			wr_type(wqe) = SIW_WR_RDMA_READ_RESP;
+		} else
+			atomic_inc(&qp->irq_space);
+	} else
+		atomic_inc(&qp->irq_space);
+
+	return wqe;
+}
+
 /*
  * siw_init_rresp:
  *
@@ -715,11 +766,10 @@ int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
 	struct siw_wqe 	*rsp;
 
-	rsp = siw_wqe_get(qp, SIW_WR_RDMA_READ_RESP);
+	rsp = siw_irq_wqe_get(qp);
 	if (rsp) {
 		rsp->wr.rresp.sge.len = be32_to_cpu(rctx->hdr.rreq.read_size);
 		rsp->bytes = rsp->wr.rresp.sge.len;	/* redundant */
-		rsp->processed = 0;
 
 		rsp->wr.rresp.sge.addr = be64_to_cpu(rctx->hdr.rreq.source_to);
 		rsp->wr.rresp.num_sge = rsp->bytes ? 1 : 0;
@@ -892,14 +942,14 @@ done:
 
 static void siw_drain_pkt(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	char	buf[128];
+	char	buf[4096];
 	int	len;
 
 	dprint(DBG_ON|DBG_RX, " (QP%d): drain %d bytes\n",
 		QP_ID(qp), rctx->fpdu_part_rem);
 
 	while (rctx->fpdu_part_rem) {
-		len = min(rctx->fpdu_part_rem, 128);
+		len = min(rctx->fpdu_part_rem, 4096);
 
 		skb_copy_bits(rctx->skb, rctx->skb_offset,
 				      buf, rctx->fpdu_part_rem);

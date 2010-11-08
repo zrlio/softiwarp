@@ -915,7 +915,6 @@ static void siw_wqe_sq_processed(struct siw_wqe *wqe, struct siw_qp *qp)
 	LIST_HEAD(c_list);
 
 	if (!(wr_flags(wqe) & IB_SEND_SIGNALED)) {
-		atomic_inc(&qp->sq_space);
 		siw_wqe_put(wqe);
 		return;
 	}
@@ -952,7 +951,8 @@ int siw_qp_sq_proc_local(struct siw_qp *qp, struct siw_wqe *wqe)
  * MPA FPDUs, each containing a DDP segment.
  *
  * SQ processing may occur in user context as a result of posting
- * new WQE's or from siw_sq_work_handler() context.
+ * new WQE's or from siw_sq_work_handler() context. Processing in
+ * user context is limited to non-kernel verbs users.
  *
  * SQ processing may get paused anytime, possibly in the middle of a WR
  * or FPDU, if insufficient send space is available. SQ processing
@@ -1284,30 +1284,24 @@ int siw_sq_queue_work(struct siw_qp *qp)
 
 	cpu = get_cpu();
 
-#if NR_CPUS > 1
 	if (in_softirq()) {
-		int sq_cpu;
 		if (cpu == qp->cpu) {
 			/*
 			 * Try not to use the current CPU for tx traffic.
 			 */
-			for_each_online_cpu(sq_cpu) {
-				if (sq_cpu != cpu)
+			for_each_online_cpu(cpu) {
+				if (cpu != qp->cpu)
 					break;
 			}
 		} else
-			sq_cpu = qp->cpu;
-
-		if (cpu_online(sq_cpu))
-			cpu = sq_cpu;
+			cpu = qp->cpu;
 	}
-#endif
 	atomic_inc(&per_cpu(siw_workq_len, cpu));
+	rv = queue_work_on(cpu, siw_sq_wq, &qp->sq_work.work);
 	/*
 	 * Remember CPU: Avoid spreading SQ work of QP over WQ's
 	 */
 	qp->cpu = cpu;
-	rv = queue_work_on(cpu, siw_sq_wq, &qp->sq_work.work);
 
 	put_cpu();
 

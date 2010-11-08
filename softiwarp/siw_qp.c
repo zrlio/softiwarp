@@ -293,30 +293,39 @@ static void siw_qp_socket_assoc(struct socket *s, struct siw_qp *qp)
 }
 
 
-static int siw_qp_irq_init(struct siw_qp *qp, int i)
+static int siw_qp_irq_init(struct siw_qp *qp, int size)
 {
-	struct siw_wqe *wqe;
+	struct siw_wqe *wqe = NULL;
+	int i = 0;
 
 	dprint(DBG_CM|DBG_WR, "(QP%d): irq size: %d\n", QP_ID(qp), i);
-
-	INIT_LIST_HEAD(&qp->wqe_freelist);
-
+	if (size <= 0)
+		return 0;
 	/*
 	 * Give the IRD one extra entry since after sending
 	 * the RResponse it may trigger another peer RRequest
-	 * before the RResponse goes back to freelist.
+	 * before the RResponse goes back to free queue.
 	 */
-	i++;
-
-	while (i--) {
+	size++;
+	atomic_set(&qp->irq_space, size);
+	
+	while (size--) {
 		wqe = kzalloc(sizeof(struct siw_wqe), GFP_KERNEL);
-		if (!wqe) {
-			siw_qp_freeq_flush(qp);
-			return -ENOMEM;
-		}
+		if (!wqe)
+			break;
+
 		INIT_LIST_HEAD(&wqe->list);
-		wr_type(wqe) = SIW_WR_RDMA_READ_RESP;
-		list_add(&wqe->list, &qp->wqe_freelist);
+		list_add(&wqe->list, &qp->freeq);
+		i++;
+	}
+	if (!wqe) {
+		while (i--) {
+			wqe = list_first_wqe(&qp->freeq);
+			list_del(&wqe->list);
+			kfree(wqe);
+		}
+		atomic_set(&qp->irq_space, 0);
+		return -ENOMEM;
 	}
 	return 0;
 }
@@ -799,28 +808,6 @@ int siw_crc_sg(struct hash_desc *desc, struct scatterlist *sg,
 		rv = crypto_hash_update(desc, &t_sg, len);
 	}
 	return rv;
-}
-
-/*
- * siw_qp_freeq_flush()
- *
- * Flush any WQE on the QP's free list
- */
-void siw_qp_freeq_flush(struct siw_qp *qp)
-{
-	struct list_head	*pos, *n;
-	struct siw_wqe		*wqe;
-
-	dprint(DBG_OBJ|DBG_CM|DBG_WR, "(QP%d): Enter\n", QP_ID(qp));
-
-	if (list_empty(&qp->wqe_freelist))
-		return;
-
-	list_for_each_safe(pos, n, &qp->wqe_freelist) {
-		wqe = list_entry_wqe(pos);
-		list_del(&wqe->list);
-		kfree(wqe);
-	}
 }
 
 

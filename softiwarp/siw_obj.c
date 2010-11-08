@@ -278,6 +278,8 @@ static void siw_free_qp(struct kref *ref)
 	if (qp->cep)
 		siw_cep_put(qp->cep);
 
+	siw_drain_wq(&qp->freeq);
+
 	kfree(qp);
 }
 
@@ -344,92 +346,25 @@ void siw_mem_put(struct siw_mem *m)
 
 /***** routines for WQE handling ***/
 
-/*
- * siw_wqe_get()
- *
- * Get new WQE. For READ RESPONSE, take it from the free list which
- * has a maximum size of maximum inbound READs. All other WQE are
- * malloc'ed which creates some overhead. Consider change to
- *
- * 1. malloc WR only if it cannot be synchonously completed, or
- * 2. operate own cache of reuseable WQE's.
- *
- * Current code trusts on malloc efficiency.
- */
-inline struct siw_wqe *siw_wqe_get(struct siw_qp *qp, enum siw_wr_opcode op)
+inline struct siw_wqe *siw_freeq_wqe_get(struct siw_qp *qp)
 {
-	struct siw_wqe *wqe;
+	struct siw_wqe *wqe = NULL;
+	unsigned long flags;
 
-	if (op == SIW_WR_RDMA_READ_RESP) {
-		spin_lock(&qp->freelist_lock);
-		if (!(list_empty(&qp->wqe_freelist))) {
-			wqe = list_entry(qp->wqe_freelist.next,
-					 struct siw_wqe, list);
-			list_del(&wqe->list);
-			spin_unlock(&qp->freelist_lock);
-			wqe->processed = 0;
-			dprint(DBG_OBJ|DBG_WR,
-				"(QP%d): WQE from FreeList p: %p\n",
-				QP_ID(qp), wqe);
-		} else {
-			spin_unlock(&qp->freelist_lock);
-			wqe = NULL;
-			dprint(DBG_ON|DBG_OBJ|DBG_WR,
-				"(QP%d): FreeList empty!\n", QP_ID(qp));
-		}
-	} else {
-		wqe = kzalloc(sizeof(struct siw_wqe), GFP_KERNEL);
-		dprint(DBG_OBJ|DBG_WR, "(QP%d): New WQE p: %p\n",
+	spin_lock_irqsave(&qp->freeq_lock, flags);
+	if (!list_empty(&qp->freeq)) {
+		wqe = list_first_wqe(&qp->freeq);
+		list_del(&wqe->list);
+		spin_unlock_irqrestore(&qp->freeq_lock, flags);
+		dprint(DBG_OBJ|DBG_WR,
+			"(QP%d): WQE from FreeList p: %p\n",
 			QP_ID(qp), wqe);
-	}
-	if (wqe) {
-		INIT_LIST_HEAD(&wqe->list);
-		siw_qp_get(qp);
-		wqe->qp = qp;
-	}
-	return wqe;
-}
-
-inline struct siw_wqe *siw_srq_wqe_get(struct siw_srq *srq)
-{
-	struct siw_wqe *wqe = kzalloc(sizeof(struct siw_wqe), GFP_KERNEL);
-
-	dprint(DBG_OBJ|DBG_WR, "(SRQ%p): New WQE p: %p\n", srq, wqe);
-	if (wqe) {
-		/* implicite: wqe->qp = NULL; */
-		INIT_LIST_HEAD(&wqe->list);
-		wqe->qp = NULL;
+	} else {
+		spin_unlock_irqrestore(&qp->freeq_lock, flags);
+		dprint(DBG_ON|DBG_OBJ|DBG_WR,
+			"(QP%d): FreeList empty!\n", QP_ID(qp));
 	}
 	return wqe;
-}
-
-/*
- * siw_srq_fetch_wqe()
- *
- * fetch one RQ wqe from the SRQ and inform user
- * if SRQ lower watermark reached
- */
-inline struct siw_wqe *siw_srq_fetch_wqe(struct siw_qp *qp)
-{
-	struct siw_wqe *wqe;
-	struct siw_srq *srq = qp->srq;
-	int qlen;
-
-	lock_srq(srq);
-	if (!list_empty(&srq->rq)) {
-		wqe = list_first_wqe(&srq->rq);
-		list_del_init(&wqe->list);
-		qlen = srq->max_wr - atomic_inc_return(&srq->space);
-		unlock_srq(srq);
-		wqe->qp = qp;
-		if (srq->armed && qlen < srq->limit) {
-			srq->armed = 0;
-			siw_async_srq_ev(srq, IB_EVENT_SRQ_LIMIT_REACHED);
-		}
-		return wqe;
-	}
-	unlock_srq(srq);
-	return NULL;
 }
 
 inline void siw_free_inline_sgl(struct siw_sge *sge, int num_sge)
@@ -440,7 +375,7 @@ inline void siw_free_inline_sgl(struct siw_sge *sge, int num_sge)
 	}
 }
 
-inline void siw_unref_mem_sgl(struct siw_sge *sge, int num_sge)
+static inline void siw_unref_mem_sgl(struct siw_sge *sge, int num_sge)
 {
 	while (num_sge--) {
 		if (sge->mem.obj != NULL)
@@ -449,11 +384,9 @@ inline void siw_unref_mem_sgl(struct siw_sge *sge, int num_sge)
 	}
 }
 
-
 void siw_wqe_put(struct siw_wqe *wqe)
 {
 	struct siw_qp *qp = wqe->qp;
-	unsigned long flags;
 
 	dprint(DBG_OBJ|DBG_WR, " WQE: %llu:, type: %d, p: %p\n",
 		(unsigned long long)wr_id(wqe), wr_type(wqe), wqe);
@@ -462,34 +395,45 @@ void siw_wqe_put(struct siw_wqe *wqe)
 
 	case SIW_WR_SEND:
 	case SIW_WR_RDMA_WRITE:
+	case SIW_WR_RDMA_WRITE_WITH_IMM:
+	case SIW_WR_SEND_WITH_IMM:
+	case SIW_WR_RDMA_READ_REQ:
 		if (likely(!SIW_INLINED_DATA(wqe)))
 			siw_unref_mem_sgl(wqe->wr.sgl.sge,
 					  wqe->wr.sgl.num_sge);
 		else
 			siw_free_inline_sgl(wqe->wr.sgl.sge,
 					    wqe->wr.sgl.num_sge);
-	case SIW_WR_RDMA_WRITE_WITH_IMM:
-	case SIW_WR_SEND_WITH_IMM:
-		kfree(wqe);
+		if (qp->attrs.flags & SIW_KERNEL_VERBS)
+			siw_add_wqe(wqe, &qp->freeq, &qp->freeq_lock);
+		else
+			kfree(wqe);
+		atomic_inc(&qp->sq_space);
 		break;
 
 	case SIW_WR_RECEIVE:
-	case SIW_WR_RDMA_READ_REQ:
 		siw_unref_mem_sgl(wqe->wr.sgl.sge, wqe->wr.sgl.num_sge);
-		kfree(wqe);
+		if (qp->srq) {
+			struct siw_srq *srq = qp->srq;
+			if (srq->kernel_verbs)
+				siw_add_wqe(wqe, &srq->freeq, &srq->freeq_lock);
+			else
+				kfree(wqe);
+			atomic_inc(&srq->space);
+		} else {
+			if (qp->attrs.flags & SIW_KERNEL_VERBS)
+				siw_add_wqe(wqe, &qp->freeq, &qp->freeq_lock);
+			else
+				kfree(wqe);
+			atomic_inc(&qp->rq_space);
+		}
 		break;
 
 	case SIW_WR_RDMA_READ_RESP:
 		siw_unref_mem_sgl(wqe->wr.sgl.sge, 1);
 		wqe->wr.sgl.sge[0].mem.obj = NULL;
-		/*
-		 * freelist can be accessed by tx processing (rresp done)
-		 * and rx softirq (get new wqe for rresponse scheduling)
-		 */
-		INIT_LIST_HEAD(&wqe->list);
-		spin_lock_irqsave(&wqe->qp->freelist_lock, flags);
-		list_add_tail(&wqe->list, &wqe->qp->wqe_freelist);
-		spin_unlock_irqrestore(&wqe->qp->freelist_lock, flags);
+		siw_add_wqe(wqe, &qp->freeq, &qp->freeq_lock);
+		atomic_inc(&qp->irq_space);
 		break;
 
 	default:

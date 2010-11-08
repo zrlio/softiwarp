@@ -411,24 +411,37 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 		goto err_out;
 	}
 
-	rv = siw_qp_add(dev, qp);
-	if (rv)
-		goto err_out;
-
-	INIT_LIST_HEAD(&qp->wqe_freelist);
+	INIT_LIST_HEAD(&qp->freeq);
 	INIT_LIST_HEAD(&qp->sq);
 	INIT_LIST_HEAD(&qp->rq);
 	INIT_LIST_HEAD(&qp->orq);
 	INIT_LIST_HEAD(&qp->irq);
 
 	init_rwsem(&qp->state_lock);
-	spin_lock_init(&qp->freelist_lock);
+	spin_lock_init(&qp->freeq_lock);
 	spin_lock_init(&qp->sq_lock);
 	spin_lock_init(&qp->rq_lock);
 	spin_lock_init(&qp->orq_lock);
 
 	init_waitqueue_head(&qp->tx_ctx.waitq);
 
+	rv = siw_qp_add(dev, qp);
+	if (rv)
+		goto err_out;
+
+	if (!udata) {
+		int num_wqe = attrs->cap.max_send_wr + attrs->cap.max_recv_wr;
+		while (num_wqe--) {
+			struct siw_wqe *wqe = kzalloc(sizeof *wqe, GFP_KERNEL);
+			if (!wqe) {
+				rv = -ENOMEM;
+				goto err_out_idr;
+			}
+			INIT_LIST_HEAD(&wqe->list);
+			list_add(&wqe->list, &qp->freeq);
+		}
+		qp->attrs.flags |= SIW_KERNEL_VERBS;
+	}
 	qp->pd  = pd;
 	qp->scq = scq;
 	qp->rcq = rcq;
@@ -513,6 +526,9 @@ err_out:
 		siw_cq_put(scq);
 	if (rcq)
 		siw_cq_put(rcq);
+
+	if (qp)
+		siw_drain_wq(&qp->freeq);
 
 	kfree(qp);
 	atomic_dec(&dev->num_qp);
@@ -643,8 +659,6 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 	siw_pd_put(qp->pd);
 	qp->scq = qp->rcq = NULL;
 
-	siw_qp_freeq_flush(qp);
-
 	siw_qp_put(qp);
 
 	atomic_dec(&dev->num_qp);
@@ -735,6 +749,41 @@ static int siw_copy_inline_sgl(struct ib_sge *ofa_sge, struct siw_sge *si_sge,
 	return bytes;
 }
 
+/*
+ * siw_wqe_get()
+ *
+ * Get new Send or Receive Queue WQE.
+ *
+ * To avoid blocking operation, kernel level clients get WQE's from
+ * QP private freelist. To minimize resource pre-allocation, user
+ * level clients get WQE's are kmalloc'ed.
+ */
+static inline struct siw_wqe *siw_wqe_get(struct siw_qp *qp,
+					  enum siw_wr_opcode op)
+{
+	struct siw_wqe	*wqe = NULL;
+	atomic_t	*q_space;
+
+	q_space = (op == SIW_WR_RECEIVE) ? &qp->rq_space:&qp->sq_space;
+
+	if (atomic_dec_return(q_space) < 0)
+			goto out;
+
+	if (qp->attrs.flags & SIW_KERNEL_VERBS)
+		wqe = siw_freeq_wqe_get(qp);
+	else
+		wqe = kmalloc(sizeof(struct siw_wqe), GFP_KERNEL);
+out:
+	if (wqe) {
+		INIT_LIST_HEAD(&wqe->list);
+		wqe->processed = 0;
+		siw_qp_get(qp);
+		wqe->qp = qp;
+	} else
+		atomic_inc(q_space);
+
+	return wqe;
+}
 
 /*
  * siw_post_send()
@@ -758,10 +807,13 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 		QP_ID(qp), qp->attrs.state);
 
 	/*
-	 * Acquire QP state lock for reading. The idea is that a
-	 * user cannot move the QP out of RTS during TX/RX processing.
+	 * Try to acquire QP state lock. Must be non-blocking
+	 * to accommodate kernel clients needs.
 	 */
-	down_read(&qp->state_lock);
+	if (!down_read_trylock(&qp->state_lock)) {
+		*bad_wr = wr;
+		return -ENOTCONN;
+	}
 
 	if (qp->attrs.state != SIW_QP_STATE_RTS) {
 		dprint(DBG_WR|DBG_ON, "(QP%d): state=%d\n",
@@ -774,12 +826,6 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 		QP_ID(qp), atomic_read(&qp->sq_space));
 
 	while (wr) {
-		if (!atomic_read(&qp->sq_space)) {
-			dprint(DBG_ON, " sq_space\n");
-			wqe = NULL;
-			rv = -ENOMEM;
-			break;
-		}
 		wqe = siw_wqe_get(qp, wr->opcode);
 		if (!wqe) {
 			dprint(DBG_ON, " siw_wqe_get\n");
@@ -886,7 +932,6 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 
 		lock_sq_rxsave(qp, flags);
 		list_add_tail(&wqe->list, &qp->sq);
-		atomic_dec(&qp->sq_space);
 		unlock_sq_rxsave(qp, flags);
 
 		wr = wr->next;
@@ -899,7 +944,6 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 	 * to caller.
 	 */
 	lock_sq_rxsave(qp, flags);
-
 	if (tx_wqe(qp) == NULL) {
 		struct siw_wqe	*next = siw_next_tx_wqe(qp);
 		if (next != NULL) {
@@ -917,7 +961,9 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 					"(QP%d): Direct sending...\n",
 					QP_ID(qp));
 
-				if (siw_qp_sq_process(qp, 1) != 0 &&
+				if (qp->attrs.flags & SIW_KERNEL_VERBS)
+					siw_sq_queue_work(qp);
+				else if (siw_qp_sq_process(qp, 1) != 0 &&
 				    !(qp->tx_ctx.tx_suspend))
 					siw_qp_cm_drop(qp, 0);
 			} else
@@ -967,10 +1013,13 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 	if (qp->srq)
 		return -EOPNOTSUPP; /* what else from errno.h? */
 	/*
-	 * Acquire a QP state lock for reading. The idea is that a
-	 * user cannot move the QP out of RTS during TX/RX processing.
+	 * Try to acquire QP state lock. Must be non-blocking
+	 * to accommodate kernel clients needs.
 	 */
-	down_read(&qp->state_lock);
+	if (!down_read_trylock(&qp->state_lock)) {
+		*bad_wr = wr;
+		return -ENOTCONN;
+	}
 
 	if (qp->attrs.state > SIW_QP_STATE_RTS) {
 		up_read(&qp->state_lock);
@@ -982,10 +1031,8 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 		/*
 		 * NOTE: siw_wqe_get() calls kzalloc(), which may sleep.
 		 */
-		if (!atomic_read(&qp->rq_space) ||
-			!(wqe = siw_wqe_get(qp, SIW_WR_RECEIVE))) {
-			dprint(DBG_ON, " siw_wqe_get? (%d)\n",
-			       atomic_read(&qp->rq_space));
+		wqe = siw_wqe_get(qp, SIW_WR_RECEIVE);
+		if (!wqe) {
 			rv = -ENOMEM;
 			break;
 		}
@@ -1008,13 +1055,10 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 		}
 		wqe->wr.recv.num_sge = wr->num_sge;
 		wqe->bytes = rv;
+		wqe->wr_status = SR_WR_QUEUED;
 
 		lock_rq_rxsave(qp, flags);
-
 		list_add_tail(&wqe->list, &qp->rq);
-		wqe->wr_status = SR_WR_QUEUED;
-		atomic_dec(&qp->rq_space);
-
 		unlock_rq_rxsave(qp, flags);
 
 		wr = wr->next;
@@ -1202,7 +1246,12 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 	siw_mem_put(&mr->mem);
 
 	atomic_dec(&dev->num_mem);
+#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
+	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights);
+#else
 	return 0;
+#endif
+
 }
 
 /*
@@ -1246,12 +1295,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		goto err_out;
 	}
 
-#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
-	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights);
-#else
 	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights, 0);
-#endif
-
 	if (IS_ERR(umem)) {
 		dprint(DBG_MM, " ib_umem_get:%ld LOCKED:%lu, LIMIT:%lu\n",
 			PTR_ERR(umem), current->mm->locked_vm,
@@ -1341,6 +1385,7 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 	struct ib_srq_attr	*attrs = &init_attrs->attr;
 	struct siw_pd		*pd = siw_pd_ofa2siw(ofa_pd);
 	struct siw_dev		*dev = pd->hdr.dev;
+	struct siw_wqe		*wqe;
 	int rv;
 
 	if (atomic_inc_return(&dev->num_srq) > SIW_MAX_SRQ) {
@@ -1354,19 +1399,35 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 		goto err_out;
 	}
 
-	srq = kmalloc(sizeof *srq, GFP_KERNEL);
+	srq = kzalloc(sizeof *srq, GFP_KERNEL);
 	if (!srq) {
 		dprint(DBG_ON, " malloc\n");
 		rv = -ENOMEM;
 		goto err_out;
 	}
 	INIT_LIST_HEAD(&srq->rq);
+	INIT_LIST_HEAD(&srq->freeq);
 	srq->max_sge = attrs->max_sge;
 	atomic_set(&srq->space, attrs->max_wr);
 	srq->limit = attrs->srq_limit;
 	if (srq->limit)
 		srq->armed = 1;
 
+
+	if (!udata) {
+		int num_wqe = attrs->max_wr;
+		spin_lock_init(&srq->freeq_lock);
+		srq->kernel_verbs = 1;
+		while (num_wqe--) {
+			wqe = kzalloc(sizeof(struct siw_wqe), GFP_KERNEL);
+			if (!wqe) {
+				rv = -ENOMEM;
+				goto err_out;
+			}
+			INIT_LIST_HEAD(&wqe->list);
+			list_add(&wqe->list, &srq->freeq);
+		}
+	}
 	srq->pd	= pd;
 	siw_pd_get(pd);
 
@@ -1375,6 +1436,9 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 	return &srq->ofa_srq;
 
 err_out:
+	if (srq)
+		siw_drain_wq(&srq->freeq);
+
 	kfree(srq);
 	atomic_dec(&dev->num_srq);
 
@@ -1459,30 +1523,53 @@ int siw_query_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs)
  * siw_destroy_srq()
  *
  * Destroy SRQ.
- * SRQ WQE's are silently destroyed, since not belonging to any QP.
- * Furthermore, it is assumed that the SRQ is not referenced by any
+ * It is assumed that the SRQ is not referenced by any
  * QP anymore - the code trusts the OFA environment to keep track
  * of QP references.
  */
 int siw_destroy_srq(struct ib_srq *ofa_srq)
 {
-	struct list_head	*listp, *tmp;
 	struct siw_srq		*srq = siw_srq_ofa2siw(ofa_srq);
 	struct siw_dev		*dev = srq->pd->hdr.dev;
-	unsigned long flags;
 
-	lock_srq_rxsave(srq, flags); /* probably not necessary */
-	list_for_each_safe(listp, tmp, &srq->rq) {
-		list_del(listp);
-		siw_wqe_put(list_entry(listp, struct siw_wqe, list));
-	}
-	unlock_srq_rxsave(srq, flags);
+	siw_drain_wq(&srq->rq);
+	siw_drain_wq(&srq->freeq);
 
 	siw_pd_put(srq->pd);
+
 	kfree(srq);
 	atomic_dec(&dev->num_srq);
 
 	return 0;
+}
+
+static inline struct siw_wqe *siw_srq_wqe_get(struct siw_srq *srq)
+{
+	struct siw_wqe *wqe = NULL;
+
+	if (atomic_dec_return(&srq->space) < 0)
+		goto out;
+
+	if (srq->kernel_verbs) {
+		unsigned long flags;
+		spin_lock_irqsave(&srq->freeq_lock, flags);
+		if (!list_empty(&srq->freeq)) {
+			wqe = list_first_wqe(&srq->freeq);
+			list_del(&wqe->list);
+		}
+		spin_unlock_irqrestore(&srq->freeq_lock, flags);
+	} else 
+		wqe = kzalloc(sizeof(struct siw_wqe), GFP_KERNEL);
+
+	dprint(DBG_OBJ|DBG_WR, "(SRQ%p): New WQE p: %p\n", srq, wqe);
+out:
+	if (wqe) {
+		INIT_LIST_HEAD(&wqe->list);
+		wqe->processed = 0;
+	} else
+		atomic_inc(&srq->space);
+
+	return wqe;
 }
 
 /*
@@ -1506,8 +1593,8 @@ int siw_post_srq_recv(struct ib_srq *ofa_srq, struct ib_recv_wr *wr,
 	int rv = 0;
 
 	while (wr) {
-		if (!atomic_read(&srq->space) ||
-		    !(wqe = siw_srq_wqe_get(srq))) {
+		wqe = siw_srq_wqe_get(srq);
+		if (!wqe) {
 			dprint(DBG_ON, " siw_srq_wqe_get\n");
 			rv = -ENOMEM;
 			break;
@@ -1535,10 +1622,7 @@ int siw_post_srq_recv(struct ib_srq *ofa_srq, struct ib_recv_wr *wr,
 		wqe->bytes = rv;
 
 		lock_srq_rxsave(srq, flags);
-
 		list_add_tail(&wqe->list, &srq->rq);
-		atomic_dec(&srq->space);
-
 		unlock_srq_rxsave(srq, flags);
 
 		wr = wr->next;
@@ -1547,8 +1631,9 @@ int siw_post_srq_recv(struct ib_srq *ofa_srq, struct ib_recv_wr *wr,
 		dprint(DBG_WR|DBG_ON, "(SRQ %p): error=%d\n",
 			srq, rv);
 
-		if (wqe != NULL)
-			siw_wqe_put(wqe);
+		if (wqe)
+			siw_add_wqe(wqe, &srq->freeq, &srq->freeq_lock);
+
 		*bad_wr = wr;
 	}
 	dprint(DBG_WR|DBG_RX, "(SRQ%p): space=%d\n",

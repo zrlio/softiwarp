@@ -384,8 +384,7 @@ enum siw_qp_flags {
 	SIW_RDMA_BIND_ENABLED	= (1 << 0),
 	SIW_RDMA_WRITE_ENABLED	= (1 << 1),
 	SIW_RDMA_READ_ENABLED	= (1 << 2),
-	SIW_TERMINATE_LOCAL	= (1 << 3),
-	SIW_RECVQ_ARMED		= (1 << 4),
+	SIW_KERNEL_VERBS	= (1 << 3),
 	/*
 	 * QP currently being destroyed
 	 */
@@ -424,6 +423,8 @@ struct siw_sq_work {
 struct siw_srq {
 	struct ib_srq		ofa_srq;
 	struct siw_pd		*pd;
+	struct list_head	freeq;
+	spinlock_t		freeq_lock;
 	struct list_head	rq;
 	spinlock_t		lock;
 	u32			max_sge;
@@ -431,6 +432,7 @@ struct siw_srq {
 	u32			limit;	/* low watermark for async event */
 	u32			max_wr;	/* max # of wqe's allowed */
 	char			armed;	/* inform user if limit hit */
+	char			kernel_verbs; /* '1' if kernel client */
 };
 
 struct siw_qp_attrs {
@@ -624,12 +626,13 @@ struct siw_qp {
 
 	struct siw_qp_attrs	attrs;
 
-	struct list_head	wqe_freelist;
-	spinlock_t		freelist_lock;
+	struct list_head	freeq;
+	spinlock_t		freeq_lock;
 	struct list_head	sq;
-	struct list_head	irq;
 	spinlock_t		sq_lock;
 	atomic_t		sq_space;
+	struct list_head	irq;
+	atomic_t		irq_space;
 	struct siw_srq		*srq;
 	struct list_head	rq;
 	spinlock_t		rq_lock;
@@ -637,12 +640,7 @@ struct siw_qp {
 	struct list_head	orq;
 	atomic_t		orq_space;
 	spinlock_t		orq_lock;
-	/*
-	 * workqueue interface:
-	 *
-	 * we must allow for two works since during work
-	 * execution we may have to schedule another work item
-	 */
+
 	struct siw_sq_work	sq_work;
 };
 
@@ -775,7 +773,6 @@ int siw_crc_sg(struct hash_desc *, struct scatterlist *, int, int);
 void siw_cq_flush(struct siw_cq *);
 void siw_sq_flush(struct siw_qp *);
 void siw_rq_flush(struct siw_qp *);
-void siw_qp_freeq_flush(struct siw_qp *);
 int siw_reap_cqe(struct siw_cq *, struct ib_wc *);
 
 void siw_async_ev(struct siw_qp *, struct siw_cq *, enum ib_event_type);
