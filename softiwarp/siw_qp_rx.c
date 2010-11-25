@@ -649,7 +649,7 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	 */
 	if (rctx->first_ddp_seg) {
 		/* DEBUG Code, to be removed */
-		if (rx_mem(qp) != 0) {
+		if (rx_mem(qp) != NULL) {
 			dprint(DBG_RX|DBG_ON, "(QP%d): Stale rctx state!\n",
 				QP_ID(qp));
 			return -EFAULT;
@@ -726,7 +726,7 @@ int siw_proc_rreq(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	return -EPROTO;
 }
 
-static inline struct siw_wqe *siw_irq_wqe_get(struct siw_qp *qp)
+static inline struct siw_wqe *siw_get_irqe(struct siw_qp *qp)
 {
 	struct siw_wqe *wqe = NULL;
 
@@ -764,9 +764,9 @@ static inline struct siw_wqe *siw_irq_wqe_get(struct siw_qp *qp)
 
 int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	struct siw_wqe 	*rsp;
+	struct siw_wqe *rsp;
 
-	rsp = siw_irq_wqe_get(qp);
+	rsp = siw_get_irqe(qp);
 	if (rsp) {
 		rsp->wr.rresp.sge.len = be32_to_cpu(rctx->hdr.rreq.read_size);
 		rsp->bytes = rsp->wr.rresp.sge.len;	/* redundant */
@@ -1506,7 +1506,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 			 *	 unable to receive any further byte.
 			 *	 BUT: code must handle difference between
 			 *
-			 * 	 o protocol syntax (FATAL, framing lost)
+			 *	 o protocol syntax (FATAL, framing lost)
 			 *	 o crc	(FATAL, framing lost since we do not
 			 *	        trust packet header (??))
 			 *	 o local resource (maybe non fatal, framing

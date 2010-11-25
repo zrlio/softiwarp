@@ -56,8 +56,13 @@
 #include "siw_cm.h"
 #include "siw_obj.h"
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 31)
 static int mpa_crc_enabled;
 module_param(mpa_crc_enabled, int, 0644);
+#else
+static bool mpa_crc_enabled;
+module_param(mpa_crc_enabled, bool, 0644);
+#endif
 MODULE_PARM_DESC(mpa_crc_enabled, "MPA CRC enabled");
 
 static int mpa_revision = 1;
@@ -120,8 +125,8 @@ static void siw_sk_restore_upcalls(struct sock *sk, struct siw_cep *cep)
 	sk->sk_data_ready	= cep->sk_data_ready;
 	sk->sk_write_space	= cep->sk_write_space;
 	sk->sk_error_report	= cep->sk_error_report;
-	sk->sk_user_data 	= NULL;
-	sk->sk_no_check 	= 0;
+	sk->sk_user_data	= NULL;
+	sk->sk_no_check		= 0;
 }
 
 static void siw_socket_disassoc(struct socket *s)
@@ -508,7 +513,7 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 			return -EPIPE;
 		}
 		if (rcvd < 0) {
-			dprint(DBG_CM, " ERROR: %d: \n", rcvd);
+			dprint(DBG_CM, " ERROR: %d:\n", rcvd);
 			return rcvd;
 		}
 		dprint(DBG_CM, " peer sent extra data: %d\n", rcvd);
@@ -521,10 +526,11 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 	 * Ownership of this buffer will be transferred to the IWCM
 	 * when calling siw_cm_upcall().
 	 */
-	if (!cep->mpa.pdata &&
-	    !(cep->mpa.pdata = kmalloc(hdr->params.pd_len + 4, GFP_KERNEL)))
-		return -ENOMEM;
-
+	if (!cep->mpa.pdata) {
+		cep->mpa.pdata = kmalloc(hdr->params.pd_len + 4, GFP_KERNEL);
+		if (!cep->mpa.pdata)
+			return -ENOMEM;
+	}
 	rcvd = ksock_recv(s, cep->mpa.pdata + cep->mpa.bytes_rcvd
 			  - sizeof(struct mpa_rr), to_rcv + 4, MSG_DONTWAIT);
 
@@ -803,7 +809,7 @@ static int siw_send_mpareqrep(struct socket *s, struct mpa_rr_params *params,
 	struct msghdr	msg;
 
 	int		rv;
-	unsigned short 	pd_len = params->pd_len;
+	unsigned short	pd_len = params->pd_len;
 
 	memset(&msg, 0, sizeof(msg));
 	memset(&hdr, 0, sizeof hdr);
@@ -846,7 +852,7 @@ int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 			    enum iw_cm_event_status status)
 {
 	struct iw_cm_event	event;
-	struct iw_cm_id 	*cm_id;
+	struct iw_cm_id		*cm_id;
 
 	memset(&event, 0, sizeof event);
 	event.status = status;
@@ -858,7 +864,6 @@ int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 		 */
 		event.private_data_len = cep->mpa.hdr.params.pd_len;
 		event.private_data = cep->mpa.pdata;
-		cep->mpa.hdr.params.pd_len = 0;
 
 #ifdef OFED_PRIVATE_DATA_BY_REFERENCE
 		/*
@@ -872,6 +877,7 @@ int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 		 */
 		cep->mpa.pdata = NULL;
 #endif /* OFED_PRIVATE_DATA_BY_REFERENCE */
+		cep->mpa.hdr.params.pd_len = 0;
 	}
 	if (reason == IW_CM_EVENT_CONNECT_REQUEST ||
 	    reason == IW_CM_EVENT_CONNECT_REPLY) {
@@ -1148,7 +1154,7 @@ static void siw_cm_llp_error_report(struct sock *sk)
 static void siw_cm_llp_state_change(struct sock *sk)
 {
 	struct siw_cep	*cep;
-	struct socket 	*s;
+	struct socket	*s;
 	void (*orig_state_change)(struct sock *);
 
 
@@ -1239,11 +1245,11 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	struct siw_dev	*dev = siw_dev_ofa2siw(id->device);
 	struct siw_qp	*qp;
 	struct siw_cep	*cep = NULL;
-	struct socket 	*s = NULL;
+	struct socket	*s = NULL;
 	struct sockaddr	*laddr, *raddr;
 
 	u16		pd_len = params->private_data_len;
-	int 		rv, size;
+	int		rv, size;
 
 	if (pd_len > MPA_MAX_PRIVDATA)
 		return -EINVAL;
@@ -1411,7 +1417,7 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	struct siw_qp		*qp;
 	struct siw_qp_attrs	qp_attrs;
 	char			*pdata = NULL;
-	int 			rv;
+	int rv;
 
 retry:
 	rv = siw_cep_set_inuse(cep);
@@ -1619,22 +1625,23 @@ int siw_reject(struct iw_cm_id *id, const void *pdata, u8 plen)
 	return 0;
 }
 
-int siw_listen_address(struct iw_cm_id *id, int backlog, struct sockaddr *laddr)
+static int siw_listen_address(struct iw_cm_id *id, int backlog,
+			      struct sockaddr *laddr)
 {
-	struct socket 		*s;
+	struct socket		*s;
 	struct siw_cep		*cep = NULL;
-	int 			rv = 0, s_val;
+	int			rv = 0, s_val;
 
 	rv = sock_create(AF_INET, SOCK_STREAM, IPPROTO_TCP, &s);
 	if (rv < 0) {
 		dprint(DBG_CM|DBG_ON, "(id=0x%p): ERROR: "
 			"sock_create(): rv=%d\n", id, rv);
-		return rv;
-	}
 #ifdef SIW_ON_BGP
 	if (backlog >= 100 && backlog < 4096)
 		backlog = 4096;
 #endif
+		return rv;
+	}
 
 	s_val = SOCKBUFSIZE;
 	rv = kernel_setsockopt(s, SOL_SOCKET, SO_SNDBUF, (char *)&s_val,
@@ -1801,12 +1808,12 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 	int			rv = 0;
 
 	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, l2dev=%s backlog=%d\n",
-		id, ofa_dev->name, dev->l2dev->name, backlog);
-
 #ifdef SIW_ON_BGP
 	if (backlog >= 100 && backlog < 8192)
 		backlog = 8192;
 #endif
+		id, ofa_dev->name, dev->l2dev->name, backlog);
+
 	/*
 	 * IPv4/v6 design differences regarding multi-homing
 	 * propagate up to iWARP:
@@ -1817,7 +1824,7 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 		/* IPv4 */
 		struct sockaddr_in	laddr = id->local_addr;
 		u8			*l_ip, *r_ip;
-		struct in_device 	*in_dev;
+		struct in_device	*in_dev;
 
 		l_ip = (u8 *) &id->local_addr.sin_addr.s_addr;
 		r_ip = (u8 *) &id->remote_addr.sin_addr.s_addr;
@@ -1844,13 +1851,13 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 			/*
 			 * Create a listening socket if id->local_addr
 			 * contains the wildcard IP address OR
-			 * the IP address of the interface.
-			 */
 #ifdef KERNEL_VERSION_PRE_2_6_26
 			if (ZERONET(id->local_addr.sin_addr.s_addr) ||
 #else
-			if (ipv4_is_zeronet(id->local_addr.sin_addr.s_addr) ||
+			 * the IP address of the interface.
 #endif
+			 */
+			if (ipv4_is_zeronet(id->local_addr.sin_addr.s_addr) ||
 					id->local_addr.sin_addr.s_addr ==
 					ifa->ifa_address) {
 				laddr.sin_addr.s_addr = ifa->ifa_address;

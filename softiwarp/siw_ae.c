@@ -83,7 +83,7 @@ void siw_async_ev(struct siw_qp *qp, struct siw_cq *cq,
 
 void siw_async_srq_ev(struct siw_srq *srq, enum ib_event_type etype)
 {
-	static struct ib_event 	event;
+	static struct ib_event	event;
 
 	dprint(DBG_EH, "(SRQ%p): AE type %d\n", srq, etype);
 

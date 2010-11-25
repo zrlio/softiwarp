@@ -57,7 +57,7 @@ enum siw_cep_state {
 };
 
 struct siw_mpa_info {
-	struct mpa_rr	hdr; 	/* peer mpa hdr in host byte order */
+	struct mpa_rr	hdr;	/* peer mpa hdr in host byte order */
 	char		*pdata;
 	int		bytes_rcvd;
 };
@@ -102,7 +102,7 @@ struct siw_cep {
 };
 
 enum siw_work_type {
-	SIW_CM_WORK_ACCEPT 	= 1,
+	SIW_CM_WORK_ACCEPT	= 1,
 	SIW_CM_WORK_READ_MPAHDR,
 	SIW_CM_WORK_CLOSE_LLP,		/* close socket */
 	SIW_CM_WORK_PEER_CLOSE,		/* socket indicated peer close */
@@ -148,11 +148,12 @@ extern void siw_cm_exit(void);
  */
 static inline unsigned int get_tcp_mss(struct sock *sk)
 {
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+	return ((struct tcp_sock *)sk)->xmit_size_goal;
+#else
 	struct tcp_sock *tp = tcp_sk(sk);
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
-	return tp->xmit_size_goal;
-#else
+
 	if (tp->xmit_size_goal_segs)
 		return tp->xmit_size_goal_segs * tp->mss_cache;
 

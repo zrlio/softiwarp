@@ -55,11 +55,16 @@
 #include "siw_obj.h"
 #include "siw_cm.h"
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 31)
 static int zcopy_tx = 1;
 module_param(zcopy_tx, int, 0644);
+#else
+static bool zcopy_tx = 1;
+module_param(zcopy_tx, bool, 0644);
+#endif
 MODULE_PARM_DESC(zcopy_tx, "Zero copy user data transmit if possible");
 
-DEFINE_PER_CPU(atomic_t, siw_workq_len);
+static DEFINE_PER_CPU(atomic_t, siw_workq_len);
 
 static inline int siw_crc_txhdr(struct siw_iwarp_tx *ctx)
 {
@@ -402,7 +407,7 @@ siw_umem_chunk_update(struct siw_iwarp_tx *c_tx, struct siw_mr *mr,
 	u64 va_start = sge->addr + c_tx->sge_off;
 
 	off += (unsigned int)(va_start & ~PAGE_MASK); /* + first page offset */
-	off >>= PAGE_SHIFT; 	/* bytes offset becomes pages offset */
+	off >>= PAGE_SHIFT;	/* bytes offset becomes pages offset */
 
 	list_for_each_entry_from(chunk, &mr->umem->chunk_list, list) {
 		if (c_tx->pg_idx + off < chunk->nents)
@@ -438,10 +443,10 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 	struct siw_sge		*sge = &wqe->wr.sgl.sge[c_tx->sge_idx],
 				*first_sge = sge;
 	struct siw_mr		*mr = siw_mem2mr(sge->mem.obj);
-	struct ib_umem_chunk 	*chunk = c_tx->umem_chunk;
+	struct ib_umem_chunk	*chunk = c_tx->umem_chunk;
 
 	struct kvec		iov[MAX_ARRAY];
-	struct page 		*page_array[MAX_ARRAY];
+	struct page		*page_array[MAX_ARRAY];
 	struct msghdr		msg = {.msg_flags = MSG_DONTWAIT};
 
 	int			seg = 0, do_crc = c_tx->do_crc, kbuf = 0,
@@ -455,7 +460,7 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 
 	if (SIW_INLINED_DATA(wqe)) {
 		kbuf = 1;
-		chunk = 0;
+		chunk = NULL;
 	}
 
 	if (c_tx->state == SIW_SEND_HDR) {
@@ -718,14 +723,14 @@ static inline int siw_unseg_txlen(struct siw_iwarp_tx *c_tx)
  *       to avoid header misalignment due to send pausing within
  *       fpdu transmission
  */
-int siw_prepare_fpdu(struct siw_qp *qp, struct siw_wqe *wqe)
+static int siw_prepare_fpdu(struct siw_qp *qp, struct siw_wqe *wqe)
 {
 	struct siw_iwarp_tx	*c_tx  = &qp->tx_ctx;
 	int			rv = 0;
 
 	/*
 	 * TODO: TCP Fragmentation dynamics needs for further investigation.
-	 * 	 Resuming SQ processing may start with full-sized packet
+	 *	 Resuming SQ processing may start with full-sized packet
 	 *	 or short packet which resets MSG_MORE and thus helps
 	 *	 to synchronize.
 	 *	 This version resumes with short packet.
@@ -827,7 +832,7 @@ static inline int siw_test_wspace(struct socket *s, struct siw_iwarp_tx *c_tx)
 static int siw_qp_sq_proc_tx(struct siw_qp *qp, struct siw_wqe *wqe)
 {
 	struct siw_iwarp_tx	*c_tx = &qp->tx_ctx;
-	struct socket	 	*s = qp->attrs.llp_stream_handle;
+	struct socket		*s = qp->attrs.llp_stream_handle;
 	int			rv = 0;
 
 
@@ -929,13 +934,14 @@ static void siw_wqe_sq_processed(struct siw_wqe *wqe, struct siw_qp *qp)
 		siw_sq_complete(&c_list, qp, 1, wr_flags(wqe));
 	} else {
 		list_add_tail(&wqe->list, &qp->orq);
+		unlock_orq_rxsave(qp, flags);
 		dprint(DBG_WR|DBG_TX,
 			"(QP%d): Defer completion, wr_type %d\n",
 			QP_ID(qp), wr_type(wqe));
 	}
 }
 
-int siw_qp_sq_proc_local(struct siw_qp *qp, struct siw_wqe *wqe)
+static int siw_qp_sq_proc_local(struct siw_qp *qp, struct siw_wqe *wqe)
 {
 	printk(KERN_ERR "local WR's not yet implemented\n");
 	BUG();

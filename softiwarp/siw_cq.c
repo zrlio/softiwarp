@@ -57,12 +57,11 @@ static int siw_wc_op_siw2ofa[SIW_WR_NUM] = {
 	[SIW_WR_RDMA_READ_REQ]		= IB_WC_RDMA_READ,
 	[SIW_WR_ATOMIC_CMP_AND_SWP]	= IB_WC_COMP_SWAP,
 	[SIW_WR_ATOMIC_FETCH_AND_ADD]	= IB_WC_FETCH_ADD,
-	[SIW_WR_BIND_MW]		= IB_WC_BIND_MW,
-#if (OFA_VERSION >= 140)
 	[SIW_WR_FASTREG]		= IB_WC_FAST_REG_MR,
+#if (OFA_VERSION >= 140)
 	[SIW_WR_INVAL_STAG]		= IB_WC_LOCAL_INV,
-#endif
 	[SIW_WR_RECEIVE]		= IB_WC_RECV,
+#endif
 	[SIW_WR_RDMA_READ_RESP]		= 0 /* not used */
 };
 
@@ -78,7 +77,6 @@ static void siw_wc_siw2ofa(struct siw_wqe *siw_wc, struct ib_wc *ofa_wc)
 	ofa_wc->byte_len = siw_wc->processed;
 	ofa_wc->qp = &siw_wc->qp->ofa_qp;
 
-	BUG_ON(wr_type(siw_wc) >= SIW_WR_NUM);
 	ofa_wc->opcode = siw_wc_op_siw2ofa[wr_type(siw_wc)];
 	/*
 	 * ofa_wc->imm_data = 0;

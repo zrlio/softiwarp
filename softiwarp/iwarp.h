@@ -54,13 +54,13 @@
 
 struct mpa_rr_params {
 #if defined(__LITTLE_ENDIAN_BITFIELD)
-	__u16	res:5,
+	__be16	res:5,
 		r:1,
 		c:1,
 		m:1,
 		rev:8;
 #elif defined(__BIG_ENDIAN_BITFIELD)
-	__u16	m:1,
+	__be16	m:1,
 		c:1,
 		r:1,
 		res:5,
@@ -68,7 +68,7 @@ struct mpa_rr_params {
 #else
 #error "Adjust your <asm/byteorder.h> defines"
 #endif
-	__u16	pd_len;
+	__be16	pd_len;
 };
 
 /*
@@ -83,8 +83,8 @@ struct mpa_rr {
  * Don't change the layout/size of this struct!
  */
 struct mpa_marker {
-	__u16	rsvd;
-	__u16	fpdu_hmd; /* FPDU header-marker distance (= MPA's FPDUPTR) */
+	__be16	rsvd;
+	__be16	fpdu_hmd; /* FPDU header-marker distance (= MPA's FPDUPTR) */
 };
 
 #define MPA_MARKER_SPACING	512
@@ -104,7 +104,7 @@ struct mpa_marker {
  */
 struct mpa_trailer {
 	char	pad[4];
-	__u32	crc;
+	__be32	crc;
 };
 
 #define MPA_CRC_SIZE	4
@@ -115,9 +115,9 @@ struct mpa_trailer {
  * for any FPDU
  */
 struct iwarp_ctrl {
-	__u16	mpa_len;
+	__be16	mpa_len;
 #if defined(__LITTLE_ENDIAN_BITFIELD)
-	__u16	dv:2,		/* DDP Version */
+	__be16	dv:2,		/* DDP Version */
 		rsvd:4,		/* DDP reserved, MBZ */
 		l:1,		/* DDP Last flag */
 		t:1,		/* DDP Tagged flag */
@@ -125,7 +125,7 @@ struct iwarp_ctrl {
 		rsv:2,		/* RDMAP reserved, MBZ */
 		rv:2;		/* RDMAP Version, 01 for IETF, 00 for RDMAC */
 #elif defined(__BIG_ENDIAN_BITFIELD)
-	__u16	t:1,		/* DDP Tagged flag */
+	__be16	t:1,		/* DDP Tagged flag */
 		l:1,		/* DDP Last flag */
 		rsvd:4,		/* DDP reserved, MBZ */
 		dv:2,		/* DDP Version */
@@ -140,7 +140,7 @@ struct iwarp_ctrl {
 
 struct rdmap_terminate_ctrl {
 #if defined(__LITTLE_ENDIAN_BITFIELD)
-	__u32	etype:4,
+	__be32	etype:4,
 		layer:4,
 		ecode:8,
 		rsvd1:5,
@@ -149,7 +149,7 @@ struct rdmap_terminate_ctrl {
 		m:1,
 		rsvd2:8;
 #elif defined(__BIG_ENDIAN_BITFIELD)
-	__u32	layer:4,
+	__be32	layer:4,
 		etype:4,
 		ecode:8,
 		m:1,
@@ -165,53 +165,53 @@ struct rdmap_terminate_ctrl {
 
 struct iwarp_rdma_write {
 	struct iwarp_ctrl	ctrl;
-	__u32			sink_stag;
-	__u64			sink_to;
-} __attribute__((__packed__));
+	__be32			sink_stag;
+	__be64			sink_to;
+};
 
 struct iwarp_rdma_rreq {
 	struct iwarp_ctrl	ctrl;
-	__u32			rsvd;
-	__u32			ddp_qn;
-	__u32			ddp_msn;
-	__u32			ddp_mo;
-	__u32			sink_stag;
-	__u64			sink_to;
-	__u32			read_size;
-	__u32			source_stag;
-	__u64			source_to;
-} __attribute__((__packed__));
+	__be32			rsvd;
+	__be32			ddp_qn;
+	__be32			ddp_msn;
+	__be32			ddp_mo;
+	__be32			sink_stag;
+	__be64			sink_to;
+	__be32			read_size;
+	__be32			source_stag;
+	__be64			source_to;
+};
 
 struct iwarp_rdma_rresp {
 	struct iwarp_ctrl	ctrl;
-	__u32			sink_stag;
-	__u64			sink_to;
-} __attribute__((__packed__));
+	__be32			sink_stag;
+	__be64			sink_to;
+};
 
 struct iwarp_send {
 	struct iwarp_ctrl	ctrl;
-	__u32			rsvd;
-	__u32			ddp_qn;
-	__u32			ddp_msn;
-	__u32			ddp_mo;
-} __attribute__((__packed__));
+	__be32			rsvd;
+	__be32			ddp_qn;
+	__be32			ddp_msn;
+	__be32			ddp_mo;
+};
 
 struct iwarp_send_inv {
 	struct iwarp_ctrl	ctrl;
-	__u32			inval_stag;
-	__u32			ddp_qn;
-	__u32			ddp_msn;
-	__u32			ddp_mo;
-} __attribute__((__packed__));
+	__be32			inval_stag;
+	__be32			ddp_qn;
+	__be32			ddp_msn;
+	__be32			ddp_mo;
+};
 
 struct iwarp_terminate {
 	struct iwarp_ctrl	ctrl;
-	__u32				rsvd;
-	__u32				ddp_qn;
-	__u32				ddp_msn;
-	__u32				ddp_mo;
+	__be32				rsvd;
+	__be32				ddp_qn;
+	__be32				ddp_msn;
+	__be32				ddp_mo;
 	struct rdmap_terminate_ctrl	term_ctrl;
-} __attribute__((__packed__));
+};
 
 
 /*
@@ -220,11 +220,11 @@ struct iwarp_terminate {
  */
 struct iwarp_ctrl_untagged {
 	struct iwarp_ctrl	ctrl;
-	__u32			rsvd;
-	__u32			ddp_qn;
-	__u32			ddp_msn;
-	__u32			ddp_mo;
-} __attribute__((__packed__));
+	__be32			rsvd;
+	__be32			ddp_qn;
+	__be32			ddp_msn;
+	__be32			ddp_mo;
+};
 
 /*
  * Common portion of iWARP headers (MPA, DDP, RDMAP)
@@ -232,9 +232,9 @@ struct iwarp_ctrl_untagged {
  */
 struct iwarp_ctrl_tagged {
 	struct iwarp_ctrl	ctrl;
-	__u32			ddp_stag;
-	__u64			ddp_to;
-} __attribute__((__packed__));
+	__be32			ddp_stag;
+	__be64			ddp_to;
+};
 
 union iwarp_hdrs {
 	struct iwarp_ctrl		ctrl;

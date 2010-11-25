@@ -47,6 +47,7 @@
 #include <rdma/ib_umem.h>
 
 #include "siw.h"
+#include "siw_verbs.h"
 #include "siw_obj.h"
 #include "siw_cm.h"
 
@@ -70,8 +71,7 @@ static inline struct siw_pd *siw_pd_ofa2siw(struct ib_pd *ofa_pd)
 	return container_of(ofa_pd, struct siw_pd, ofa_pd);
 }
 
-static inline struct siw_ucontext *siw_ctx_ofa2siw(
-	struct ib_ucontext *ofa_ctx)
+static inline struct siw_ucontext *siw_ctx_ofa2siw(struct ib_ucontext *ofa_ctx)
 {
 	return container_of(ofa_ctx, struct siw_ucontext, ib_ucontext);
 }
@@ -354,15 +354,16 @@ int siw_no_mad(struct ib_device *ofa_dev, int flags, u8 port,
 struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 			    struct ib_udata *udata)
 {
-	struct siw_qp	 		*qp = NULL;
-	struct siw_pd	 		*pd = siw_pd_ofa2siw(ofa_pd);
-	struct ib_device	 	*ofa_dev = ofa_pd->device;
-	struct siw_dev 			*dev = siw_dev_ofa2siw(ofa_dev);
-	struct siw_cq  			*scq = NULL, *rcq = NULL;
+	struct siw_qp			*qp = NULL;
+	struct siw_pd			*pd = siw_pd_ofa2siw(ofa_pd);
+	struct ib_device		*ofa_dev = ofa_pd->device;
+	struct siw_dev			*dev = siw_dev_ofa2siw(ofa_dev);
+	struct siw_cq			*scq = NULL, *rcq = NULL;
 	struct siw_iwarp_tx		*c_tx;
 	struct siw_iwarp_rx		*c_rx;
 	struct siw_uresp_create_qp	uresp;
 
+	int kernel_verbs = ofa_pd->uobject ? 0 : 1;
 	int rv = 0;
 
 	dprint(DBG_OBJ|DBG_CM, ": new QP on device %s\n",
@@ -383,6 +384,12 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 	    (attrs->cap.max_send_sge > SIW_MAX_SGE)  ||
 	    (attrs->cap.max_recv_sge > SIW_MAX_SGE)) {
 		dprint(DBG_ON, ": QP Size!\n");
+		rv = -EINVAL;
+		goto err_out;
+	}
+	if (attrs->cap.max_inline_data > SIW_MAX_INLINE ||
+	    (kernel_verbs && attrs->cap.max_inline_data != 0)) {
+		dprint(DBG_ON, ": Max Inline Send!\n");
 		rv = -EINVAL;
 		goto err_out;
 	}
@@ -429,7 +436,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 	if (rv)
 		goto err_out;
 
-	if (!udata) {
+	if (kernel_verbs) {
 		int num_wqe = attrs->cap.max_send_wr + attrs->cap.max_recv_wr;
 		while (num_wqe--) {
 			struct siw_wqe *wqe = kzalloc(sizeof *wqe, GFP_KERNEL);
@@ -542,17 +549,23 @@ err_out:
  *
  * TODO: all.
  */
-int siw_query_qp(struct ib_qp *qp, struct ib_qp_attr *qp_attr,
+int siw_query_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *qp_attr,
 		 int qp_attr_mask, struct ib_qp_init_attr *qp_init_attr)
 {
-	qp_attr->cap.max_inline_data = SIW_MAX_INLINE;
-	qp_init_attr->cap.max_inline_data = 0;
+	struct siw_qp *qp = siw_qp_ofa2siw(ofa_qp);
 
+	if (qp->attrs.flags & SIW_KERNEL_VERBS) {
+		qp_attr->cap.max_inline_data = 0;
+		qp_init_attr->cap.max_inline_data = 0;
+	} else {
+		qp_attr->cap.max_inline_data = SIW_MAX_INLINE;
+		qp_init_attr->cap.max_inline_data = SIW_MAX_INLINE;
+	}
 	return 0;
 }
 
 int siw_ofed_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
-			 int attr_mask, struct ib_udata *udata)
+		       int attr_mask, struct ib_udata *udata)
 {
 	struct siw_qp_attrs	new_attrs;
 	enum siw_qp_attr_mask	siw_attr_mask = 0;
@@ -642,7 +655,7 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 
 		wait_event(cep->waitq, atomic_read(&cep->ref.refcount) == 1);
 		dprint(DBG_CM, "(QP%d): CM done 2\n", QP_ID(qp));
-		qp->cep = 0;
+		qp->cep = NULL;
 		siw_cep_put(cep);
 	}
 
@@ -673,22 +686,22 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
  * Memory lookup and base+bounds checks must
  * be deferred until wqe gets executed
  */
-static int siw_copy_sgl(struct ib_sge *ofa_sge, struct siw_sge *si_sge,
+static int siw_copy_sgl(struct ib_sge *ofa_sge, struct siw_sge *siw_sge,
 			int num_sge)
 {
 	int bytes = 0;
 
 	while (num_sge--) {
-		si_sge->addr = ofa_sge->addr;
-		si_sge->len  = ofa_sge->length;
-		si_sge->lkey = ofa_sge->lkey;
+		siw_sge->addr = ofa_sge->addr;
+		siw_sge->len  = ofa_sge->length;
+		siw_sge->lkey = ofa_sge->lkey;
 		/*
 		 * defer memory lookup to WQE processing
 		 */
-		si_sge->mem.obj = NULL;
+		siw_sge->mem.obj = NULL;
 
-		bytes += si_sge->len;
-		si_sge++; ofa_sge++;
+		bytes += siw_sge->len;
+		siw_sge++; ofa_sge++;
 	}
 	return bytes;
 }
@@ -703,54 +716,59 @@ static int siw_copy_sgl(struct ib_sge *ofa_sge, struct siw_sge *si_sge,
  * operation in the tx path since TCP will make another copy for
  * retransmission. There is room for efficiency improvement.
  */
-static int siw_copy_inline_sgl(struct ib_sge *ofa_sge, struct siw_sge *si_sge,
+static int siw_copy_inline_sgl(struct ib_sge *ofa_sge, struct siw_sge *siw_sge,
 			       int num_sge)
 {
 	char	*kbuf;
-	int 	i, bytes = 0;
+	int	i, bytes;
 
-	if (unlikely(num_sge == 0))
-		return 0;
+	siw_sge->mem.buf = NULL;
 
-	for (i = 0; i < num_sge; i++) {
-		struct ib_sge *sge = &ofa_sge[i];
+	for (i = 0, bytes = 0; i < num_sge; i++)
+		bytes += ofa_sge[i].length;
 
-		if (unlikely(!access_ok(VERIFY_READ, sge->addr, sge->length)))
-			return -EFAULT;
-
-		bytes += sge->length;
-
-		if (bytes > SIW_MAX_INLINE)
-			return -EINVAL;
+	if (unlikely(bytes > SIW_MAX_INLINE)) {
+		bytes = -EINVAL;
+		goto out;
 	}
 	if (unlikely(!bytes))
-		return 0;
+		goto out;
 
 	kbuf = kmalloc(bytes, GFP_KERNEL);
 	if (unlikely(!kbuf)) {
 		dprint(DBG_ON, " kmalloc\n");
-		return -ENOMEM;
+		bytes = -ENOMEM;
+		goto out;
 	}
-	si_sge->mem.buf = kbuf;
+	siw_sge->mem.buf = kbuf;
 
 	while (num_sge--) {
-		if (__copy_from_user(kbuf,
-				     (void *)(unsigned long)ofa_sge->addr,
+		if (!access_ok(VERIFY_READ, (char __user *)ofa_sge->addr,
+			       ofa_sge->length)) {
+			bytes = -EFAULT;
+			break;
+		}
+		if (__copy_from_user(kbuf, (char __user *)ofa_sge->addr,
 				     ofa_sge->length)) {
-			kfree(si_sge->mem.buf);
-			return -EFAULT;
+			bytes = -EFAULT;
+			break;
 		}
 		kbuf += ofa_sge->length;
 		ofa_sge++;
 	}
-	si_sge->len = bytes;
-	si_sge->lkey = 0;
-	si_sge->addr = 0; /* don't need the user addr */
+	if (bytes > 0) {
+		siw_sge->len = bytes;
+		siw_sge->lkey = 0;
+		siw_sge->addr = 0; /* don't need the user addr */
+	} else
+		kfree(siw_sge->mem.buf);
+
+out:
 	return bytes;
 }
 
 /*
- * siw_wqe_get()
+ * siw_wqe_alloc()
  *
  * Get new Send or Receive Queue WQE.
  *
@@ -758,13 +776,13 @@ static int siw_copy_inline_sgl(struct ib_sge *ofa_sge, struct siw_sge *si_sge,
  * QP private freelist. To minimize resource pre-allocation, user
  * level clients get WQE's are kmalloc'ed.
  */
-static inline struct siw_wqe *siw_wqe_get(struct siw_qp *qp,
-					  enum siw_wr_opcode op)
+static inline struct siw_wqe *siw_wqe_alloc(struct siw_qp *qp,
+					    enum siw_wr_opcode op)
 {
 	struct siw_wqe	*wqe = NULL;
 	atomic_t	*q_space;
 
-	q_space = (op == SIW_WR_RECEIVE) ? &qp->rq_space:&qp->sq_space;
+	q_space = (op == SIW_WR_RECEIVE) ? &qp->rq_space : &qp->sq_space;
 
 	if (atomic_dec_return(q_space) < 0)
 			goto out;
@@ -826,9 +844,9 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 		QP_ID(qp), atomic_read(&qp->sq_space));
 
 	while (wr) {
-		wqe = siw_wqe_get(qp, wr->opcode);
+		wqe = siw_wqe_alloc(qp, opcode_ofa2siw(wr->opcode));
 		if (!wqe) {
-			dprint(DBG_ON, " siw_wqe_get\n");
+			dprint(DBG_ON, " siw_wqe_alloc\n");
 			rv = -ENOMEM;
 			break;
 		}
@@ -841,12 +859,20 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			rv = -EINVAL;
 			break;
 		}
-		wr_type(wqe) = wr->opcode;
+		wr_type(wqe) = opcode_ofa2siw(wr->opcode);
 		wr_flags(wqe) = wr->send_flags;
 		wr_id(wqe) = wr->wr_id;
 
-		if (SIW_INLINED_DATA(wqe))
+		if (SIW_INLINED_DATA(wqe)) {
 			dprint(DBG_WR, "(QP%d): INLINE DATA\n", QP_ID(qp));
+			if (unlikely(qp->attrs.flags & SIW_KERNEL_VERBS)) {
+				dprint(DBG_ON|DBG_WR,
+				       "(QP%d): Kernel verbs: No INLINE\n",
+				       QP_ID(qp));
+				rv = -EINVAL;
+				break;
+			}
+		}
 
 		switch (wr->opcode) {
 
@@ -1028,10 +1054,7 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 		return -EINVAL;
 	}
 	while (wr) {
-		/*
-		 * NOTE: siw_wqe_get() calls kzalloc(), which may sleep.
-		 */
-		wqe = siw_wqe_get(qp, SIW_WR_RECEIVE);
+		wqe = siw_wqe_alloc(qp, SIW_WR_RECEIVE);
 		if (!wqe) {
 			rv = -ENOMEM;
 			break;
@@ -1079,7 +1102,7 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 
 int siw_destroy_cq(struct ib_cq *ofa_cq)
 {
-	struct siw_cq	 	*cq  = siw_cq_ofa2siw(ofa_cq);
+	struct siw_cq		*cq  = siw_cq_ofa2siw(ofa_cq);
 	struct ib_device	*ofa_dev = ofa_cq->device;
 	struct siw_dev		*dev = siw_dev_ofa2siw(ofa_dev);
 
@@ -1107,10 +1130,10 @@ struct ib_cq *siw_create_cq(struct ib_device *ofa_dev, int size,
 			    struct ib_ucontext *ib_context,
 			    struct ib_udata *udata)
 {
-	struct siw_cq	 		*cq = NULL;
-	struct siw_dev 			*dev = siw_dev_ofa2siw(ofa_dev);
+	struct siw_cq			*cq = NULL;
+	struct siw_dev			*dev = siw_dev_ofa2siw(ofa_dev);
 	struct siw_uresp_create_cq	uresp;
-	int		 		rv;
+	int rv;
 
 	if (atomic_inc_return(&dev->num_cq) > SIW_MAX_CQ) {
 		dprint(DBG_ON, ": Out of CQ's\n");
@@ -1246,12 +1269,7 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 	siw_mem_put(&mr->mem);
 
 	atomic_dec(&dev->num_mem);
-#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
-	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights);
-#else
 	return 0;
-#endif
-
 }
 
 /*
@@ -1269,7 +1287,11 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 			      u64 rnic_va, int rights, struct ib_udata *udata)
 {
+#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
+	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights);
+#else
 	struct siw_mr		*mr = NULL;
+#endif
 	struct siw_pd		*pd = siw_pd_ofa2siw(ofa_pd);
 	struct ib_umem		*umem = NULL;
 	struct siw_ureq_reg_mr	ureq;
@@ -1386,6 +1408,8 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 	struct siw_pd		*pd = siw_pd_ofa2siw(ofa_pd);
 	struct siw_dev		*dev = pd->hdr.dev;
 	struct siw_wqe		*wqe;
+
+	int kernel_verbs = ofa_pd->uobject ? 0 : 1;
 	int rv;
 
 	if (atomic_inc_return(&dev->num_srq) > SIW_MAX_SRQ) {
@@ -1414,7 +1438,7 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 		srq->armed = 1;
 
 
-	if (!udata) {
+	if (kernel_verbs) {
 		int num_wqe = attrs->max_wr;
 		spin_lock_init(&srq->freeq_lock);
 		srq->kernel_verbs = 1;
@@ -1457,7 +1481,7 @@ err_out:
 int siw_modify_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs,
 		   enum ib_srq_attr_mask attr_mask, struct ib_udata *udata)
 {
-	struct siw_srq 	*srq = siw_srq_ofa2siw(ofa_srq);
+	struct siw_srq	*srq = siw_srq_ofa2siw(ofa_srq);
 	unsigned long	flags;
 	int rv = 0;
 
@@ -1505,7 +1529,7 @@ out:
  */
 int siw_query_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs)
 {
-	struct siw_srq 	*srq = siw_srq_ofa2siw(ofa_srq);
+	struct siw_srq	*srq = siw_srq_ofa2siw(ofa_srq);
 	unsigned long	flags;
 
 	lock_srq_rxsave(srq, flags);
@@ -1543,7 +1567,7 @@ int siw_destroy_srq(struct ib_srq *ofa_srq)
 	return 0;
 }
 
-static inline struct siw_wqe *siw_srq_wqe_get(struct siw_srq *srq)
+static inline struct siw_wqe *siw_srq_wqe_alloc(struct siw_srq *srq)
 {
 	struct siw_wqe *wqe = NULL;
 
@@ -1558,7 +1582,7 @@ static inline struct siw_wqe *siw_srq_wqe_get(struct siw_srq *srq)
 			list_del(&wqe->list);
 		}
 		spin_unlock_irqrestore(&srq->freeq_lock, flags);
-	} else 
+	} else
 		wqe = kzalloc(sizeof(struct siw_wqe), GFP_KERNEL);
 
 	dprint(DBG_OBJ|DBG_WR, "(SRQ%p): New WQE p: %p\n", srq, wqe);
@@ -1593,9 +1617,9 @@ int siw_post_srq_recv(struct ib_srq *ofa_srq, struct ib_recv_wr *wr,
 	int rv = 0;
 
 	while (wr) {
-		wqe = siw_srq_wqe_get(srq);
+		wqe = siw_srq_wqe_alloc(srq);
 		if (!wqe) {
-			dprint(DBG_ON, " siw_srq_wqe_get\n");
+			dprint(DBG_ON, " siw_srq_wqe_alloc\n");
 			rv = -ENOMEM;
 			break;
 		}

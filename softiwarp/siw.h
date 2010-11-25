@@ -134,7 +134,7 @@ struct siw_devinfo {
 
 struct siw_dev {
 	struct ib_device	ofa_dev;
-	struct siw_dev		*next;
+	struct list_head	list;
 	struct net_device	*l2dev;
 	struct siw_devinfo	attrs;
 	/* object management */
@@ -154,7 +154,7 @@ struct siw_dev {
 struct siw_objhdr {
 	u32			id;	/* for idr based object lookup */
 	struct kref		ref;
-	struct siw_dev 		*dev;
+	struct siw_dev		*dev;
 };
 
 
@@ -181,7 +181,7 @@ enum siw_access_flags {
 
 
 
-#define STAG_VALID 	1
+#define STAG_VALID	1
 #define STAG_INVALID	0
 #define SIW_STAG_MAX	0xffffffff
 
@@ -240,17 +240,21 @@ enum siw_wr_opcode {
 	SIW_WR_SEND			= IB_WR_SEND,
 	SIW_WR_SEND_WITH_IMM		= IB_WR_SEND_WITH_IMM,
 	SIW_WR_RDMA_READ_REQ		= IB_WR_RDMA_READ,
+
+	/* Unsupported */
+#if (OFA_VERSION >= 140)
 	SIW_WR_ATOMIC_CMP_AND_SWP	= IB_WR_ATOMIC_CMP_AND_SWP,
 	SIW_WR_ATOMIC_FETCH_AND_ADD	= IB_WR_ATOMIC_FETCH_AND_ADD,
-#if (OFA_VERSION >= 140)
-	SIW_WR_FASTREG			= IB_WR_FAST_REG_MR, /* unsupported */
-	SIW_WR_INVAL_STAG		= IB_WR_LOCAL_INV, /* unsupported */
 #endif
+	SIW_WR_INVAL_STAG		= IB_WR_LOCAL_INV,
+	SIW_WR_FASTREG			= IB_WR_FAST_REG_MR,
+
 	SIW_WR_RECEIVE,
-	SIW_WR_BIND_MW, /* unsupported */
 	SIW_WR_RDMA_READ_RESP,		/* pseudo WQE */
-	SIW_WR_NUM			/* last entry! */
+	SIW_WR_NUM
 };
+
+#define opcode_ofa2siw(code)	(enum siw_wr_opcode)code
 
 #define SIW_WQE_IS_TX(wqe)	1	/* add BIND/FASTREG/INVAL_STAG */
 
@@ -260,7 +264,7 @@ struct siw_sge {
 	u32		lkey;	/* HBO */
 	union {
 		struct siw_mem	*obj; /* reference to registered memory */
-		char 		*buf; /* linear kernel buffer */
+		char		*buf; /* linear kernel buffer */
 	} mem;
 };
 
@@ -369,15 +373,15 @@ struct siw_cq {
 };
 
 enum siw_qp_state {
-	SIW_QP_STATE_IDLE 	= 0,
-	SIW_QP_STATE_RTR 	= 1,
-	SIW_QP_STATE_RTS 	= 2,
-	SIW_QP_STATE_CLOSING 	= 3,
-	SIW_QP_STATE_TERMINATE 	= 4,
-	SIW_QP_STATE_ERROR 	= 5,
-	SIW_QP_STATE_MORIBUND 	= 6, /* destroy called but still referenced */
-	SIW_QP_STATE_UNDEF 	= 7,
-	SIW_QP_STATE_COUNT 	= 8
+	SIW_QP_STATE_IDLE	= 0,
+	SIW_QP_STATE_RTR	= 1,
+	SIW_QP_STATE_RTS	= 2,
+	SIW_QP_STATE_CLOSING	= 3,
+	SIW_QP_STATE_TERMINATE	= 4,
+	SIW_QP_STATE_ERROR	= 5,
+	SIW_QP_STATE_MORIBUND	= 6, /* destroy called but still referenced */
+	SIW_QP_STATE_UNDEF	= 7,
+	SIW_QP_STATE_COUNT	= 8
 };
 
 enum siw_qp_flags {
@@ -509,7 +513,7 @@ struct siw_iwarp_rx {
 	int			skb_copied;   /* processed bytes in skb */
 
 	int			sge_idx;	/* current sge in rx */
-	unsigned int		sge_off; 	/* already rcvd in curr. sge */
+	unsigned int		sge_off;	/* already rcvd in curr. sge */
 	struct ib_umem_chunk	*umem_chunk;	/* chunk used by sge and off */
 	int			pg_idx;		/* page used in chunk */
 	unsigned int		pg_off;		/* offset within that page */
@@ -533,23 +537,23 @@ struct siw_iwarp_rx {
  */
 struct siw_send_pkt {
 	struct iwarp_send	send;
-	__u32			crc;
-} __attribute__((__packed__));
+	__be32			crc;
+};
 
 struct siw_write_pkt {
 	struct iwarp_rdma_write	write;
-	__u32			crc;
-} __attribute__((__packed__));
+	__be32			crc;
+};
 
 struct siw_rreq_pkt {
 	struct iwarp_rdma_rreq	rreq;
-	__u32			crc;
-} __attribute__((__packed__));
+	__be32			crc;
+};
 
 struct siw_rresp_pkt {
 	struct iwarp_rdma_rresp	rresp;
-	__u32			crc;
-} __attribute__((__packed__));
+	__be32			crc;
+};
 
 struct siw_iwarp_tx {
 	union {
@@ -605,7 +609,7 @@ struct siw_iwarp_tx {
 	struct siw_wqe		*wqe;
 
 	int			sge_idx;	/* current sge in tx */
-	u32			sge_off; 	/* already sent in curr. sge */
+	u32			sge_off;	/* already sent in curr. sge */
 	struct ib_umem_chunk	*umem_chunk;	/* chunk used by sge and off */
 	int			pg_idx;		/* page used in mem chunk */
 };
@@ -692,7 +696,7 @@ struct siw_qp {
 #define list_entry_wqe(pos)	list_entry(pos, struct siw_wqe, list)
 #define list_first_wqe(pos)	list_first_entry(pos, struct siw_wqe, list)
 
-#define ORD_SUSPEND_SQ(qp) 	(!atomic_read(&(qp)->orq_space))
+#define ORD_SUSPEND_SQ(qp)	(!atomic_read(&(qp)->orq_space))
 #define TX_ACTIVE(qp)		(tx_wqe(qp) != NULL)
 #define SQ_EMPTY(qp)		list_empty(&((qp)->sq))
 #define ORQ_EMPTY(qp)		list_empty(&((qp)->orq))

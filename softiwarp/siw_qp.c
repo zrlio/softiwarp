@@ -58,7 +58,8 @@
 #include "siw_cm.h"
 
 
-char siw_qp_state_to_string[SIW_QP_STATE_COUNT][sizeof "TERMINATE"] = {
+#if DPRINT_MASK > 0
+static char siw_qp_state_to_string[SIW_QP_STATE_COUNT][sizeof "TERMINATE"] = {
 	[SIW_QP_STATE_IDLE]		= "IDLE",
 	[SIW_QP_STATE_RTR]		= "RTR",
 	[SIW_QP_STATE_RTS]		= "RTS",
@@ -68,15 +69,14 @@ char siw_qp_state_to_string[SIW_QP_STATE_COUNT][sizeof "TERMINATE"] = {
 	[SIW_QP_STATE_MORIBUND]		= "MORIBUND",
 	[SIW_QP_STATE_UNDEF]		= "UNDEF"
 };
-
+#endif
 
 /*
  * iWARP (RDMAP, DDP and MPA) parameters as well as Softiwarp settings on a
  * per-RDMAP message basis. Please keep order of initializer. All MPA len
  * is initialized to minimum packet size.
  */
-struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] =
-{ {
+struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 	.hdr_len = sizeof(struct iwarp_rdma_write),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_rdma_write) - 2),
 	.ctrl.dv = DDP_VERSION,
@@ -308,7 +308,7 @@ static int siw_qp_irq_init(struct siw_qp *qp, int size)
 	 */
 	size++;
 	atomic_set(&qp->irq_space, size);
-	
+
 	while (size--) {
 		wqe = kzalloc(sizeof(struct siw_wqe), GFP_KERNEL);
 		if (!wqe)
@@ -388,7 +388,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 
 	dprint(DBG_CM, "(QP%d): SIW QP state: %s => %s\n", QP_ID(qp),
 		siw_qp_state_to_string[qp->attrs.state],
-		   siw_qp_state_to_string[attrs->state]);
+		siw_qp_state_to_string[attrs->state]);
 
 	drop_conn = 0;
 

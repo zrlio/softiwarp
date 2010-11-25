@@ -59,11 +59,16 @@ MODULE_DESCRIPTION("Software iWARP Driver");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_VERSION("0.1");
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 31)
 static int loopback_enabled;
 module_param(loopback_enabled, int, 0644);
+#else
+static bool loopback_enabled;
+module_param(loopback_enabled, bool, 0644);
+#endif
 MODULE_PARM_DESC(loopback_enabled, "enable_loopback");
 
-struct siw_dev *siw_device;
+static LIST_HEAD(siw_devlist);
 
 #if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
 static ssize_t show_sw_version(struct class_device *class_dev, char *buf)
@@ -119,7 +124,7 @@ static struct device_attribute *siw_dev_attributes[] = {
 };
 #endif
 
-int siw_register_device(struct siw_dev *dev)
+static int siw_register_device(struct siw_dev *dev)
 {
 	struct ib_device *ibdev = &dev->ofa_dev;
 	int rv, i;
@@ -307,7 +312,7 @@ int siw_register_device(struct siw_dev *dev)
 	return 0;
 }
 
-void siw_deregister_device(struct siw_dev *dev)
+static void siw_deregister_device(struct siw_dev *dev)
 {
 	int i;
 
@@ -413,22 +418,13 @@ static __init int siw_init_module(void)
 				rv = -ENOMEM;
 				break;
 			}
-			if (!siw_device) {
-				siw_device = siw_p;
-				siw_p->next = NULL;
-			} else {
-				siw_p->next = siw_device->next;
-				siw_device->next = siw_p;
-			}
+
 			siw_p->l2dev = dev;
+			list_add_tail(&siw_p->list, &siw_devlist);
 
 			rv = siw_register_device(siw_p);
 			if (rv) {
-				if (siw_device != siw_p)
-					siw_device->next = siw_p->next;
-				else
-					siw_device = NULL;
-
+				list_del(&siw_p->list);
 				in_dev_put(in_dev);
 				ib_dealloc_device(&siw_p->ofa_dev);
 
@@ -442,7 +438,7 @@ static __init int siw_init_module(void)
 	}
 	rtnl_unlock();
 
-	if (!siw_device)
+	if (list_empty(&siw_devlist))
 		return -ENODEV;
 
 	if (rv)
@@ -463,17 +459,16 @@ static __init int siw_init_module(void)
 
 static void __exit siw_exit_module(void)
 {
-	struct siw_dev	*siw_p;
-
 	siw_sq_worker_exit();
 	siw_cm_exit();
 
-	while (siw_device) {
-		siw_p = siw_device->next;
-		siw_deregister_device(siw_device);
-		in_dev_put(siw_device->l2dev->ip_ptr);
-		ib_dealloc_device(&siw_device->ofa_dev);
-		siw_device = siw_p;
+	while (!list_empty(&siw_devlist)) {
+		struct siw_dev  *siw_p =
+			list_entry(siw_devlist.next, struct siw_dev, list);
+		list_del(&siw_p->list);
+		siw_deregister_device(siw_p);
+		in_dev_put(siw_p->l2dev->ip_ptr);
+		ib_dealloc_device(&siw_p->ofa_dev);
 	}
 	printk(KERN_INFO "SoftIWARP detached\n");
 }
