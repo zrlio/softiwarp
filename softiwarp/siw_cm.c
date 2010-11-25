@@ -1851,13 +1851,13 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 			/*
 			 * Create a listening socket if id->local_addr
 			 * contains the wildcard IP address OR
+			 * the IP address of the interface.
+			 */
 #ifdef KERNEL_VERSION_PRE_2_6_26
 			if (ZERONET(id->local_addr.sin_addr.s_addr) ||
 #else
-			 * the IP address of the interface.
-#endif
-			 */
 			if (ipv4_is_zeronet(id->local_addr.sin_addr.s_addr) ||
+#endif
 					id->local_addr.sin_addr.s_addr ==
 					ifa->ifa_address) {
 				laddr.sin_addr.s_addr = ifa->ifa_address;

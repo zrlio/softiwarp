@@ -1287,11 +1287,7 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 			      u64 rnic_va, int rights, struct ib_udata *udata)
 {
-#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
-	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights);
-#else
 	struct siw_mr		*mr = NULL;
-#endif
 	struct siw_pd		*pd = siw_pd_ofa2siw(ofa_pd);
 	struct ib_umem		*umem = NULL;
 	struct siw_ureq_reg_mr	ureq;
@@ -1317,7 +1313,11 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		goto err_out;
 	}
 
+#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
+	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights);
+#else
 	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights, 0);
+#endif
 	if (IS_ERR(umem)) {
 		dprint(DBG_MM, " ib_umem_get:%ld LOCKED:%lu, LIMIT:%lu\n",
 			PTR_ERR(umem), current->mm->locked_vm,
