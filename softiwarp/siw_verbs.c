@@ -120,10 +120,15 @@ int siw_dealloc_ucontext(struct ib_ucontext *ctx)
 int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr)
 {
 	struct siw_dev *dev = siw_dev_ofa2siw(ofa_dev);
+	/*
+	 * A process context is needed to report avail memory resources.
+	 */
+	if (in_interrupt())
+		return -EINVAL;
 
 	memset(attr, 0, sizeof *attr);
 
-	attr->max_mr_size = dev->attrs.max_mr_size;
+	attr->max_mr_size = rlimit(RLIMIT_MEMLOCK); /* per process */
 	attr->vendor_id = dev->attrs.vendor_id;
 	attr->vendor_part_id = dev->attrs.vendor_part_id;
 	attr->max_qp = dev->attrs.max_qp;
@@ -1293,6 +1298,8 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 	struct siw_ureq_reg_mr	ureq;
 	struct siw_uresp_reg_mr	uresp;
 	struct siw_dev		*dev = pd->hdr.dev;
+
+	int mem_limit = rlimit(RLIMIT_MEMLOCK);
 	int rv;
 
 	dprint(DBG_MM|DBG_OBJ, " start: 0x%016llx, "
@@ -1301,7 +1308,6 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		(unsigned long long)rnic_va,
 		(unsigned long long)len,
 		ofa_pd->uobject->context);
-
 	if (atomic_inc_return(&dev->num_mem) > SIW_MAX_MR) {
 		dprint(DBG_ON, ": Out of MRs: %d\n",
 			atomic_read(&dev->num_mem));
@@ -1312,7 +1318,19 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		rv = -EINVAL;
 		goto err_out;
 	}
+	if (mem_limit != RLIM_INFINITY) {
+		int num_pages =
+			(PAGE_ALIGN(len + (start & ~PAGE_MASK))) >> PAGE_SHIFT;
+		mem_limit >>= PAGE_SHIFT;
 
+		if (num_pages > mem_limit - current->mm->locked_vm) {
+			dprint(DBG_ON|DBG_MM,
+				": rlimit: req: %d, limit: %d, locked: %d\n",
+				num_pages, page_limit, current->mm->locked_vm);
+			rv = -ENOMEM;
+			goto err_out;
+		}
+	}
 #if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
 	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights);
 #else

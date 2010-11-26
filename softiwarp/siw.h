@@ -78,9 +78,7 @@ enum siw_if_type {
 #define SIW_MAX_INLINE		PAGE_SIZE
 #define SIW_MAX_CQ		(1024 * 100)
 #define SIW_MAX_CQE		(SIW_MAX_QP_WR * 100)
-#define SIW_MAX_MR	\
-	(current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur >> PAGE_SHIFT)
-#define SIW_MAX_MR_SIZE		(1024 * 1024 * 1024)
+#define SIW_MAX_MR		(SIW_MAX_QP * 10)
 #define SIW_MAX_PD		SIW_MAX_QP
 #define SIW_MAX_MW		0	/* to be set if MW's are supported */
 #define SIW_MAX_FMR		0
@@ -242,12 +240,12 @@ enum siw_wr_opcode {
 	SIW_WR_RDMA_READ_REQ		= IB_WR_RDMA_READ,
 
 	/* Unsupported */
-#if (OFA_VERSION >= 140)
 	SIW_WR_ATOMIC_CMP_AND_SWP	= IB_WR_ATOMIC_CMP_AND_SWP,
 	SIW_WR_ATOMIC_FETCH_AND_ADD	= IB_WR_ATOMIC_FETCH_AND_ADD,
-#endif
+#if (OFA_VERSION >= 140)
 	SIW_WR_INVAL_STAG		= IB_WR_LOCAL_INV,
 	SIW_WR_FASTREG			= IB_WR_FAST_REG_MR,
+#endif
 
 	SIW_WR_RECEIVE,
 	SIW_WR_RDMA_READ_RESP,		/* pseudo WQE */
