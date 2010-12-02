@@ -268,7 +268,11 @@ static int siw_register_device(struct siw_dev *dev)
 	dev->attrs.max_cq = SIW_MAX_CQ;
 	dev->attrs.max_cqe = SIW_MAX_CQE;
 	dev->attrs.max_mr = SIW_MAX_MR;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 33)
+	dev->attrs.max_mr_size = current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur;
+#else
 	dev->attrs.max_mr_size = rlimit(RLIMIT_MEMLOCK);
+#endif
 	dev->attrs.max_pd = SIW_MAX_PD;
 	dev->attrs.max_mw = SIW_MAX_MW;
 	dev->attrs.max_fmr = SIW_MAX_FMR;

@@ -493,9 +493,9 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 			/*
 			 * In kernel buffers to be tx'ed.
 			 */
-			iov[seg].iov_base =
-				(void *)(unsigned long)(sge->addr + sge_off);
+			iov[seg].iov_base = sge->mem.buf + sge_off;
 			iov[seg].iov_len = sge_len;
+
 			if (do_crc)
 				siw_crc_array(&c_tx->mpa_crc_hd,
 					      iov[seg].iov_base, sge_len);

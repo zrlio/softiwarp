@@ -75,7 +75,6 @@ enum siw_if_type {
 #define SIW_MAX_IRD		128
 #define SIW_MAX_SGE		10
 #define SIW_MAX_SGE_RD		1	/* iwarp limitation. we could relax */
-#define SIW_MAX_INLINE		PAGE_SIZE
 #define SIW_MAX_CQ		(1024 * 100)
 #define SIW_MAX_CQE		(SIW_MAX_QP_WR * 100)
 #define SIW_MAX_MR		(SIW_MAX_QP * 10)
@@ -86,6 +85,7 @@ enum siw_if_type {
 #define SIW_MAX_SRQ_WR		(SIW_MAX_QP_WR * 10)
 
 #define SENDPAGE_THRESH		256	/* min bytes for using sendpage() */
+#define SIW_MAX_INLINE		SENDPAGE_THRESH
 #define SOCKBUFSIZE		(PAGE_SIZE * 40)
 #define SQ_USER_MAXBURST	10
 

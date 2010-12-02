@@ -367,7 +367,7 @@ inline struct siw_wqe *siw_freeq_wqe_get(struct siw_qp *qp)
 	return wqe;
 }
 
-inline void siw_free_inline_sgl(struct siw_sge *sge, int num_sge)
+static inline void siw_free_inline_sgl(struct siw_sge *sge, int num_sge)
 {
 	while (num_sge--) {
 		kfree(sge->mem.buf); /* kfree handles NULL pointers */

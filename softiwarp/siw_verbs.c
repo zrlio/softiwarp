@@ -128,7 +128,11 @@ int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr)
 
 	memset(attr, 0, sizeof *attr);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 33)
+	attr->max_mr_size = current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur;
+#else
 	attr->max_mr_size = rlimit(RLIMIT_MEMLOCK); /* per process */
+#endif
 	attr->vendor_id = dev->attrs.vendor_id;
 	attr->vendor_part_id = dev->attrs.vendor_part_id;
 	attr->max_qp = dev->attrs.max_qp;
@@ -394,7 +398,8 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 	}
 	if (attrs->cap.max_inline_data > SIW_MAX_INLINE ||
 	    (kernel_verbs && attrs->cap.max_inline_data != 0)) {
-		dprint(DBG_ON, ": Max Inline Send!\n");
+		dprint(DBG_ON, ": Max Inline Send %d < %d!\n",
+		       attrs->cap.max_inline_data, SIW_MAX_INLINE);
 		rv = -EINVAL;
 		goto err_out;
 	}
@@ -765,9 +770,10 @@ static int siw_copy_inline_sgl(struct ib_sge *ofa_sge, struct siw_sge *siw_sge,
 		siw_sge->len = bytes;
 		siw_sge->lkey = 0;
 		siw_sge->addr = 0; /* don't need the user addr */
-	} else
+	} else {
 		kfree(siw_sge->mem.buf);
-
+		siw_sge->mem.buf = NULL;
+	}
 out:
 	return bytes;
 }
@@ -946,9 +952,10 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			break;
 
 		default:
-			dprint(DBG_WR|DBG_TX,
+			dprint(DBG_WR|DBG_TX|DBG_ON,
 				"(QP%d): Opcode %d not yet implemented\n",
 				QP_ID(qp), wr->opcode);
+			wqe->wr.sgl.num_sge = 0;
 			rv = -EINVAL;
 			break;
 		}
@@ -1299,7 +1306,11 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 	struct siw_uresp_reg_mr	uresp;
 	struct siw_dev		*dev = pd->hdr.dev;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 33)
+	int mem_limit = current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur;
+#else
 	int mem_limit = rlimit(RLIMIT_MEMLOCK);
+#endif
 	int rv;
 
 	dprint(DBG_MM|DBG_OBJ, " start: 0x%016llx, "
@@ -1325,8 +1336,8 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 
 		if (num_pages > mem_limit - current->mm->locked_vm) {
 			dprint(DBG_ON|DBG_MM,
-				": rlimit: req: %d, limit: %d, locked: %d\n",
-				num_pages, page_limit, current->mm->locked_vm);
+				": rlimit: req: %d, limit: %d, locked: %lu\n",
+				num_pages, mem_limit, current->mm->locked_vm);
 			rv = -ENOMEM;
 			goto err_out;
 		}
