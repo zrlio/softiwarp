@@ -69,8 +69,11 @@ struct siw_llp_info {
 	struct siw_sk_upcalls	sk_def_upcalls;
 };
 
+struct siw_dev;
+
 struct siw_cep {
 	struct iw_cm_id		*cm_id;
+	struct siw_dev		*dev;
 
 	/*
 	 * The provider_data element of a listener IWCM ID

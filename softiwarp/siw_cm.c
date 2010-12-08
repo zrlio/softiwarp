@@ -169,7 +169,7 @@ static void siw_cep_socket_assoc(struct siw_cep *cep, struct socket *s)
 }
 
 
-static struct siw_cep *siw_cep_alloc(void)
+static struct siw_cep *siw_cep_alloc(struct siw_dev  *dev)
 {
 	struct siw_cep *cep = kzalloc(sizeof *cep, GFP_KERNEL);
 	if (cep) {
@@ -183,6 +183,8 @@ static struct siw_cep *siw_cep_alloc(void)
 		cep->state = SIW_EPSTATE_IDLE;
 		init_waitqueue_head(&cep->waitq);
 		spin_lock_init(&cep->lock);
+		cep->dev = dev;
+		atomic_inc(&dev->num_cep);	
 		dprint(DBG_OBJ|DBG_CM, "(CEP 0x%p): New Object\n", cep);
 	}
 	return cep;
@@ -225,6 +227,7 @@ static void __siw_cep_dealloc(struct kref *ref)
 		siw_cm_free_work(cep);
 	spin_unlock_bh(&cep->lock);
 
+	atomic_dec(&cep->dev->num_cep);	
 	kfree(cep);
 }
 
@@ -543,7 +546,7 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 	cep->mpa.bytes_rcvd += rcvd;
 
 	if (to_rcv == rcvd) {
-		dprint(DBG_CM, "%d bytes private_data received",
+		dprint(DBG_CM, " %d bytes private_data received\n",
 			hdr->params.pd_len);
 		return 0;
 	}
@@ -712,7 +715,7 @@ static void siw_accept_newconn(struct siw_cep *cep)
 	struct siw_cep		*new_cep = NULL;
 	int			rv = 0; /* debug only. should disappear */
 
-	new_cep = siw_cep_alloc();
+	new_cep = siw_cep_alloc(cep->dev);
 	if (!new_cep)
 		goto error;
 
@@ -1308,7 +1311,7 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 			id, QP_ID(qp), rv);
 		goto error;
 	}
-	cep = siw_cep_alloc();
+	cep = siw_cep_alloc(dev);
 	if (!cep) {
 		rv =  -ENOMEM;
 		goto error;
@@ -1344,7 +1347,7 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 
 	dprint(DBG_CM, "(id=0x%p, QP%d): pd_len = %u\n", id, QP_ID(qp), pd_len);
 	if (pd_len)
-		dprint(DBG_CM, "%d bytes private_data\n", pd_len);
+		dprint(DBG_CM, " %d bytes private_data\n", pd_len);
 	/*
 	 * Associate CEP with socket
 	 */
@@ -1636,12 +1639,12 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 	if (rv < 0) {
 		dprint(DBG_CM|DBG_ON, "(id=0x%p): ERROR: "
 			"sock_create(): rv=%d\n", id, rv);
+		return rv;
+	}
 #ifdef SIW_ON_BGP
 	if (backlog >= 100 && backlog < 4096)
 		backlog = 4096;
 #endif
-		return rv;
-	}
 
 	s_val = SOCKBUFSIZE;
 	rv = kernel_setsockopt(s, SOL_SOCKET, SO_SNDBUF, (char *)&s_val,
@@ -1674,7 +1677,7 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 		goto error;
 	}
 
-	cep = siw_cep_alloc();
+	cep = siw_cep_alloc(siw_dev_ofa2siw(id->device));
 	if (!cep) {
 		rv = -ENOMEM;
 		goto error;
@@ -1750,6 +1753,10 @@ error:
 	dprint(DBG_ON, " Failed: %d\n", rv);
 
 	if (cep) {
+		if (cep->cm_id) {
+			cep->cm_id->rem_ref(cep->cm_id);
+			cep->cm_id = NULL;
+		}
 		cep->llp.sock = NULL;
 		siw_socket_disassoc(s);
 		cep->state = SIW_EPSTATE_CLOSED;
@@ -1759,6 +1766,38 @@ error:
 	return rv;
 }
 
+static void siw_drop_listeners(struct iw_cm_id *id)
+{
+	struct list_head	*p, *tmp;
+	/*
+	 * In case of a wildcard rdma_listen on a multi-homed device,
+	 * a listener's IWCM id is associated with more than one listening CEP.
+	 */
+	list_for_each_safe(p, tmp, (struct list_head *)id->provider_data) {
+
+		struct siw_cep *cep = list_entry(p, struct siw_cep, list);
+		list_del(p);
+
+		dprint(DBG_CM, "(id=0x%p): drop CEP 0x%p\n", id, cep); 
+
+		if (siw_cep_set_inuse(cep) > 0) {
+
+			cep->conn_close = 1;
+			if (cep->cm_id) {
+				cep->cm_id->rem_ref(cep->cm_id);
+				cep->cm_id = NULL;
+			}
+			if (cep->llp.sock) {
+				siw_socket_disassoc(cep->llp.sock);
+				sock_release(cep->llp.sock);
+				cep->llp.sock = NULL;
+			}
+
+		}
+		cep->state = SIW_EPSTATE_CLOSED;
+		siw_cep_put(cep);
+	}
+}
 
 /*
  * siw_create_listen - Create resources for a listener's IWCM ID @id
@@ -1807,11 +1846,11 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 	struct siw_dev		*dev = siw_dev_ofa2siw(ofa_dev);
 	int			rv = 0;
 
-	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, l2dev=%s backlog=%d\n",
 #ifdef SIW_ON_BGP
 	if (backlog >= 100 && backlog < 8192)
 		backlog = 8192;
 #endif
+	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, l2dev=%s backlog=%d\n",
 		id, ofa_dev->name, dev->l2dev->name, backlog);
 
 	/*
@@ -1878,14 +1917,8 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 		endfor_ifa(in_dev);
 		in_dev_put(in_dev);
 
-		if (rv) {
-			/*
-			 * TODO: Cleanup resources already associated with
-			 *	 id->provider_data
-			 */
-			dprint(DBG_CM|DBG_ON, "(id=0x%p): "
-				"TODO: Cleanup resources\n", id);
-		}
+		if (rv && id->provider_data)
+			siw_drop_listeners(id);
 
 	} else {
 		/* IPv6 */
@@ -1900,8 +1933,6 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 
 int siw_destroy_listen(struct iw_cm_id *id)
 {
-	struct list_head	*p, *tmp;
-	struct siw_cep		*cep;
 
 	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, l2dev=%s\n",
 		id, id->device->name,
@@ -1915,35 +1946,7 @@ int siw_destroy_listen(struct iw_cm_id *id)
 		dprint(DBG_CM, "(id=0x%p): Listener id: no CEP(s)\n", id);
 		return 0;
 	}
-
-	/*
-	 * In case of a wildcard rdma_listen on a multi-homed device,
-	 * a listener's IWCM id is associated with more than one listening CEP.
-	 */
-	list_for_each_safe(p, tmp, (struct list_head *)id->provider_data) {
-
-		cep = list_entry(p, struct siw_cep, list);
-		list_del(p);
-
-		if (siw_cep_set_inuse(cep) > 0) {
-
-			cep->conn_close = 1;
-
-			siw_socket_disassoc(cep->llp.sock);
-			sock_release(cep->llp.sock);
-			cep->llp.sock = NULL;
-			id->rem_ref(id);
-
-			cep->state = SIW_EPSTATE_CLOSED;
-			/*
-			 * Do not set the CEP free again. The CEP is dead.
-			 * (void) siw_cep_set_free(cep);
-			 */
-		} else
-			cep->state = SIW_EPSTATE_CLOSED;
-
-		siw_cep_put(cep);
-	}
+	siw_drop_listeners(id);
 	kfree(id->provider_data);
 	id->provider_data = NULL;
 

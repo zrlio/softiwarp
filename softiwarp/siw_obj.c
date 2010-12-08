@@ -264,6 +264,7 @@ static void siw_free_cq(struct kref *ref)
 
 	dprint(DBG_OBJ, "(CQ%d): Free Object\n", cq->hdr.id);
 
+	atomic_dec(&cq->hdr.dev->num_cq);
 	kfree(cq);
 }
 
@@ -280,6 +281,7 @@ static void siw_free_qp(struct kref *ref)
 
 	siw_drain_wq(&qp->freeq);
 
+	atomic_dec(&qp->hdr.dev->num_qp);
 	kfree(qp);
 }
 
@@ -291,6 +293,7 @@ static void siw_free_pd(struct kref *ref)
 
 	dprint(DBG_OBJ, "(PD%d): Free Object\n", pd->hdr.id);
 
+	atomic_dec(&pd->hdr.dev->num_pd);
 	kfree(pd);
 }
 
@@ -302,6 +305,8 @@ static void siw_free_mem(struct kref *ref)
 			 struct siw_mem, hdr);
 
 	dprint(DBG_MM|DBG_OBJ, "(MEM%d): Free Object\n", OBJ_ID(m));
+
+	atomic_dec(&m->hdr.dev->num_mem);
 
 	if (SIW_MEM_IS_MW(m)) {
 		struct siw_mw *mw = container_of(m, struct siw_mw, mem);
@@ -406,8 +411,10 @@ void siw_wqe_put(struct siw_wqe *wqe)
 					    wqe->wr.sgl.num_sge);
 		if (qp->attrs.flags & SIW_KERNEL_VERBS)
 			siw_add_wqe(wqe, &qp->freeq, &qp->freeq_lock);
-		else
+		else {
 			kfree(wqe);
+			SIW_DEC_STAT_WQE;
+		}
 		atomic_inc(&qp->sq_space);
 		break;
 
@@ -417,14 +424,18 @@ void siw_wqe_put(struct siw_wqe *wqe)
 			struct siw_srq *srq = qp->srq;
 			if (srq->kernel_verbs)
 				siw_add_wqe(wqe, &srq->freeq, &srq->freeq_lock);
-			else
+			else {
 				kfree(wqe);
+				SIW_DEC_STAT_WQE;
+			}
 			atomic_inc(&srq->space);
 		} else {
 			if (qp->attrs.flags & SIW_KERNEL_VERBS)
 				siw_add_wqe(wqe, &qp->freeq, &qp->freeq_lock);
-			else
+			else {
 				kfree(wqe);
+				SIW_DEC_STAT_WQE;
+			}
 			atomic_inc(&qp->rq_space);
 		}
 		break;

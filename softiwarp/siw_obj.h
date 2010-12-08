@@ -54,6 +54,15 @@
 
 #include "siw_debug.h"
 
+extern atomic_t siw_num_wqe;
+
+#if DPRINT_MASK > 0
+#define SIW_INC_STAT_WQE	atomic_inc(&siw_num_wqe)
+#define SIW_DEC_STAT_WQE	atomic_dec(&siw_num_wqe)
+#else
+#define SIW_INC_STAT_WQE	do { } while (0)
+#define SIW_DEC_STAT_WQE	do { } while (0)
+#endif
 
 static inline struct siw_dev *siw_dev_ofa2siw(struct ib_device *ofa_dev)
 {
@@ -102,6 +111,7 @@ static inline void siw_drain_wq(struct list_head *wq)
 		struct siw_wqe *wqe = list_first_wqe(wq);
 		list_del(&wqe->list);
 		kfree(wqe);
+		SIW_DEC_STAT_WQE;
 	}
 }
 

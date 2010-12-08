@@ -317,12 +317,15 @@ static int siw_qp_irq_init(struct siw_qp *qp, int size)
 		INIT_LIST_HEAD(&wqe->list);
 		list_add(&wqe->list, &qp->freeq);
 		i++;
+		SIW_INC_STAT_WQE;
 	}
 	if (!wqe) {
+		dprint(DBG_ON, "(QP%d): Failed\n", QP_ID(qp));
 		while (i--) {
 			wqe = list_first_wqe(&qp->freeq);
 			list_del(&wqe->list);
 			kfree(wqe);
+			SIW_DEC_STAT_WQE;
 		}
 		atomic_set(&qp->irq_space, 0);
 		return -ENOMEM;

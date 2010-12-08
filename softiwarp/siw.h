@@ -147,6 +147,7 @@ struct siw_dev {
 	atomic_t		num_pd;
 	atomic_t		num_mem;
 	atomic_t		num_srq;
+	atomic_t		num_cep;
 };
 
 struct siw_objhdr {

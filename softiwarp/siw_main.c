@@ -68,6 +68,9 @@ module_param(loopback_enabled, bool, 0644);
 #endif
 MODULE_PARM_DESC(loopback_enabled, "enable_loopback");
 
+atomic_t siw_num_wqe;
+atomic_t siw_num_cep;
+
 static LIST_HEAD(siw_devlist);
 
 #if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
@@ -96,6 +99,30 @@ static ssize_t show_sw_version(struct device *dev,
 	return sprintf(buf, "%x\n", siw_dev->attrs.version);
 }
 
+static ssize_t show_stats(struct device *dev,
+			  struct device_attribute *attr, char *buf)
+{
+	struct siw_dev *siw_dev = container_of(dev, struct siw_dev,
+					       ofa_dev.dev);
+
+	return sprintf(buf, "Allocated SIW Objects:::\n"
+#if DPRINT_MASK > 0
+			"Global::\t"
+			"%s: %d\n"
+#endif
+			"Device %s::\t"
+			"%s: %d, %s: %d, %s: %d, %s: %d, %s: %d, %s: %d\n",
+#if DPRINT_MASK > 0
+			"WQEs", atomic_read(&siw_num_wqe),
+#endif
+			siw_dev->ofa_dev.name, 
+			"PDs", atomic_read(&siw_dev->num_pd),
+			"QPs", atomic_read(&siw_dev->num_qp),
+			"CQs", atomic_read(&siw_dev->num_cq),
+			"SRQs", atomic_read(&siw_dev->num_srq),
+			"MRs", atomic_read(&siw_dev->num_mem),
+			"CEPs", atomic_read(&siw_dev->num_cep));
+}
 static ssize_t show_if_type(struct device *dev,
 			    struct device_attribute *attr, char *buf)
 {
@@ -117,12 +144,15 @@ static struct class_device_attribute *siw_dev_attributes[] = {
 #else
 static DEVICE_ATTR(sw_version, S_IRUGO, show_sw_version, NULL);
 static DEVICE_ATTR(if_type, S_IRUGO, show_if_type, NULL);
+static DEVICE_ATTR(stats, S_IRUGO, show_stats, NULL);
 
 static struct device_attribute *siw_dev_attributes[] = {
 	&dev_attr_sw_version,
-	&dev_attr_if_type
+	&dev_attr_if_type,
+	&dev_attr_stats
 };
 #endif
+
 
 static int siw_register_device(struct siw_dev *dev)
 {
@@ -287,6 +317,7 @@ static int siw_register_device(struct siw_dev *dev)
 	atomic_set(&dev->num_cq, 0);
 	atomic_set(&dev->num_mem, 0);
 	atomic_set(&dev->num_pd, 0);
+	atomic_set(&dev->num_cep, 0);
 
 	for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i) {
 #if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
@@ -456,6 +487,9 @@ static __init int siw_init_module(void)
 		return rv;
 
 	rv = siw_sq_worker_init();
+
+	atomic_set(&siw_num_wqe, 0);
+	atomic_set(&siw_num_cep, 0);
 
 	printk(KERN_INFO "SoftIWARP attached\n");
 	return rv;

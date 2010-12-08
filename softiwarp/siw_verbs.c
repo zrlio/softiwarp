@@ -310,7 +310,6 @@ int siw_dealloc_pd(struct ib_pd *ofa_pd)
 	siw_remove_obj(&dev->idr_lock, &dev->pd_idr, &pd->hdr);
 	siw_pd_put(pd);
 
-	atomic_dec(&dev->num_pd);
 	return 0;
 }
 
@@ -398,7 +397,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 	}
 	if (attrs->cap.max_inline_data > SIW_MAX_INLINE ||
 	    (kernel_verbs && attrs->cap.max_inline_data != 0)) {
-		dprint(DBG_ON, ": Max Inline Send %d < %d!\n",
+		dprint(DBG_ON, ": Max Inline Send %d > %d!\n",
 		       attrs->cap.max_inline_data, SIW_MAX_INLINE);
 		rv = -EINVAL;
 		goto err_out;
@@ -454,6 +453,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 				rv = -ENOMEM;
 				goto err_out_idr;
 			}
+			SIW_INC_STAT_WQE;
 			INIT_LIST_HEAD(&wqe->list);
 			list_add(&wqe->list, &qp->freeq);
 		}
@@ -564,12 +564,17 @@ int siw_query_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *qp_attr,
 {
 	struct siw_qp *qp = siw_qp_ofa2siw(ofa_qp);
 
-	if (qp->attrs.flags & SIW_KERNEL_VERBS) {
-		qp_attr->cap.max_inline_data = 0;
-		qp_init_attr->cap.max_inline_data = 0;
-	} else {
-		qp_attr->cap.max_inline_data = SIW_MAX_INLINE;
-		qp_init_attr->cap.max_inline_data = SIW_MAX_INLINE;
+	memset(&qp_attr, 0, sizeof *qp_attr);
+	memset(&qp_init_attr, 0, sizeof *qp_init_attr);
+
+	if (qp_attr_mask) {
+		if (qp->attrs.flags & SIW_KERNEL_VERBS) {
+			qp_attr->cap.max_inline_data = 0;
+			qp_init_attr->cap.max_inline_data = 0;
+		} else {
+			qp_attr->cap.max_inline_data = SIW_MAX_INLINE;
+			qp_init_attr->cap.max_inline_data = SIW_MAX_INLINE;
+		}
 	}
 	return 0;
 }
@@ -684,7 +689,6 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 
 	siw_qp_put(qp);
 
-	atomic_dec(&dev->num_qp);
 	return 0;
 }
 
@@ -800,8 +804,10 @@ static inline struct siw_wqe *siw_wqe_alloc(struct siw_qp *qp,
 
 	if (qp->attrs.flags & SIW_KERNEL_VERBS)
 		wqe = siw_freeq_wqe_get(qp);
-	else
+	else {
 		wqe = kmalloc(sizeof(struct siw_wqe), GFP_KERNEL);
+		SIW_INC_STAT_WQE;
+	}
 out:
 	if (wqe) {
 		INIT_LIST_HEAD(&wqe->list);
@@ -1122,7 +1128,7 @@ int siw_destroy_cq(struct ib_cq *ofa_cq)
 
 	siw_remove_obj(&dev->idr_lock, &dev->cq_idr, &cq->hdr);
 	siw_cq_put(cq);
-	atomic_dec(&dev->num_cq);
+
 	return 0;
 }
 
@@ -1280,7 +1286,6 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 	siw_remove_obj(&dev->idr_lock, &dev->mem_idr, &mr->mem.hdr);
 	siw_mem_put(&mr->mem);
 
-	atomic_dec(&dev->num_mem);
 	return 0;
 }
 
@@ -1611,8 +1616,10 @@ static inline struct siw_wqe *siw_srq_wqe_alloc(struct siw_srq *srq)
 			list_del(&wqe->list);
 		}
 		spin_unlock_irqrestore(&srq->freeq_lock, flags);
-	} else
+	} else {
 		wqe = kzalloc(sizeof(struct siw_wqe), GFP_KERNEL);
+		SIW_INC_STAT_WQE;
+	}
 
 	dprint(DBG_OBJ|DBG_WR, "(SRQ%p): New WQE p: %p\n", srq, wqe);
 out:
