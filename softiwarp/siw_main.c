@@ -44,6 +44,7 @@
 #include <net/net_namespace.h>
 #include <linux/rtnetlink.h>
 #include <linux/if_arp.h>
+#include <linux/list.h>
 
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_smi.h>
@@ -105,12 +106,11 @@ static ssize_t show_stats(struct device *dev,
 	struct siw_dev *siw_dev = container_of(dev, struct siw_dev,
 					       ofa_dev.dev);
 
-	return sprintf(buf, "Allocated SIW Objects:::\n"
+	return sprintf(buf, "Allocated SIW Objects:\n"
 #if DPRINT_MASK > 0
-			"Global::\t"
-			"%s: %d\n"
+			"Global     :\t%s: %d\n"
 #endif
-			"Device %s::\t"
+			"Device %s:\t"
 			"%s: %d, %s: %d, %s: %d, %s: %d, %s: %d, %s: %d\n",
 #if DPRINT_MASK > 0
 			"WQEs", atomic_read(&siw_num_wqe),
@@ -123,6 +123,88 @@ static ssize_t show_stats(struct device *dev,
 			"MRs", atomic_read(&siw_dev->num_mem),
 			"CEPs", atomic_read(&siw_dev->num_cep));
 }
+
+static ssize_t show_ceps(struct device *dev,
+			  struct device_attribute *attr, char *buf)
+{
+	struct siw_dev *siw_dev = container_of(dev, struct siw_dev,
+					       ofa_dev.dev);
+
+	struct list_head *pos, *tmp;
+	int len, num_cep = atomic_read(&siw_dev->num_cep);
+
+	len = sprintf(buf, "%s: %d CEPs %s\n", siw_dev->ofa_dev.name,
+		      num_cep, num_cep?"- see dmesg for details":"");
+
+	if (num_cep)
+		printk("\n%d CEPs on device %s:\n",
+		       num_cep, siw_dev->ofa_dev.name);
+	else
+		return len;
+
+	printk(KERN_INFO "%-20s%-6s%-6s%-7s%-3s%-3s%-6s%-21s%-7s\n",
+		"CEP", "State", "Ref's", "QP-ID", "LQ", "AQ", "C/U", "Sock",
+		"CM-ID");
+
+	list_for_each_safe(pos, tmp, &siw_dev->cep_list) {
+		struct siw_cep *cep = list_entry(pos, struct siw_cep, devq);
+
+		printk(KERN_INFO "0x%-18p%-6d%-6d%-7d%-3s%-3s%d/%-4d0x%-18p"
+			" 0x%-16p\n",
+			cep, cep->state,
+			atomic_read(&cep->ref.refcount),
+			cep->qp?QP_ID(cep->qp):-1,
+			list_empty(&cep->listenq)?"n":"y",
+			list_empty(&cep->acceptq)?"n":"y",
+			cep->conn_close, cep->in_use,
+			cep->llp.sock,
+			cep->cm_id);
+	}
+	return len;
+}
+
+static ssize_t show_qps(struct device *dev,
+			  struct device_attribute *attr, char *buf)
+{
+	struct siw_dev *siw_dev = container_of(dev, struct siw_dev,
+					       ofa_dev.dev);
+
+	struct list_head *pos, *tmp;
+	int len, num_qp = atomic_read(&siw_dev->num_qp);
+
+	len = sprintf(buf, "%s: %d QPs %s\n", siw_dev->ofa_dev.name,
+		      num_qp, num_qp?"- see dmesg for details":"");
+
+	if (num_qp)
+		printk("\n%d QPs on device %s:\n",
+		       num_qp, siw_dev->ofa_dev.name);
+	else
+		return len;
+
+	printk(KERN_INFO "%-7s%-6s%-6s%-5s%-5s%-5s%-5s%-5s%-20s%-20s\n",
+		"QP-ID", "State", "Ref's", "SQ", "RQ", "IRQ", "ORQ", "s/r",
+		"Sock", "CEP");
+
+	list_for_each_safe(pos, tmp, &siw_dev->qp_list) {
+		struct siw_qp *qp = list_entry(pos, struct siw_qp, devq);
+
+		printk(KERN_INFO "%-7d%-6d%-6d%-5d%-5d%-5d%-5d%d/%-3d0x%-17p"
+			" 0x%-18p\n",
+			QP_ID(qp),
+			qp->attrs.state,
+			atomic_read(&qp->hdr.ref.refcount),
+			qp->attrs.sq_size - atomic_read(&qp->sq_space),
+			qp->attrs.rq_size - atomic_read(&qp->rq_space),
+			qp->attrs.ird - atomic_read(&qp->irq_space),
+			qp->attrs.ord - atomic_read(&qp->orq_space),
+			tx_wqe(qp)?1:0,
+			rx_wqe(qp)?1:0,
+			qp->attrs.llp_stream_handle,
+			qp->cep);
+	}
+	return len;
+}
+
 static ssize_t show_if_type(struct device *dev,
 			    struct device_attribute *attr, char *buf)
 {
@@ -145,11 +227,15 @@ static struct class_device_attribute *siw_dev_attributes[] = {
 static DEVICE_ATTR(sw_version, S_IRUGO, show_sw_version, NULL);
 static DEVICE_ATTR(if_type, S_IRUGO, show_if_type, NULL);
 static DEVICE_ATTR(stats, S_IRUGO, show_stats, NULL);
+static DEVICE_ATTR(qp, S_IRUGO, show_qps, NULL);
+static DEVICE_ATTR(cep, S_IRUGO, show_ceps, NULL);
 
 static struct device_attribute *siw_dev_attributes[] = {
 	&dev_attr_sw_version,
 	&dev_attr_if_type,
-	&dev_attr_stats
+	&dev_attr_stats,
+	&dev_attr_qp,
+	&dev_attr_cep
 };
 #endif
 
@@ -311,6 +397,8 @@ static int siw_register_device(struct siw_dev *dev)
 	dev->attrs.max_srq_sge = SIW_MAX_SGE;
 
 	siw_idr_init(dev);
+	INIT_LIST_HEAD(&dev->cep_list);
+	INIT_LIST_HEAD(&dev->qp_list);
 
 	atomic_set(&dev->num_srq, 0);
 	atomic_set(&dev->num_qp, 0);

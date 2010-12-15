@@ -273,6 +273,8 @@ static void siw_free_qp(struct kref *ref)
 	struct siw_qp	*qp =
 		container_of(container_of(ref, struct siw_objhdr, ref),
 			     struct siw_qp, hdr);
+	struct siw_dev	*dev = qp->hdr.dev;
+	unsigned long flags;
 
 	dprint(DBG_OBJ|DBG_CM, "(QP%d): Free Object\n", QP_ID(qp));
 
@@ -281,7 +283,13 @@ static void siw_free_qp(struct kref *ref)
 
 	siw_drain_wq(&qp->freeq);
 
-	atomic_dec(&qp->hdr.dev->num_qp);
+	siw_remove_obj(&dev->idr_lock, &dev->qp_idr, &qp->hdr);
+
+	spin_lock_irqsave(&dev->idr_lock, flags);
+	list_del(&qp->devq);
+	spin_unlock_irqrestore(&dev->idr_lock, flags);
+
+	atomic_dec(&dev->num_qp);
 	kfree(qp);
 }
 

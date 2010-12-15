@@ -136,6 +136,8 @@ struct siw_dev {
 	struct net_device	*l2dev;
 	struct siw_devinfo	attrs;
 	/* object management */
+	struct list_head	cep_list;
+	struct list_head	qp_list;
 	spinlock_t		idr_lock;
 	struct idr		qp_idr;
 	struct idr		cq_idr;
@@ -616,6 +618,7 @@ struct siw_iwarp_tx {
 struct siw_qp {
 	struct ib_qp		ofa_qp;
 	struct siw_objhdr	hdr;
+	struct list_head	devq;
 	int			cpu;
 	struct siw_iwarp_rx	rx_ctx;
 	struct siw_iwarp_tx	tx_ctx;

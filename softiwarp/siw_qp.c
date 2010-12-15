@@ -301,12 +301,7 @@ static int siw_qp_irq_init(struct siw_qp *qp, int size)
 	dprint(DBG_CM|DBG_WR, "(QP%d): irq size: %d\n", QP_ID(qp), i);
 	if (size <= 0)
 		return 0;
-	/*
-	 * Give the IRD one extra entry since after sending
-	 * the RResponse it may trigger another peer RRequest
-	 * before the RResponse goes back to free queue.
-	 */
-	size++;
+
 	atomic_set(&qp->irq_space, size);
 
 	while (size--) {
@@ -432,8 +427,11 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 
 			/*
 			 * init IRD freequeue, caller has already checked
-			 * limits
+			 * limits. Add one extra entry since after sending
+			 * the RResponse it may trigger another peer RRequest
+			 * before the RResponse goes back to free queue.
 			 */
+			++attrs->ird;
 			rv = siw_qp_irq_init(qp, attrs->ird);
 			if (rv)
 				return rv;

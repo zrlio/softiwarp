@@ -75,11 +75,16 @@ struct siw_cep {
 	struct iw_cm_id		*cm_id;
 	struct siw_dev		*dev;
 
+	struct list_head	devq;
 	/*
 	 * The provider_data element of a listener IWCM ID
 	 * refers to a list of one or more listener CEPs
 	 */
-	struct list_head	list;
+	struct list_head	listenq;
+	/*
+	 * List of pending accepts not processed by IWCM
+	 */
+	struct list_head	acceptq;
 
 	struct siw_cep		*listen_cep;
 	struct siw_qp		*qp;
@@ -104,6 +109,9 @@ struct siw_cep {
 	void    (*sk_error_report)(struct sock *sk);
 };
 
+#define MPAREQ_TIMEOUT	HZ*10
+#define MPAREP_TIMEOUT	HZ*5
+
 enum siw_work_type {
 	SIW_CM_WORK_ACCEPT	= 1,
 	SIW_CM_WORK_READ_MPAHDR,
@@ -113,7 +121,7 @@ enum siw_work_type {
 };
 
 struct siw_cm_work {
-	struct work_struct	work;
+	struct delayed_work	work;
 	struct list_head	list;
 	enum siw_work_type	type;
 	struct siw_cep	*cep;

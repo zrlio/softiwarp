@@ -371,6 +371,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 	struct siw_iwarp_rx		*c_rx;
 	struct siw_uresp_create_qp	uresp;
 
+	unsigned long flags;
 	int kernel_verbs = ofa_pd->uobject ? 0 : 1;
 	int rv = 0;
 
@@ -487,11 +488,6 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 	 */
 	qp->attrs.sq_max_sges_rdmaw = attrs->cap.max_send_sge;
 	qp->attrs.rq_max_sges = attrs->cap.max_recv_sge;
-	/*
-	 * while not part of attrs we init ord/ird here
-	 */
-	qp->attrs.ord = dev->attrs.max_ord;
-	qp->attrs.ird = dev->attrs.max_ird;
 
 	qp->attrs.state = SIW_QP_STATE_IDLE;
 
@@ -533,6 +529,11 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 	qp->ofa_qp.qp_num = QP_ID(qp);
 
 	siw_pd_get(pd);
+
+	INIT_LIST_HEAD(&qp->devq);
+	spin_lock_irqsave(&dev->idr_lock, flags);
+	list_add_tail(&qp->devq, &dev->qp_list);
+	spin_unlock_irqrestore(&dev->idr_lock, flags);
 
 	return &qp->ofa_qp;
 
@@ -634,8 +635,6 @@ int siw_ofed_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
 
 int siw_destroy_qp(struct ib_qp *ofa_qp)
 {
-	struct ib_device	*ofa_dev = ofa_qp->device;
-	struct siw_dev		*dev = siw_dev_ofa2siw(ofa_dev);
 	struct siw_qp		*qp = siw_qp_ofa2siw(ofa_qp);
 	struct siw_cep		*cep;
 	struct siw_qp_attrs	qp_attrs;
@@ -678,8 +677,6 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 		crypto_free_hash(qp->rx_ctx.mpa_crc_hd.tfm);
 	if (qp->tx_ctx.crc_enabled)
 		crypto_free_hash(qp->tx_ctx.mpa_crc_hd.tfm);
-
-	siw_remove_obj(&dev->idr_lock, &dev->qp_idr, &qp->hdr);
 
 	/* Drop references */
 	siw_cq_put(qp->scq);
