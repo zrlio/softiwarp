@@ -1,3 +1,41 @@
+/*
+ * Software iWARP library for Linux
+ *
+ * Authors: Bernard Metzler <bmt@zurich.ibm.com>
+ *
+ * Copyright (c) 2008-2011, IBM Corporation
+ *
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * BSD license below:
+ *
+ *   Redistribution and use in source and binary forms, with or
+ *   without modification, are permitted provided that the following
+ *   conditions are met:
+ *
+ *   - Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *
+ *   - Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *
+ *   - Neither the name of IBM nor the names of its contributors may be
+ *     used to endorse or promote products derived from this software without
+ *     specific prior written permission.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 #if HAVE_CONFIG_H
 #  include <config.h>
 #endif
@@ -45,8 +83,7 @@ int siw_query_port(struct ibv_context *ctx, uint8_t port,
 
 
 int siw_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr,
-                        enum ibv_qp_attr_mask attr_mask,
-                        struct ibv_qp_init_attr *init_attr)
+                        int attr_mask, struct ibv_qp_init_attr *init_attr)
 {
 	struct ibv_query_qp cmd;
 
@@ -56,7 +93,7 @@ int siw_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr,
 
 struct ibv_pd *siw_alloc_pd(struct ibv_context *ctx)
 {
-	struct siw_alloc_pd	 cmd;
+	struct ibv_alloc_pd	 cmd;
 	struct siw_alloc_pd_resp resp;
 	struct siw_pd 		 *pd;
 
@@ -86,7 +123,7 @@ int siw_free_pd(struct ibv_pd *pd)
 
 
 struct ibv_mr *siw_reg_mr(struct ibv_pd *pd, void *addr,
-			  size_t len, enum ibv_access_flags access)
+			  size_t len, int access)
 {
 	struct siw_mr			*mr;
 	struct siw_cmd_reg_umr_req	req;
@@ -196,10 +233,18 @@ struct ibv_srq *siw_create_srq(struct ibv_pd *pd,
 	return &srq->ofa_srq;
 }
 
-int siw_modify_srq(struct ibv_srq *srq, struct ibv_srq_attr *attr,
-		   enum ibv_srq_attr_mask attr_mask)
+int siw_modify_srq(struct ibv_srq *ofa_srq, struct ibv_srq_attr *attr,
+		   int attr_mask)
 {
-	return -ENOSYS;
+	struct siw_srq		*srq = srq_ofa2siw(ofa_srq);
+	struct ibv_modify_srq	cmd;
+	int			rv;
+
+	pthread_spin_lock(&srq->lock);
+	rv = ibv_cmd_modify_srq(ofa_srq, attr, attr_mask, &cmd, sizeof cmd);
+	pthread_spin_unlock(&srq->lock);
+
+	return rv;
 }
 
 int siw_destroy_srq(struct ibv_srq *ofa_srq)
@@ -247,7 +292,7 @@ fail:	free(qp);
 }
 
 int siw_modify_qp(struct ibv_qp *ofaqp, struct ibv_qp_attr *attr,
-		  enum ibv_qp_attr_mask attr_mask)
+		  int attr_mask)
 {
 	struct siw_qp		*qp = qp_ofa2siw(ofaqp);
 	struct ibv_modify_qp	cmd;
@@ -285,16 +330,6 @@ struct ibv_ah *siw_create_ah(struct ibv_pd *pd, struct ibv_ah_attr *attr)
 }
 
 int siw_destroy_ah(struct ibv_ah *ah)
-{
-	return -ENOSYS;
-}
-
-int siw_attach_mcast(struct ibv_qp *qp, union ibv_gid *gid, uint16_t lid)
-{
-	return -ENOSYS;
-}
-
-int siw_detach_mcast(struct ibv_qp *qp, union ibv_gid *gid, uint16_t lid)
 {
 	return -ENOSYS;
 }

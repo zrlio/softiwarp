@@ -1,3 +1,41 @@
+/*
+ * Software iWARP library for Linux
+ *
+ * Authors: Bernard Metzler <bmt@zurich.ibm.com>
+ *
+ * Copyright (c) 2008-2011, IBM Corporation
+ *
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * BSD license below:
+ *
+ *   Redistribution and use in source and binary forms, with or
+ *   without modification, are permitted provided that the following
+ *   conditions are met:
+ *
+ *   - Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *
+ *   - Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *
+ *   - Neither the name of IBM nor the names of its contributors may be
+ *     used to endorse or promote products derived from this software without
+ *     specific prior written permission.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 #ifndef _SIW_H
 #define _SIW_H
 
@@ -86,14 +124,12 @@ extern int siw_query_port(struct ibv_context *, uint8_t, struct ibv_port_attr *)
 /* 
  * atr: Adding support for ibv_query_qp
  */
-extern int siw_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr,
-                        enum ibv_qp_attr_mask attr_mask,
-                        struct ibv_qp_init_attr *init_attr);
+extern int siw_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *,
+                        int attr_mask, struct ibv_qp_init_attr *);
 
 extern struct ibv_pd *siw_alloc_pd(struct ibv_context *);
 extern int siw_free_pd(struct ibv_pd *);
-extern struct ibv_mr *siw_reg_mr(struct ibv_pd *, void *, size_t,
-			        enum ibv_access_flags);
+extern struct ibv_mr *siw_reg_mr(struct ibv_pd *, void *, size_t, int);
 extern int siw_dereg_mr(struct ibv_mr *);
 extern struct ibv_cq *siw_create_cq(struct ibv_context *, int,
 				   struct ibv_comp_channel *, int);
@@ -104,15 +140,13 @@ extern int siw_poll_cq_ofed(struct ibv_cq *, int, struct ibv_wc *);
 
 extern struct ibv_srq *siw_create_srq(struct ibv_pd *,
 				     struct ibv_srq_init_attr *);
-extern int siw_modify_srq(struct ibv_srq *, struct ibv_srq_attr *, 
-			 enum ibv_srq_attr_mask);
+extern int siw_modify_srq(struct ibv_srq *, struct ibv_srq_attr *, int);
 extern int siw_destroy_srq(struct ibv_srq *);
 
 extern int siw_post_srq_recv(struct ibv_srq *, struct ibv_recv_wr *, 
 			    struct ibv_recv_wr **);
 extern struct ibv_qp *siw_create_qp(struct ibv_pd *, struct ibv_qp_init_attr *);
-extern int siw_modify_qp(struct ibv_qp *, struct ibv_qp_attr *,
-			enum ibv_qp_attr_mask);
+extern int siw_modify_qp(struct ibv_qp *, struct ibv_qp_attr *, int);
 extern int siw_destroy_qp(struct ibv_qp *);
 
 extern int siw_post_send_ofed(struct ibv_qp *, struct ibv_send_wr *,
@@ -125,8 +159,6 @@ extern int siw_post_srq_recv_ofed(struct ibv_srq *, struct ibv_recv_wr *,
 extern struct ibv_ah *siw_create_ah(struct ibv_pd *, struct ibv_ah_attr *);
 extern int siw_destroy_ah(struct ibv_ah *);
 
-extern int siw_attach_mcast(struct ibv_qp *, union ibv_gid *, uint16_t);
-extern int siw_detach_mcast(struct ibv_qp *, union ibv_gid *, uint16_t);
 extern void siw_async_event(struct ibv_async_event *);
 
 

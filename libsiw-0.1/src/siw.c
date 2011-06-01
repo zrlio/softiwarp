@@ -1,9 +1,48 @@
+/*
+ * Software iWARP library for Linux
+ *
+ * Authors: Bernard Metzler <bmt@zurich.ibm.com>
+ *
+ * Copyright (c) 2008-2011, IBM Corporation
+ *
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * BSD license below:
+ *
+ *   Redistribution and use in source and binary forms, with or
+ *   without modification, are permitted provided that the following
+ *   conditions are met:
+ *
+ *   - Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *
+ *   - Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *
+ *   - Neither the name of IBM nor the names of its contributors may be
+ *     used to endorse or promote products derived from this software without
+ *     specific prior written permission.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 #if HAVE_CONFIG_H
 #  include <config.h>
 #endif				/* HAVE_CONFIG_H */
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <sys/mman.h>
@@ -13,17 +52,15 @@
 #include "siw_abi.h"
 
 
-#define DEVICE_ID_SOFTRDMA	0x0815
 #define VERSION_ID_SOFTRDMA	0x0001
+#define SIW_NODE_DESC		"Software iWARP stack"
 
 struct {
-	unsigned		device;
 	unsigned		version;
-	enum siw_if_type	type;
+	enum siw_if_type	if_type;
 } siw_device_type = {
-	.device = DEVICE_ID_SOFTRDMA,
 	.version = VERSION_ID_SOFTRDMA,
-	.type   = SIW_IF_OFED,
+	.if_type = SIW_IF_OFED,
 };
 
 
@@ -46,8 +83,8 @@ static struct ibv_context_ops siw_context_ops = {
 	.destroy_qp	= siw_destroy_qp,
 	.create_ah	= siw_create_ah,
 	.destroy_ah	= siw_destroy_ah,
-	.attach_mcast	= siw_attach_mcast,
-	.detach_mcast	= siw_detach_mcast,
+	.attach_mcast	= NULL,
+	.detach_mcast	= NULL,
 	.req_notify_cq	= siw_notify_cq,
 };
 
@@ -110,53 +147,63 @@ static struct ibv_device_ops siw_dev_ops = {
 };
 
 static struct ibv_device *siw_driver_init(const char *uverbs_sys_path,
-					    int abi_version)
+					  int abi_version)
 {
-	char			value[16];
+	char			value[16], siw_devpath[IBV_SYSFS_PATH_MAX],
+				node_desc[24];
 	struct siw_device	*dev;
-	unsigned		device, version;
-	enum siw_if_type	iftype;
+	int			version, if_type;
 
-goto tempfix;
-	if (ibv_read_sysfs_file(uverbs_sys_path, "device/version",
+        /*
+         * software iwarp does not have own PCI device or
+         * vendor ID, so nothing to check in that respect.
+         * We just check for kernel modul code version
+         * and for fast path interface type.
+         */
+	if (ibv_read_sysfs_file(uverbs_sys_path, "ibdev",
 				value, sizeof value) < 0)
 		return NULL;
-	sscanf(value, "%i", &version);
 
-	if (ibv_read_sysfs_file(uverbs_sys_path, "device/device",
+	memset(siw_devpath, 0, IBV_SYSFS_PATH_MAX);
+
+	snprintf(siw_devpath, IBV_SYSFS_PATH_MAX, "%s/class/infiniband/%s",
+		 ibv_get_sysfs_path(), value);
+
+	if (ibv_read_sysfs_file(siw_devpath, "node_desc",
+				node_desc, sizeof node_desc) < 0)
+		return NULL;
+
+	if (strncmp(SIW_NODE_DESC, node_desc, strlen(SIW_NODE_DESC)))
+		return NULL;
+
+	if (ibv_read_sysfs_file(siw_devpath, "sw_version",
 				value, sizeof value) < 0)
 		return NULL;
-	sscanf(value, "%i", &device);
+
+	sscanf(value, "%i", &version); 
+
+	if (ibv_read_sysfs_file(siw_devpath, "if_type",
+				value, sizeof value) < 0)
+		return NULL;
+
+	sscanf(value, "%i", &if_type); 
 
 	if (version != siw_device_type.version ||
-	    device != siw_device_type.device) {
-	
-		printf("unknown device/version: %d, %d\n", device, version);
+	    if_type != siw_device_type.if_type) {
+		fprintf(stderr, "%s: Kernel module not supported: "
+			"v=%d:%d, if=%d:%d\n",
+			 siw_devpath, version, siw_device_type.version,
+			 if_type, siw_device_type.if_type);
 		return NULL;
 	}
-
-	printf("found version %d device %d type %d\n", version, device, 
-		siw_device_type.type);
-
-	if (ibv_read_sysfs_file(uverbs_sys_path, "device/if_type",
-				value, sizeof value) < 0)
-		return NULL;
-	sscanf(value, "%i", &iftype);
-
-	if (iftype != SIW_IF_OFED && iftype != SIW_IF_MAPPED) {
-		printf("unknown device/if_type: %d, %d\n", device, iftype);
-		return NULL;
-	}
-tempfix:
 
 	dev = malloc(sizeof *dev);
-	if (!dev) {
+	if (!dev)
 		return NULL;
-	}
 
 	pthread_spin_init(&dev->lock, PTHREAD_PROCESS_PRIVATE);
 	dev->ofa_dev.ops = siw_dev_ops;
-	dev->if_type = siw_device_type.type;
+	dev->if_type = siw_device_type.if_type;
 
 	return &dev->ofa_dev;
 }
