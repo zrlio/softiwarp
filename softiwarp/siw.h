@@ -180,8 +180,6 @@ enum siw_access_flags {
 		(SR_MEM_RWRITE | SR_MEM_RREAD)
 };
 
-
-
 #define STAG_VALID	1
 #define STAG_INVALID	0
 #define SIW_STAG_MAX	0xffffffff
@@ -199,7 +197,7 @@ struct siw_mem {
 
 	struct siw_mr	*mr;		/* assoc. MR if MW, NULL if MR */
 
-	__u32	stag_state:1,		/* VALID or INVALID */
+	u32	stag_state:1,		/* VALID or INVALID */
 		is_zbva:1,		/* zero based virt. addr. */
 		mw_bind_enabled:1,	/* check only if MR */
 		remote_inval_enabled:1,	/* VALID or INVALID */
@@ -209,7 +207,7 @@ struct siw_mem {
 	enum siw_access_flags	perms;	/* local/remote READ & WRITE */
 
 	u64	va;		/* VA of memory */
-	u32	len;		/* amount of memory bytes */
+	u64	len;		/* amount of memory bytes */
 	u32	fbo;		/* first byte offset */
 };
 

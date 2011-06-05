@@ -215,10 +215,11 @@ void siw_sq_complete(struct list_head *c_list, struct siw_qp *qp, int num,
 			 (cq->notify == SIW_CQ_NOTIFY_SOLICITED &&
 			  send_flags & IB_SEND_SOLICITED))) {
 				cq->notify = SIW_CQ_NOTIFY_NOT;
+				unlock_cq_rxsave(cq, flags);
 				(*cq->ofa_cq.comp_handler)
 					(&cq->ofa_cq, cq->ofa_cq.cq_context);
-		}
-		unlock_cq_rxsave(cq, flags);
+		} else
+			unlock_cq_rxsave(cq, flags);
 	} else {
 		struct list_head *pos;
 

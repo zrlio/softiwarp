@@ -176,7 +176,6 @@ static struct siw_cep *siw_cep_alloc(struct siw_dev  *dev)
 		unsigned long flags;
 
 		INIT_LIST_HEAD(&cep->listenq);
-		INIT_LIST_HEAD(&cep->acceptq);
 		INIT_LIST_HEAD(&cep->devq);
 		INIT_LIST_HEAD(&cep->work_freelist);
 
@@ -188,10 +187,12 @@ static struct siw_cep *siw_cep_alloc(struct siw_dev  *dev)
 		init_waitqueue_head(&cep->waitq);
 		spin_lock_init(&cep->lock);
 		cep->dev = dev;
+
 		spin_lock_irqsave(&dev->idr_lock, flags);
 		list_add_tail(&cep->devq, &dev->cep_list);
 		spin_unlock_irqrestore(&dev->idr_lock, flags);
 		atomic_inc(&dev->num_cep);	
+
 		dprint(DBG_OBJ|DBG_CM, "(CEP 0x%p): New Object\n", cep);
 	}
 	return cep;
@@ -230,82 +231,48 @@ static void siw_put_work(struct siw_cm_work *work)
 	spin_unlock_bh(&work->cep->lock);
 }
 
-/*
- * Test and set CEP into CLOSE pending. After calling
- * this function, the CEP conn_close flag is set. Returns:
- *
- *  1, if CEP is currently in use,
- *  0, if CEP is not in use and not already in CLOSE,
- * -1, if CEP is not in use and already in CLOSE.
- */
-int siw_cep_in_close(struct siw_cep *cep)
+static void siw_cep_set_inuse(struct siw_cep *cep)
 {
+	unsigned long flags;
 	int rv;
+retry:
+	dprint(DBG_CM, " (CEP 0x%p): use %d\n",
+		cep, cep->in_use);
 
-	spin_lock_bh(&cep->lock);
+	spin_lock_irqsave(&cep->lock, flags);
 
-	dprint(DBG_CM, " (CEP 0x%p): close %d, use %d\n",
-		cep, cep->conn_close, cep->in_use);
-
-	rv = cep->in_use ? 1 : (cep->conn_close ? -1 : 0);
-	cep->conn_close = 1; /* may be redundant */
-
-	spin_unlock_bh(&cep->lock);
-
-	return rv;
+	if (cep->in_use) {
+		spin_unlock_irqrestore(&cep->lock, flags);
+		rv = wait_event_interruptible(cep->waitq, !cep->in_use);
+		if (signal_pending(current))
+			flush_signals(current);
+		goto retry;
+	} else {
+		cep->in_use = 1;
+		spin_unlock_irqrestore(&cep->lock, flags);
+	}
 }
 
-/*
- * Set CEP in_use flag. Returns:
- *
- *  1, if CEP was not in use and not scheduled for closing,
- *  0, if CEP was not in use but scheduled for closing,
- * -1, if CEP is currently in use.
- */
-static int siw_cep_set_inuse(struct siw_cep *cep)
+static void siw_cep_set_free(struct siw_cep *cep)
 {
-	int rv;
+	unsigned long flags;
 
-	spin_lock_bh(&cep->lock);
+	dprint(DBG_CM, " (CEP 0x%p): use %d\n",
+		cep, cep->in_use);
 
-	dprint(DBG_CM, " (CEP 0x%p): close %d, use %d\n",
-		cep, cep->conn_close, cep->in_use);
-
-	rv = cep->in_use ? -1 : (cep->conn_close ? 0 : 1);
-	cep->in_use = 1; /* may be redundant */
-
-	spin_unlock_bh(&cep->lock);
-
-	return rv;
-}
-
-/*
- * Clear CEP in_use flag. Returns:
- *
- *  1, if CEP is not scheduled for closing,
- *  0, else.
- */
-static int siw_cep_set_free(struct siw_cep *cep)
-{
-	int rv;
-
-	spin_lock_bh(&cep->lock);
-
-	dprint(DBG_CM, " (CEP 0x%p): close %d, use %d\n",
-		cep, cep->conn_close, cep->in_use);
-
+	spin_lock_irqsave(&cep->lock, flags);
 	cep->in_use = 0;
-	rv = cep->conn_close ? 0 : 1;
-
-	spin_unlock_bh(&cep->lock);
+	spin_unlock_irqrestore(&cep->lock, flags);
 
 	wake_up(&cep->waitq);
-
-	return rv;
 }
 
 static void siw_cm_release(struct siw_cep *cep)
 {
+	dprint(DBG_CM, " (CEP 0x%p): mpa_timer=%s, sock=0x%p, QP%d, id=0x%p\n",
+		cep, cep->mpa_timer?"y":"n", cep->llp.sock,
+		cep->qp?QP_ID(cep->qp):-1, cep->cm_id);
+
 	siw_cancel_mpatimer(cep);
 
 	if (cep->llp.sock) {
@@ -326,41 +293,6 @@ static void siw_cm_release(struct siw_cep *cep)
 	cep->state = SIW_EPSTATE_CLOSED;
 }
 
-static void siw_del_accept(struct siw_cep *cep, int drop)
-{
-	list_del(&cep->acceptq);
-	INIT_LIST_HEAD(&cep->acceptq);
-	siw_cep_put(cep->listen_cep);
-	cep->listen_cep = NULL;
-	/*
-	 * clear iwcm reference to CEP from pending/answered
-	 * upcall
-	 */
-	siw_cep_put(cep);
-
-	if (drop) {
-		if (!siw_cep_in_close(cep))
-			siw_cm_release(cep);
-		siw_cep_put(cep);
-	}
-}
-
-/*
- * siw_flush_acceptq()
- *
- * Drop all connection endpoints from accept queue.
- */
-static void siw_flush_acceptq(struct siw_cep *cep)
-{
-	struct list_head *pos, *tmp;
-
-	if (list_empty(&cep->acceptq))
-		return;
-
-	list_for_each_safe(pos, tmp, &cep->acceptq)
-		siw_del_accept(container_of(pos, struct siw_cep, acceptq), 1);
-}
-
 
 static void __siw_cep_dealloc(struct kref *ref)
 {
@@ -370,8 +302,7 @@ static void __siw_cep_dealloc(struct kref *ref)
 
 	dprint(DBG_OBJ|DBG_CM, "(CEP 0x%p): Free Object\n", cep);
 
-	if (cep->listen_cep)
-		siw_del_accept(cep, 0);
+	WARN_ON(cep->listen_cep);
 
 	/* kfree(NULL) is save */
 	kfree(cep->mpa.pdata);
@@ -437,16 +368,19 @@ void siw_qp_cm_drop(struct siw_qp *qp, int schedule)
 	qp->rx_ctx.rx_suspend = 1;
 	qp->tx_ctx.tx_suspend = 1;
 
-	if (cep && !siw_cep_in_close(cep)) {
-		if (schedule) {
-			siw_cm_queue_work(cep, SIW_CM_WORK_CLOSE_LLP);
-			return;
-		}
+	if (!qp->cep)
+		return;
+
+	if (schedule)
+		siw_cm_queue_work(cep, SIW_CM_WORK_CLOSE_LLP);
+	else {
+		siw_cep_set_inuse(cep);
 		/*
 		 * Immediately close socket
 		 */
-		dprint(DBG_CM, "(): immediate close, cep->state=%d\n",
-			cep->state);
+		dprint(DBG_CM, "(): immediate close, cep=0x%p, state=%d, "
+			"id=0x%p, sock=0x%p, QP%d\n", cep, cep->state,
+			cep->cm_id, cep->llp.sock, cep->qp?QP_ID(cep->qp):-1);
 
 		if (cep->cm_id) {
 			switch (cep->state) {
@@ -483,8 +417,11 @@ void siw_qp_cm_drop(struct siw_qp *qp, int schedule)
 			sock_release(cep->llp.sock);
 			cep->llp.sock = NULL;
 		}
-		cep->qp = NULL;
-		siw_qp_put(qp);
+		if (cep->qp) {
+			cep->qp = NULL;
+			siw_qp_put(qp);
+		}
+		siw_cep_set_free(cep);
 	}
 }
 
@@ -494,8 +431,8 @@ void siw_cep_put(struct siw_cep *cep)
 	dprint(DBG_OBJ|DBG_CM, "(CEP 0x%p): New refcount: %d\n",
 		cep, atomic_read(&cep->ref.refcount) - 1);
 
-	if (!kref_put(&cep->ref, __siw_cep_dealloc))
-		wake_up(&cep->waitq);
+	BUG_ON(atomic_read(&cep->ref.refcount) < 1);
+	kref_put(&cep->ref, __siw_cep_dealloc);
 }
 
 void siw_cep_get(struct siw_cep *cep)
@@ -614,84 +551,63 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 }
 
 
-static void siw_proc_mpareq(struct siw_cep *cep)
+/*
+ * siw_proc_mpareq()
+ *
+ * Read MPA Request from socket and signal new connection to IWCM
+ * if success. Caller must hold lock on corresponding listening CEP.
+ */
+static int siw_proc_mpareq(struct siw_cep *cep)
 {
-	int err = siw_recv_mpa_rr(cep);
-
-	if (err)
+	int rv = siw_recv_mpa_rr(cep);
+	if (rv != -EAGAIN)
+		siw_cancel_mpatimer(cep);
+	if (rv)
 		goto out;
-
-	siw_cancel_mpatimer(cep);
 
 	if (cep->mpa.hdr.params.rev > MPA_REVISION_1) {
 		/* allow for 0 and 1 only */
-		err = -EPROTO;
+		rv = -EPROTO;
 		goto out;
 	}
 
 	if (memcmp(cep->mpa.hdr.key, MPA_KEY_REQ, sizeof cep->mpa.hdr.key)) {
-		err = -EPROTO;
+		rv = -EPROTO;
 		goto out;
 	}
 	cep->state = SIW_EPSTATE_RECVD_MPAREQ;
 
-	if (cep->listen_cep->state == SIW_EPSTATE_LISTENING)
-		err = siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REQUEST,
-				    IW_CM_EVENT_STATUS_OK);
-	else {
-		/*
-		 * listener lost: new connection cannot be signalled
-		 */
-		dprint(DBG_CM|DBG_ON, "(cep=0x%p): Listener lost:!\n", cep);
-		err = -EINVAL;
-	}
+	/* Keep reference until IWCM accepts/rejects */
+	siw_cep_get(cep);
+	rv = siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REQUEST,
+			   IW_CM_EVENT_STATUS_OK);
+	if (rv)
+		siw_cep_put(cep);
 out:
-	if (err && err != -EAGAIN) {
-		dprint(DBG_CM|DBG_ON, "(cep=0x%p): error %d\n", cep, err);
-
-		if (!siw_cep_in_close(cep)) {
-			/*
-			 * remove reference from listening cep and clear
-			 * information on related listener.
-			 */
-			siw_cep_put(cep->listen_cep);
-			cep->listen_cep = NULL;
-
-			siw_socket_disassoc(cep->llp.sock);
-			sock_release(cep->llp.sock);
-			cep->llp.sock = NULL;
-
-			cep->state = SIW_EPSTATE_CLOSED;
-			siw_cep_put(cep);
-		}
-	}
+	return rv;
 }
 
 
-static void siw_proc_mpareply(struct siw_cep *cep)
+static int siw_proc_mpareply(struct siw_cep *cep)
 {
 	struct siw_qp_attrs	qp_attrs;
 	struct siw_qp		*qp = cep->qp;
 	int			rv;
 
 	rv = siw_recv_mpa_rr(cep);
-	if (rv == -EAGAIN)
-		/* incomplete mpa reply */
-		return;
-
-	siw_cancel_mpatimer(cep);
-
+	if (rv != -EAGAIN)
+		siw_cancel_mpatimer(cep);
 	if (rv)
-		goto error;
+		goto out_err;
 
 	if (cep->mpa.hdr.params.rev > MPA_REVISION_1) {
 		/* allow for 0 and 1 only */
 		rv = -EPROTO;
-		goto error;
+		goto out_err;
 	}
 	if (memcmp(cep->mpa.hdr.key, MPA_KEY_REP, sizeof cep->mpa.hdr.key)) {
 		rv = -EPROTO;
-		goto error;
+		goto out_err;
 	}
 	/*
 	 * TODO: 1. handle eventual MPA reject (upcall with ECONNREFUSED)
@@ -712,7 +628,7 @@ static void siw_proc_mpareply(struct siw_cep *cep)
 	if (qp->attrs.state > SIW_QP_STATE_RTR) {
 		rv = -EINVAL;
 		up_write(&qp->state_lock);
-		goto error;
+		goto out_err;
 	}
 	rv = siw_qp_modify(qp, &qp_attrs, SIW_QP_ATTR_STATE|
 					       SIW_QP_ATTR_LLP_HANDLE|
@@ -720,38 +636,25 @@ static void siw_proc_mpareply(struct siw_cep *cep)
 					       SIW_QP_ATTR_IRD|
 					       SIW_QP_ATTR_MPA);
 
-	if (!rv) {
-		cep->state = SIW_EPSTATE_RDMA_MODE;
-		siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-			      IW_CM_EVENT_STATUS_OK);
-
-		up_write(&qp->state_lock);
-		return;
-	}
 	up_write(&qp->state_lock);
-error:
-	/*
-	 * failed socket handover returns responsibility:
-	 * inform iwcm and drop connection
-	 * TODO: 1. send MPA reject for MPA rev==1
-	 *	    if rv != ECONNREFUSED
-	 */
-	siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY, rv);
 
-	if (!siw_cep_in_close(cep)) {
+	if (!rv) {
+		rv = siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
+				   IW_CM_EVENT_STATUS_OK);
+		if (!rv)
+			cep->state = SIW_EPSTATE_RDMA_MODE;
 
-		cep->cm_id->rem_ref(cep->cm_id);
-		cep->cm_id = NULL;
-		siw_cep_put(cep);
-
-		siw_socket_disassoc(cep->llp.sock);
-		sock_release(cep->llp.sock);
-		cep->llp.sock = NULL;
-
-		cep->qp = NULL;
-		siw_qp_put(cep->qp);
+		goto out;
 	}
-	cep->state = SIW_EPSTATE_CLOSED;
+	
+out_err:
+	(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
+			    IW_CM_EVENT_STATUS_EINVAL);
+out:
+	/*
+	 * TODO: Send MPA reject for -EPROTO cases
+	 */
+	return rv;
 }
 
 /*
@@ -764,6 +667,9 @@ static void siw_accept_newconn(struct siw_cep *cep)
 	struct socket		*new_s = NULL;
 	struct siw_cep		*new_cep = NULL;
 	int			rv = 0; /* debug only. should disappear */
+
+	if (cep->state != SIW_EPSTATE_LISTENING)
+		goto error;
 
 	new_cep = siw_cep_alloc(cep->dev);
 	if (!new_cep)
@@ -818,32 +724,33 @@ static void siw_accept_newconn(struct siw_cep *cep)
 		goto error;
 	}
 
+	new_cep->state = SIW_EPSTATE_AWAIT_MPAREQ;
+
+	rv = siw_cm_queue_work(new_cep, SIW_CM_WORK_MPATIMEOUT);
+	if (rv)
+		goto error;
 	/*
 	 * See siw_proc_mpareq() etc. for the use of new_cep->listen_cep.
 	 */
 	new_cep->listen_cep = cep;
 	siw_cep_get(cep);
 
-	new_cep->state = SIW_EPSTATE_AWAIT_MPAREQ;
-	/*
-	 * Add the cep to the accept queue even before the upcall.
-	 * Dropping the listener will also close this connnection
-	 */
-	list_add_tail(&new_cep->acceptq, &cep->acceptq);
-	siw_cep_get(new_cep);
-
-	rv = siw_cm_queue_work(new_cep, SIW_CM_WORK_MPATIMEOUT);
-	if (rv) {
-		siw_del_accept(new_cep, 0);
-		goto error;
-	}
 	if (atomic_read(&new_s->sk->sk_rmem_alloc)) {
 		/*
 		 * MPA REQ already queued
 		 */
 		dprint(DBG_CM, "(cep=0x%p): Immediate MPA req.\n", cep);
 
-		siw_proc_mpareq(new_cep);
+		siw_cep_set_inuse(new_cep);
+		rv = siw_proc_mpareq(new_cep);
+		siw_cep_set_free(new_cep);
+
+		if (rv != -EAGAIN) {
+			siw_cep_put(cep);
+			new_cep->listen_cep = NULL;
+			if (rv)
+				goto error;
+		}
 	}
 	return;
 
@@ -966,75 +873,64 @@ static void siw_cm_work_handler(struct work_struct *w)
 {
 	struct siw_cm_work	*work;
 	struct siw_cep		*cep;
-	int rv;
+	int rv = 0;
 
 	work = container_of(w, struct siw_cm_work, work.work);
 	cep = work->cep;
 
-	dprint(DBG_CM, " (QP%d): WORK type: %d, CEP: 0x%p\n",
-		cep->qp ? QP_ID(cep->qp) : -1, work->type, cep);
+	dprint(DBG_CM, " (QP%d): WORK type: %d, CEP: 0x%p, state: %d\n",
+		cep->qp ? QP_ID(cep->qp) : -1, work->type, cep, cep->state);
+
+	siw_cep_set_inuse(cep);
 
 	switch (work->type) {
 
 	case SIW_CM_WORK_ACCEPT:
 
-		rv = siw_cep_set_inuse(cep);
-		if (rv > 0) {
-			if (cep->state == SIW_EPSTATE_LISTENING)
-				siw_accept_newconn(cep);
-
-			if (!siw_cep_set_free(cep)) {
-				siw_cm_release(cep);
-				siw_cep_put(cep);
-			}
-			break;
-		}
-		/*
-		 * CEP already scheduled for closing
-		 */
-		if (!rv) {
-			siw_cm_release(cep);
-			(void) siw_cep_set_free(cep);
-		}
+		siw_accept_newconn(cep);
 		break;
 
 	case SIW_CM_WORK_READ_MPAHDR:
 
-		rv = siw_cep_set_inuse(cep);
-		if (rv > 0) {
-			switch (cep->state) {
+		switch (cep->state) {
 
-			case SIW_EPSTATE_AWAIT_MPAREQ:
+		case SIW_EPSTATE_AWAIT_MPAREQ:
 
-				siw_proc_mpareq(cep);
-				break;
+			if (cep->listen_cep) {
+				siw_cep_set_inuse(cep->listen_cep);
 
-			case SIW_EPSTATE_AWAIT_MPAREP:
+				if (cep->listen_cep->state ==
+				    SIW_EPSTATE_LISTENING)
+					rv = siw_proc_mpareq(cep);
+				else
+					rv = -EFAULT;
 
-				siw_proc_mpareply(cep);
-				break;
+				siw_cep_set_free(cep->listen_cep);
 
-			default:
-				/*
-				 * CEP already moved out of MPA handshake.
-				 * any connection management already done.
-				 * silently ignore the mpa packet.
-				 */
-				dprint(DBG_CM, "(): CEP not in MPA "
-					"handshake state: %d\n", cep->state);
+				if (rv != -EAGAIN) {
+					siw_cep_put(cep->listen_cep);
+					cep->listen_cep = NULL;
+				}
 			}
-			if (!siw_cep_set_free(cep))
-				siw_cm_release(cep);
-
 			break;
+
+		case SIW_EPSTATE_AWAIT_MPAREP:
+
+			rv = siw_proc_mpareply(cep);
+			break;
+
+		default:
+			/*
+			 * CEP already moved out of MPA handshake.
+			 * any connection management already done.
+			 * silently ignore the mpa packet.
+			 */
+			dprint(DBG_CM, "(): CEP not in MPA "
+				"handshake state: %d\n", cep->state);
 		}
-		/*
-		 * CEP already scheduled for closing
-		 */
-		if (!rv) {
+		if (rv && rv != EAGAIN)
 			siw_cm_release(cep);
-			(void) siw_cep_set_free(cep);
-		}
+
 		break;
 
 	case SIW_CM_WORK_CLOSE_LLP:
@@ -1044,26 +940,12 @@ static void siw_cm_work_handler(struct work_struct *w)
 		dprint(DBG_CM, "(): SIW_CM_WORK_CLOSE_LLP, cep->state=%d\n",
 			cep->state);
 
-		cep->state = SIW_EPSTATE_CLOSED;
-
-		if (cep->llp.sock) {
-			siw_socket_disassoc(cep->llp.sock);
-			sock_release(cep->llp.sock);
-			cep->llp.sock = NULL;
-		}
-		if (cep->qp) {
-			siw_qp_llp_close(cep->qp);
-			siw_qp_put(cep->qp);
-			cep->qp = NULL;
-		}
-		if (cep->cm_id) {
+		if (cep->cm_id)
 			siw_cm_upcall(cep, IW_CM_EVENT_CLOSE,
 				      IW_CM_EVENT_STATUS_OK);
 
-			cep->cm_id->rem_ref(cep->cm_id);
-			cep->cm_id = NULL;
-			siw_cep_put(cep);
-		}
+		siw_cm_release(cep);
+
 		break;
 
 	case SIW_CM_WORK_PEER_CLOSE:
@@ -1078,9 +960,8 @@ static void siw_cm_work_handler(struct work_struct *w)
 				/*
 				 * MPA reply not received, but connection drop
 				 */
-				siw_cancel_mpatimer(cep);
 				siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-						-ECONNRESET);
+					      IW_CM_EVENT_STATUS_RESET);
 				break;
 
 			case SIW_EPSTATE_RDMA_MODE:
@@ -1101,25 +982,34 @@ static void siw_cm_work_handler(struct work_struct *w)
 				break;
 				/*
 				 * for these states there is no connection
-				 * known to the IWCM. Even not for
-				 * SIW_EPSTATE_RECVD_MPAREQ.
+				 * known to the IWCM.
 				 */
 			}
-			cep->cm_id->rem_ref(cep->cm_id);
-			cep->cm_id = NULL;
-			siw_cep_put(cep);
+		} else {
+			switch (cep->state) {
+
+			case SIW_EPSTATE_RECVD_MPAREQ:
+				/*
+				 * Wait for the CM to call its accept/reject
+				 */
+				dprint(DBG_CM, "(): STATE_RECVD_MPAREQ: wait for CM:\n");
+				break;
+			case SIW_EPSTATE_AWAIT_MPAREQ:
+				/*
+				 * Socket close before MPA request received.
+				 */
+				dprint(DBG_CM, "(): STATE_AWAIT_MPAREQ: unlink from Listener\n");
+				siw_cep_put(cep->listen_cep);
+				cep->listen_cep = NULL;
+
+				break;
+
+			default:
+				break;
+			}
 		}
-		if (cep->qp) {
-			siw_qp_llp_close(cep->qp);
-			siw_qp_put(cep->qp);
-			cep->qp = NULL;
-		}
-		if (cep->state != SIW_EPSTATE_CLOSED) {
-			cep->state = SIW_EPSTATE_CLOSED;
-			siw_socket_disassoc(cep->llp.sock);
-			sock_release(cep->llp.sock);
-			cep->llp.sock = NULL;
-		}
+		siw_cm_release(cep);
+
 		break;
 
 	case SIW_CM_WORK_MPATIMEOUT:
@@ -1128,23 +1018,33 @@ static void siw_cm_work_handler(struct work_struct *w)
 
 		if (cep->state == SIW_EPSTATE_AWAIT_MPAREP) {
 			/*
-			 * MPA request timed out
+			 * MPA request timed out:
+			 * Hide any partially received private data and signal
+			 * timeout
 			 */
+			cep->mpa.hdr.params.pd_len = 0;
+	
 			if (cep->cm_id)
 				siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-					      -ETIMEDOUT);
+					      IW_CM_EVENT_STATUS_TIMEOUT);
 			siw_cm_release(cep);
-		} else if (cep->state == SIW_EPSTATE_AWAIT_MPAREQ)
+
+		} else if (cep->state == SIW_EPSTATE_AWAIT_MPAREQ) {
 			/*
 			 * No MPA request received after peer TCP stream setup.
 			 */
-			siw_del_accept(cep, 1);
-
+			siw_cep_put(cep->listen_cep);
+			cep->listen_cep = NULL;
+			siw_cm_release(cep);
+		}
 		break;
 
 	default:
 		BUG();
 	}
+
+	siw_cep_set_free(cep);
+
 	dprint(DBG_CM, " (Exit): WORK type: %d, CEP: 0x%p\n", work->type, cep);
 	siw_put_work(work);
 	siw_cep_put(cep);
@@ -1196,9 +1096,6 @@ static void siw_cm_llp_data_ready(struct sock *sk, int flags)
 		WARN_ON(1);
 		goto out;
 	}
-
-	if (cep->conn_close)
-		goto out;
 
 	dprint(DBG_CM, "(): cep 0x%p, state: %d, flags %x\n", cep,
 		cep->state, flags);
@@ -1273,26 +1170,16 @@ static void siw_cm_llp_state_change(struct sock *sk)
 		 * handle accepting socket as special case where only
 		 * new connection is possible
 		 */
-		if (cep->conn_close)
-			break;
+		siw_cm_queue_work(cep, SIW_CM_WORK_ACCEPT);
 
-		if (cep->state == SIW_EPSTATE_LISTENING &&
-			siw_cm_queue_work(cep, SIW_CM_WORK_ACCEPT) != 0) {
-				dprint(DBG_ON, "Cannot accept\n");
-		}
 		break;
 
 	case TCP_CLOSE:
 	case TCP_CLOSE_WAIT:
-		if (cep->state <= SIW_EPSTATE_LISTENING) {
-			dprint(DBG_CM, "() Close before accept()\n");
-			break;
-		}
+
 		if (cep->qp)
 			cep->qp->tx_ctx.tx_suspend = 1;
-
-		if (!siw_cep_in_close(cep))
-			siw_cm_queue_work(cep, SIW_CM_WORK_PEER_CLOSE);
+		siw_cm_queue_work(cep, SIW_CM_WORK_PEER_CLOSE);
 
 		break;
 
@@ -1401,6 +1288,7 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		rv =  -ENOMEM;
 		goto error;
 	}
+	siw_cep_set_inuse(cep);
 
 	/* Associate QP with CEP */
 	siw_cep_get(cep);
@@ -1455,14 +1343,14 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		if (!rv) {
 			dprint(DBG_CM, "(id=0x%p, cep=0x%p QP%d): Exit\n",
 				id, cep, QP_ID(qp));
+			siw_cep_set_free(cep);
 			return 0;
 		}
 	}
 error:
 	dprint(DBG_ON, " Failed: %d\n", rv);
 
-	if (cep && !siw_cep_in_close(cep)) {
-
+	if (cep) {
 		siw_socket_disassoc(s);
 		sock_release(s);
 		cep->llp.sock = NULL;
@@ -1477,7 +1365,12 @@ error:
 		siw_cep_put(cep);
 
 		cep->state = SIW_EPSTATE_CLOSED;
-	} else if (!cep && s)
+
+		siw_cep_set_free(cep);
+
+		siw_cep_put(cep);
+
+	} else if (s)
 		sock_release(s);
 
 	siw_qp_put(qp);
@@ -1508,27 +1401,17 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	char			*pdata = NULL;
 	int rv;
 
-retry:
-	rv = siw_cep_set_inuse(cep);
-	if (rv < 0) {
-		dprint(DBG_CM, "(id=0x%p, cep=0x%p): CEP in use\n", id, cep);
-		wait_event(cep->waitq, !cep->in_use);
-		goto retry;
-	}
-	if (!rv) {
-		dprint(DBG_CM, "(id=0x%p, cep=0x%p): CEP in close\n", id, cep);
-		(void) siw_cep_set_free(cep);
-		return -EINVAL;
-	}
-	siw_del_accept(cep, 0);
+	siw_cep_set_inuse(cep);
+	siw_cep_put(cep);
 
 	if (cep->state != SIW_EPSTATE_RECVD_MPAREQ) {
 		if (cep->state == SIW_EPSTATE_CLOSED) {
 
 			dprint(DBG_CM, "(id=0x%p): Out of State\n", id);
-			(void) siw_cep_set_free(cep);
 
+			siw_cep_set_free(cep);
 			siw_cep_put(cep);
+
 			return -ECONNRESET;
 		}
 		BUG();
@@ -1624,60 +1507,41 @@ retry:
 
 	rv = siw_send_mpareqrep(cep->llp.sock, &cep->mpa.hdr.params,
 				MPA_KEY_REP, pdata);
-	if (!rv) {
-		/*
-		 * FIXME: In order to ensure that the first FPDU will be sent
-		 * from the RDMA Initiator side, the "connection established"
-		 * event should be delayed until Softiwarp has received the
-		 * first FPDU from the RDMA Initiator side.
-		 * Alternatively, Softiwarp could prevent this side to
-		 * send a first FPDU until a first FPDU has been received.
-		 *
-		 * The two alternatives above will work if
-		 * (1) the RDMA application is iWARP standards compliant
-		 *     by sending its first RDMA payload from the
-		 *     RDMA Initiator side, or
-		 * (2) the RDMA Initiator side RNIC inserts an under-cover
-		 *     zero-length RDMA operation (negotiated through an
-		 *     extended MPA Request/Reply handshake) such as a
-		 *     zero-length RDMA Write or Read.
-		 * Note that (2) would require an extension of the MPA RFC.
-		 *
-		 * A third alternative (which may be the easiest for now) is to
-		 * return an error to an RDMA application that attempts to send
-		 * the first RDMA payload from the RDMA Responder side.
-		 */
-		siw_cm_upcall(cep, IW_CM_EVENT_ESTABLISHED,
-				IW_CM_EVENT_STATUS_OK);
 
-		if (!siw_cep_set_free(cep))
-			siw_cm_release(cep);
+	if (!rv) {
+		rv = siw_cm_upcall(cep, IW_CM_EVENT_ESTABLISHED,
+				   IW_CM_EVENT_STATUS_OK);
+
+		if (rv)
+			goto error;
+
+		siw_cep_set_free(cep);
 
 		dprint(DBG_CM, "(id=0x%p, QP%d): Exit\n", id, QP_ID(qp));
 		return 0;
 	}
 
 error:
-	if (siw_cep_set_free(cep)) {
+	siw_socket_disassoc(cep->llp.sock);
+	sock_release(cep->llp.sock);
+	cep->llp.sock = NULL;
 
-		siw_socket_disassoc(cep->llp.sock);
-		sock_release(cep->llp.sock);
-		cep->llp.sock = NULL;
+	cep->state = SIW_EPSTATE_CLOSED;
 
-		cep->state = SIW_EPSTATE_CLOSED;
-
-		if (cep->cm_id) {
-			cep->cm_id->rem_ref(id);
-			cep->cm_id = NULL;
-		}
-		siw_cep_put(cep);
-		if (qp->cep) {
-			siw_cep_put(cep);
-			qp->cep = NULL;
-		}
-		cep->qp = NULL;
-		siw_qp_put(qp);
+	if (cep->cm_id) {
+		cep->cm_id->rem_ref(id);
+		cep->cm_id = NULL;
 	}
+	if (qp->cep) {
+		siw_cep_put(cep);
+		qp->cep = NULL;
+	}
+	cep->qp = NULL;
+	siw_qp_put(qp);
+
+	siw_cep_set_free(cep);
+	siw_cep_put(cep);
+
 	return rv;
 }
 
@@ -1691,12 +1555,34 @@ int siw_reject(struct iw_cm_id *id, const void *pdata, u8 plen)
 {
 	struct siw_cep	*cep = (struct siw_cep *)id->provider_data;
 
+	siw_cep_set_inuse(cep);
+	siw_cep_put(cep);
+
+	if (cep->state != SIW_EPSTATE_RECVD_MPAREQ) {
+		if (cep->state == SIW_EPSTATE_CLOSED) {
+
+			dprint(DBG_CM, "(id=0x%p): Out of State\n", id);
+
+			siw_cep_set_free(cep);
+			siw_cep_put(cep); /* should be last reference */
+
+			return -ECONNRESET;
+		}
+		BUG();
+	}
 	dprint(DBG_CM, "(id=0x%p): cep->state=%d\n", id, cep->state);
-	dprint(DBG_CM, " Reject: %s\n", plen ? (char *)pdata:"(no data)");
-
-	siw_del_accept(cep, 1);
-
+	dprint(DBG_CM, " Reject: %d: %x\n",plen,
+		plen ? *(char *)pdata:0);
 	dprint(DBG_CM, " Sending REJECT not yet implemented\n");
+
+	siw_socket_disassoc(cep->llp.sock);
+	sock_release(cep->llp.sock);
+	cep->llp.sock = NULL;
+
+	cep->state = SIW_EPSTATE_CLOSED;
+
+	siw_cep_set_free(cep);
+	siw_cep_put(cep);
 
 	return 0;
 }
@@ -1853,23 +1739,19 @@ static void siw_drop_listeners(struct iw_cm_id *id)
 
 		dprint(DBG_CM, "(id=0x%p): drop CEP 0x%p, state %d\n",
 			id, cep, cep->state); 
+		siw_cep_set_inuse(cep);
 
-		if (siw_cep_set_inuse(cep) > 0) {
-
-			cep->conn_close = 1;
-			if (cep->cm_id) {
-				cep->cm_id->rem_ref(cep->cm_id);
-				cep->cm_id = NULL;
-			}
-			if (cep->llp.sock) {
-				siw_socket_disassoc(cep->llp.sock);
-				sock_release(cep->llp.sock);
-				cep->llp.sock = NULL;
-			}
+		if (cep->cm_id) {
+			cep->cm_id->rem_ref(cep->cm_id);
+			cep->cm_id = NULL;
 		}
-		siw_flush_acceptq(cep);
+		if (cep->llp.sock) {
+			siw_socket_disassoc(cep->llp.sock);
+			sock_release(cep->llp.sock);
+			cep->llp.sock = NULL;
+		}
 		cep->state = SIW_EPSTATE_CLOSED;
-		(void) siw_cep_set_free(cep);
+		siw_cep_set_free(cep);
 		siw_cep_put(cep);
 	}
 }

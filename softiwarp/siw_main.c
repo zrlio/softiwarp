@@ -133,8 +133,11 @@ static ssize_t show_ceps(struct device *dev,
 	struct list_head *pos, *tmp;
 	int len, num_cep = atomic_read(&siw_dev->num_cep);
 
-	len = sprintf(buf, "%s: %d CEPs %s\n", siw_dev->ofa_dev.name,
-		      num_cep, num_cep?"- see dmesg for details":"");
+	if (buf)
+		len = sprintf(buf, "%s: %d CEPs %s\n", siw_dev->ofa_dev.name,
+			      num_cep, num_cep?"- see dmesg for details":"");
+	else
+		len = 0;
 
 	if (num_cep)
 		printk("\n%d CEPs on device %s:\n",
@@ -142,21 +145,21 @@ static ssize_t show_ceps(struct device *dev,
 	else
 		return len;
 
-	printk(KERN_INFO "%-20s%-6s%-6s%-7s%-3s%-3s%-6s%-21s%-7s\n",
-		"CEP", "State", "Ref's", "QP-ID", "LQ", "AQ", "C/U", "Sock",
+	printk(KERN_INFO "%-20s%-6s%-6s%-7s%-3s%-3s%-4s%-21s%-9s\n",
+		"CEP", "State", "Ref's", "QP-ID", "LQ", "LC", "U", "Sock",
 		"CM-ID");
 
 	list_for_each_safe(pos, tmp, &siw_dev->cep_list) {
 		struct siw_cep *cep = list_entry(pos, struct siw_cep, devq);
 
-		printk(KERN_INFO "0x%-18p%-6d%-6d%-7d%-3s%-3s%d/%-4d0x%-18p"
+		printk(KERN_INFO "0x%-18p%-6d%-6d%-7d%-3s%-3s%-4d0x%-18p"
 			" 0x%-16p\n",
 			cep, cep->state,
 			atomic_read(&cep->ref.refcount),
 			cep->qp?QP_ID(cep->qp):-1,
 			list_empty(&cep->listenq)?"n":"y",
-			list_empty(&cep->acceptq)?"n":"y",
-			cep->conn_close, cep->in_use,
+			cep->listen_cep?"y":"n",
+			cep->in_use,
 			cep->llp.sock,
 			cep->cm_id);
 	}
@@ -341,6 +344,7 @@ static int siw_register_device(struct siw_dev *dev)
 	ibdev->post_send = siw_post_send;
 	ibdev->post_recv = siw_post_receive;
 
+	ibdev->dma_ops = &siw_dma_mapping_ops;
 
 	ibdev->iwcm = kmalloc(sizeof(struct iw_cm_verbs), GFP_KERNEL);
 	if (!ibdev->iwcm)
@@ -354,17 +358,6 @@ static int siw_register_device(struct siw_dev *dev)
 	ibdev->iwcm->add_ref = siw_qp_get_ref;
 	ibdev->iwcm->rem_ref = siw_qp_put_ref;
 	ibdev->iwcm->get_qp = siw_get_ofaqp;
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 34)
-	rv = ib_register_device(ibdev, NULL);
-#else
-	rv = ib_register_device(ibdev);
-#endif
-	if (rv) {
-		dprint(DBG_DM|DBG_ON, "(dev=%s): "
-			"ib_register_device failed: rv=%d\n", ibdev->name, rv);
-		return rv;
-	}
-
 	/*
 	 * set and register sw version + user if type
 	 */
@@ -407,6 +400,17 @@ static int siw_register_device(struct siw_dev *dev)
 	atomic_set(&dev->num_pd, 0);
 	atomic_set(&dev->num_cep, 0);
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 34)
+	rv = ib_register_device(ibdev, NULL);
+#else
+	rv = ib_register_device(ibdev);
+#endif
+	if (rv) {
+		dprint(DBG_DM|DBG_ON, "(dev=%s): "
+			"ib_register_device failed: rv=%d\n", ibdev->name, rv);
+		return rv;
+	}
+
 	for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i) {
 #if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
 		rv = class_device_create_file(&ibdev->class_dev,
@@ -423,9 +427,9 @@ static int siw_register_device(struct siw_dev *dev)
 		}
 	}
 
-	dprint(DBG_DM, ": Registered '%s' for interface '%s', "
+	dprint(DBG_DM, ": dev 0x%p: Registered '%s' for interface '%s', "
 		"HWaddr=%02x.%02x.%02x.%02x.%02x.%02x\n",
-		ibdev->name, dev->l2dev->name,
+		dev, ibdev->name, dev->l2dev->name,
 		*(u8 *)dev->l2dev->dev_addr,
 		*((u8 *)dev->l2dev->dev_addr + 1),
 		*((u8 *)dev->l2dev->dev_addr + 2),
@@ -445,6 +449,20 @@ static void siw_deregister_device(struct siw_dev *dev)
 		atomic_read(&dev->num_cq) || atomic_read(&dev->num_mem) ||
 		atomic_read(&dev->num_pd));
 
+	if (!list_empty(&dev->cep_list)) {
+		int num_ceps = 0;
+
+		show_ceps(&dev->ofa_dev.dev, NULL, NULL);
+		while (!list_empty(&dev->cep_list)) {
+			struct siw_cep  *cep = list_entry(dev->cep_list.next,
+						struct siw_cep, devq);
+			list_del(&cep->devq);
+			kfree(cep);
+			num_ceps++;
+		}
+		printk("siw_deregister_device: free'd %d orphaned CEPs\n",
+			num_ceps);
+	}
 	for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i)
 #if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
 		class_device_remove_file(&dev->ofa_dev.class_dev,

@@ -199,11 +199,13 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 	 * Per RDMA verbs, the application should not change the send buffer
 	 * until the work completed. In iWarp, work completion is only
 	 * local delivery to TCP. TCP may reuse the buffer for
-	 * retransmission or may even did not yet sent the data. Changing
-	 * unsent data also breaks the CRC, if applied.
+	 * retransmission. Changing unsent data also breaks the CRC,
+	 * if applied.
+	 * Inline buffers are already out of user control and can be
+	 * send 0copy.
 	 */
 	if (zcopy_tx &&
-	     !(wr_flags(wqe) & IB_SEND_SIGNALED) &&
+	     (!(wr_flags(wqe) & IB_SEND_SIGNALED) || SIW_INLINED_DATA(wqe)) &&
 	     wqe->bytes > SENDPAGE_THRESH &&
 	     wr_type(wqe) != SIW_WR_RDMA_READ_REQ)
 		c_tx->use_sendpage = 1;
@@ -420,8 +422,8 @@ siw_umem_chunk_update(struct siw_iwarp_tx *c_tx, struct siw_mr *mr,
 	c_tx->umem_chunk = chunk;
 }
 
-#define MAX_TRAILER 8
-#define MAX_ARRAY 64	/* Max number of kernel_sendmsg elements */
+#define MAX_TRAILER (MPA_CRC_SIZE + 4)
+#define MAX_ARRAY 32	/* Max number of kernel_sendmsg elements */
 
 static inline void
 siw_save_txstate(struct siw_iwarp_tx *c_tx, struct ib_umem_chunk *chunk,
@@ -442,15 +444,14 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 	struct siw_wqe		*wqe = c_tx->wqe;
 	struct siw_sge		*sge = &wqe->wr.sgl.sge[c_tx->sge_idx],
 				*first_sge = sge;
-	struct siw_mr		*mr = siw_mem2mr(sge->mem.obj);
+	struct siw_mr		*mr = NULL;
 	struct ib_umem_chunk	*chunk = c_tx->umem_chunk;
 
 	struct kvec		iov[MAX_ARRAY];
 	struct page		*page_array[MAX_ARRAY];
 	struct msghdr		msg = {.msg_flags = MSG_DONTWAIT};
 
-	int			seg = 0, do_crc = c_tx->do_crc, kbuf = 0,
-				rv;
+	int			seg = 0, do_crc = c_tx->do_crc, is_kva = 0, rv;
 	unsigned int		data_len = c_tx->bytes_unsent,
 				hdr_len = 0,
 				trl_len = 0,
@@ -458,10 +459,6 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 				sge_idx = c_tx->sge_idx,
 				pg_idx = c_tx->pg_idx;
 
-	if (SIW_INLINED_DATA(wqe)) {
-		kbuf = 1;
-		chunk = NULL;
-	}
 
 	if (c_tx->state == SIW_SEND_HDR) {
 		if (c_tx->use_sendpage) {
@@ -484,16 +481,33 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 	wqe->processed += data_len;
 
 	while (data_len) { /* walk the list of SGE's */
-		unsigned int sge_len = min(sge->len - sge_off, data_len);
-		unsigned int fp_off = (sge->addr + sge_off) & ~PAGE_MASK;
+		unsigned int	sge_len = min(sge->len - sge_off, data_len);
+		unsigned int	fp_off = (sge->addr + sge_off) & ~PAGE_MASK;
 
 		BUG_ON(!sge_len);
 
-		if (kbuf) {
+		if (!SIW_INLINED_DATA(wqe)) {
+			mr = siw_mem2mr(sge->mem.obj);
+			if (!mr->umem)
+				is_kva = 1;
+			else if (!chunk) {
+				siw_tx_umem_init(&chunk, &pg_idx, mr,
+						 sge->addr + sge_off);
+
+				if (!c_tx->umem_chunk)
+					/* Starting first tx for this WQE */
+					siw_save_txstate(c_tx, chunk, pg_idx,
+							 sge_idx, sge_off);
+			}
+		} else
+			is_kva = 1;
+
+		if (is_kva && !c_tx->use_sendpage) {
 			/*
-			 * In kernel buffers to be tx'ed.
+			 * tx from kernel virtual address: either inline data
+			 * or memory region with assigned kernel buffer
 			 */
-			iov[seg].iov_base = sge->mem.buf + sge_off;
+			iov[seg].iov_base = (void *)(sge->addr + sge_off);
 			iov[seg].iov_len = sge_len;
 
 			if (do_crc)
@@ -504,49 +518,48 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 			seg++;
 			goto sge_done;
 		}
+
 		while (sge_len) {
 			struct scatterlist *sl;
-			size_t plen;
-
-			if (!chunk) {
-				mr = siw_mem2mr(sge->mem.obj);
-				siw_tx_umem_init(&chunk, &pg_idx, mr,
-						 sge->addr + sge_off);
-
-				if (!c_tx->umem_chunk)
-					/* Starting first tx for this WQE */
-					siw_save_txstate(c_tx, chunk, pg_idx,
-							 sge_idx, sge_off);
-			}
-			sl = &chunk->page_list[pg_idx];
-			plen = min((int)PAGE_SIZE - fp_off, sge_len);
+			size_t plen = min((int)PAGE_SIZE - fp_off, sge_len);
 
 			BUG_ON(plen <= 0);
-
-			page_array[seg] = sg_page(sl);
-
-			if (!c_tx->use_sendpage) {
-				iov[seg].iov_base = kmap(sg_page(sl)) + fp_off;
-				iov[seg].iov_len = plen;
+			if (!is_kva) {
+				sl = &chunk->page_list[pg_idx];
+				page_array[seg] = sg_page(sl);
+				if (!c_tx->use_sendpage) {
+					iov[seg].iov_base = kmap(sg_page(sl))
+							    + fp_off;
+					iov[seg].iov_len = plen;
+				}
+				if (do_crc)
+					siw_crc_sg(&c_tx->mpa_crc_hd, sl,
+						   fp_off, plen);
+			} else {
+				u64 paddr = ((sge->addr + sge_off) & PAGE_MASK);
+				page_array[seg] = virt_to_page(paddr);
+				if (do_crc)
+					siw_crc_array(&c_tx->mpa_crc_hd,
+						(void *)(sge->addr + sge_off),
+						plen);
 			}
-			if (do_crc)
-				siw_crc_sg(&c_tx->mpa_crc_hd, sl, fp_off, plen);
 
 			sge_len -= plen;
 			sge_off += plen;
 			data_len -= plen;
 
-			if (plen + fp_off == PAGE_SIZE &&
+			if (!is_kva && plen + fp_off == PAGE_SIZE &&
 			    sge_off < sge->len && ++pg_idx == chunk->nents) {
 				chunk = mem_chunk_next(chunk);
 				pg_idx = 0;
 			}
 			fp_off = 0;
 			if (++seg > MAX_ARRAY) {
+				int i = (hdr_len > 0) ? 1 : 0;
+
 				dprint(DBG_ON, "(QP%d): Too many fragments\n",
 				       TX_QPID(c_tx));
-				if (!kbuf) {
-					int i = (hdr_len > 0) ? 1 : 0;
+				if (!is_kva) {
 					seg--;
 					while (i < seg)
 						kunmap(page_array[i++]);
@@ -558,7 +571,8 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 		}
 sge_done:
 		/* Update SGE variables at end of SGE */
-		if (sge_off == sge->len && wqe->processed < wqe->bytes) {
+		if (sge_off == sge->len &&
+		    (data_len != 0 || wqe->processed < wqe->bytes)) {
 			sge_idx++;
 			sge++;
 			sge_off = 0;
@@ -607,7 +621,7 @@ sge_done:
 	} else {
 		rv = kernel_sendmsg(s, &msg, iov, seg + 1,
 				    hdr_len + data_len + trl_len);
-		if (!kbuf) {
+		if (!is_kva) {
 			int i = (hdr_len > 0) ? 1 : 0;
 			while (i < seg)
 				kunmap(page_array[i++]);
@@ -656,7 +670,8 @@ sge_done:
 			c_tx->bytes_unsent -= rv;
 			sge = &wqe->wr.sgl.sge[c_tx->sge_idx];
 
-			if (c_tx->sge_idx == sge_idx && c_tx->umem_chunk)
+			if (!is_kva && c_tx->sge_idx == sge_idx &&
+			    c_tx->umem_chunk)
 				/*
 				 * same SGE as starting SGE for this FPDU
 				 */

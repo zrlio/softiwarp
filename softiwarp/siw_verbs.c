@@ -563,20 +563,36 @@ err_out:
 int siw_query_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *qp_attr,
 		 int qp_attr_mask, struct ib_qp_init_attr *qp_init_attr)
 {
-	struct siw_qp *qp = siw_qp_ofa2siw(ofa_qp);
+	struct siw_qp *qp;
+	struct siw_dev *dev;
 
-	memset(&qp_attr, 0, sizeof *qp_attr);
-	memset(&qp_init_attr, 0, sizeof *qp_init_attr);
+	if (ofa_qp && qp_attr && qp_init_attr) {
+		qp = siw_qp_ofa2siw(ofa_qp);
+		dev = siw_dev_ofa2siw(ofa_qp->device);
+	} else
+		return -EINVAL;
 
-	if (qp_attr_mask) {
-		if (qp->attrs.flags & SIW_KERNEL_VERBS) {
-			qp_attr->cap.max_inline_data = 0;
-			qp_init_attr->cap.max_inline_data = 0;
-		} else {
-			qp_attr->cap.max_inline_data = SIW_MAX_INLINE;
-			qp_init_attr->cap.max_inline_data = SIW_MAX_INLINE;
-		}
+	if (qp->attrs.flags & SIW_KERNEL_VERBS) {
+		qp_attr->cap.max_inline_data = 0;
+		qp_init_attr->cap.max_inline_data = 0;
+	} else {
+		qp_attr->cap.max_inline_data = SIW_MAX_INLINE;
+		qp_init_attr->cap.max_inline_data = SIW_MAX_INLINE;
 	}
+	qp_attr->cap.max_send_wr = qp->attrs.sq_size;
+	qp_attr->cap.max_recv_wr = qp->attrs.rq_size;
+	qp_attr->cap.max_send_sge = qp->attrs.sq_max_sges;
+	qp_attr->cap.max_recv_sge = qp->attrs.rq_max_sges;
+
+	qp_attr->path_mtu = siw_mtu_net2ofa(dev->l2dev->mtu);
+	qp_attr->max_rd_atomic = qp->attrs.ird;
+	qp_attr->max_dest_rd_atomic = qp->attrs.ord;
+
+	qp_attr->qp_access_flags = IB_ACCESS_LOCAL_WRITE |
+			IB_ACCESS_REMOTE_WRITE | IB_ACCESS_REMOTE_READ;
+
+	qp_init_attr->cap = qp_attr->cap;
+
 	return 0;
 }
 
@@ -586,11 +602,11 @@ int siw_ofed_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
 	struct siw_qp_attrs	new_attrs;
 	enum siw_qp_attr_mask	siw_attr_mask = 0;
 	struct siw_qp		*qp = siw_qp_ofa2siw(ofa_qp);
-	int			rv;
+	int			rv = 0;
 
 	if (!attr_mask) {
 		dprint(DBG_CM, "(QP%d): attr_mask==0 ignored\n", QP_ID(qp));
-		return 0;
+		goto out;
 	}
 	siw_dprint_qp_attr_mask(attr_mask);
 
@@ -623,20 +639,22 @@ int siw_ofed_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
 		siw_attr_mask |= SIW_QP_ATTR_STATE;
 	}
 	if (!attr_mask)
-		return 0;
+		goto out;
 
 	down_write(&qp->state_lock);
 
 	rv = siw_qp_modify(qp, &new_attrs, siw_attr_mask);
 
 	up_write(&qp->state_lock);
+
+out:
+	dprint(DBG_CM, "(QP%d): Exit with %d\n", QP_ID(qp), rv);
 	return rv;
 }
 
 int siw_destroy_qp(struct ib_qp *ofa_qp)
 {
 	struct siw_qp		*qp = siw_qp_ofa2siw(ofa_qp);
-	struct siw_cep		*cep;
 	struct siw_qp_attrs	qp_attrs;
 
 	dprint(DBG_CM, "(QP%d): SIW QP state=%d, cep=0x%p\n",
@@ -656,21 +674,9 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 
 	up_write(&qp->state_lock);
 
-	cep = qp->cep;
-	if (cep) {
-		/*
-		 * Wait if CM work is scheduled. calling siw_qp_modify()
-		 * already dropped the network connection.
-		 */
-		dprint(DBG_CM, " (QP%d) (CEP 0x%p): %s (%d)\n",
-			QP_ID(qp), cep, atomic_read(&cep->ref.refcount) > 1 ?
-			"Wait for CM" : "CM done",
-			atomic_read(&cep->ref.refcount));
-
-		wait_event(cep->waitq, atomic_read(&cep->ref.refcount) == 1);
-		dprint(DBG_CM, "(QP%d): CM done 2\n", QP_ID(qp));
+	if (qp->cep) {
+		siw_cep_put(qp->cep);
 		qp->cep = NULL;
-		siw_cep_put(cep);
 	}
 
 	if (qp->rx_ctx.crc_enabled)
@@ -752,6 +758,7 @@ static int siw_copy_inline_sgl(struct ib_sge *ofa_sge, struct siw_sge *siw_sge,
 		goto out;
 	}
 	siw_sge->mem.buf = kbuf;
+	siw_sge->addr = (u64)kbuf;
 
 	while (num_sge--) {
 		if (!access_ok(VERIFY_READ, (char __user *)ofa_sge->addr,
@@ -770,7 +777,6 @@ static int siw_copy_inline_sgl(struct ib_sge *ofa_sge, struct siw_sge *siw_sge,
 	if (bytes > 0) {
 		siw_sge->len = bytes;
 		siw_sge->lkey = 0;
-		siw_sge->addr = 0; /* don't need the user addr */
 	} else {
 		kfree(siw_sge->mem.buf);
 		siw_sge->mem.buf = NULL;
@@ -1216,7 +1222,7 @@ int siw_poll_cq(struct ib_cq *ofa_cq, int num_cqe, struct ib_wc *wc)
 			break;
 		wc++;
 	}
-	dprint(DBG_WR, " CQ%d: reap %d comletions (%d left)\n",
+	dprint(DBG_WR, " CQ%d: reap %d completions (%d left)\n",
 		OBJ_ID(cq), i, atomic_read(&cq->qlen));
 
 	return i;
@@ -1284,6 +1290,39 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 	siw_mem_put(&mr->mem);
 
 	return 0;
+}
+
+static struct siw_mr *siw_alloc_mr(struct siw_dev *dev, struct ib_umem *umem,
+				   u64 start, u64 len, int rights)
+{
+	struct siw_mr *mr = kzalloc(sizeof *mr, GFP_KERNEL);
+	if (!mr)
+		return NULL;
+
+	mr->mem.stag_state = STAG_INVALID;
+
+	if (siw_mem_add(dev, &mr->mem) < 0) {
+		dprint(DBG_ON, ": siw_mem_add\n");
+		kfree(mr);
+		return NULL;
+	}
+	dprint(DBG_OBJ|DBG_MM, "(MEM%d): New Object, UMEM %p\n",
+		mr->mem.hdr.id, umem);
+
+	mr->ofa_mr.lkey = mr->ofa_mr.rkey = mr->mem.hdr.id << 8;
+
+	mr->mem.va  = start;
+	mr->mem.len = len;
+	mr->mem.fbo = 0 ;
+	mr->mem.mr  = NULL;
+	mr->mem.perms = SR_MEM_LREAD | /* not selectable in OFA */
+			(rights & IB_ACCESS_REMOTE_READ  ? SR_MEM_RREAD  : 0) |
+			(rights & IB_ACCESS_LOCAL_WRITE  ? SR_MEM_LWRITE : 0) |
+			(rights & IB_ACCESS_REMOTE_WRITE ? SR_MEM_RWRITE : 0);
+
+	mr->umem = umem;
+
+	return mr;
 }
 
 /*
@@ -1358,39 +1397,16 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		umem = NULL;
 		goto err_out;
 	}
-	mr = kmalloc(sizeof *mr, GFP_KERNEL);
+	mr = siw_alloc_mr(dev, umem, start, len, rights);
 	if (!mr) {
-		dprint(DBG_ON, ": malloc\n");
 		rv = -ENOMEM;
 		goto err_out;
 	}
-	mr->mem.stag_state = STAG_INVALID;
-
-	if (siw_mem_add(dev, &mr->mem) < 0) {
-		dprint(DBG_ON, ": siw_mem_add\n");
-		rv = -ENOMEM;
-		goto err_out;
-	}
-	dprint(DBG_OBJ|DBG_MM, "(MEM%d): New Object, UMEM %p\n",
-		mr->mem.hdr.id, umem);
-
-	mr->ofa_mr.lkey = mr->ofa_mr.rkey = mr->mem.hdr.id << 8;
-
-	mr->mem.va  = start;
-	mr->mem.len = len;
-	mr->mem.fbo = 0 ;
-	mr->mem.mr  = NULL;
-	mr->mem.perms = SR_MEM_LREAD | /* not selectable in OFA */
-			(rights & IB_ACCESS_REMOTE_READ  ? SR_MEM_RREAD  : 0) |
-			(rights & IB_ACCESS_LOCAL_WRITE  ? SR_MEM_LWRITE : 0) |
-			(rights & IB_ACCESS_REMOTE_WRITE ? SR_MEM_RWRITE : 0);
-
-	mr->umem = umem;
 
 	if (udata) {
 		rv = ib_copy_from_udata(&ureq, udata, sizeof ureq);
 		if (rv)
-			goto err_out_idr;
+			goto err_out_mr;
 
 		mr->ofa_mr.lkey |= ureq.stag_key;
 		mr->ofa_mr.rkey |= ureq.stag_key; /* XXX ??? */
@@ -1398,7 +1414,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 
 		rv = ib_copy_to_udata(udata, &uresp, sizeof uresp);
 		if (rv)
-			goto err_out_idr;
+			goto err_out_mr;
 	}
 	mr->pd = pd;
 	siw_pd_get(pd);
@@ -1407,18 +1423,64 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 
 	return &mr->ofa_mr;
 
-err_out_idr:
+err_out_mr:
 	siw_remove_obj(&dev->idr_lock, &dev->mem_idr, &mr->mem.hdr);
+	kfree(mr);
+
 err_out:
 	if (umem)
 		ib_umem_release(umem);
-
-	kfree(mr);
 
 	atomic_dec(&dev->num_mem);
 
 	return ERR_PTR(rv);
 }
+
+struct ib_mr *siw_reg_phys_mr(struct ib_pd *ofa_pd, struct ib_phys_buf *pbl,
+			      int num_buf, int acc, u64 *iova_start)
+{
+	return (struct ib_mr *)NULL;
+}
+
+/*
+ * siw_get_dma_mr()
+ *
+ * Create a (empty) DMA memory region, where no umem is attached.
+ * All DMA addresses are created via siw_dma_mapping_ops - which
+ * will return just kernel virtual addresses, since siw runs on top
+ * of TCP kernel sockets.
+ */
+struct ib_mr *siw_get_dma_mr(struct ib_pd *ofa_pd, int rights)
+{
+	struct siw_mr	*mr;
+	struct siw_pd	*pd = siw_pd_ofa2siw(ofa_pd);
+	struct siw_dev	*dev = pd->hdr.dev;
+	int rv;
+
+	if (atomic_inc_return(&dev->num_mem) > SIW_MAX_MR) {
+		dprint(DBG_ON, ": Out of MRs: %d\n",
+			atomic_read(&dev->num_mem));
+		rv = -ENOMEM;
+		goto err_out;
+	}
+	mr = siw_alloc_mr(dev, NULL, 0, ULONG_MAX, rights);
+	if (!mr) {
+		rv = -ENOMEM;
+		goto err_out;
+	}
+	mr->mem.stag_state = STAG_VALID;
+
+	mr->pd = pd;
+	siw_pd_get(pd);
+	
+	return &mr->ofa_mr;
+
+err_out:
+	atomic_dec(&dev->num_mem);
+
+	return ERR_PTR(rv);
+}
+
 
 /*
  * siw_create_srq()
@@ -1465,6 +1527,7 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 	srq->max_sge = attrs->max_sge;
 	atomic_set(&srq->space, attrs->max_wr);
 	srq->limit = attrs->srq_limit;
+	srq->max_wr = attrs->max_wr;
 	if (srq->limit)
 		srq->armed = 1;
 
@@ -1699,11 +1762,6 @@ int siw_post_srq_recv(struct ib_srq *ofa_srq, struct ib_recv_wr *wr,
 	return rv > 0 ? 0 : rv;
 }
 
-
-struct ib_mr *siw_get_dma_mr(struct ib_pd *pd, int rights)
-{
-	return ERR_PTR(-EOPNOTSUPP);
-}
 
 int siw_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 {

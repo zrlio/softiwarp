@@ -81,18 +81,12 @@ struct siw_cep {
 	 * refers to a list of one or more listener CEPs
 	 */
 	struct list_head	listenq;
-	/*
-	 * List of pending accepts not processed by IWCM
-	 */
-	struct list_head	acceptq;
-
 	struct siw_cep		*listen_cep;
 	struct siw_qp		*qp;
 	spinlock_t		lock;
 	wait_queue_head_t	waitq;
 	struct kref		ref;
 	enum siw_cep_state	state;
-	short			conn_close; /* sched. for closing or closed */
 	short			in_use;
 	struct siw_cm_work	*mpa_timer;
 	struct list_head	work_freelist;
@@ -117,7 +111,7 @@ enum siw_work_type {
 	SIW_CM_WORK_READ_MPAHDR,
 	SIW_CM_WORK_CLOSE_LLP,		/* close socket */
 	SIW_CM_WORK_PEER_CLOSE,		/* socket indicated peer close */
-	SIW_CM_WORK_MPATIMEOUT		/* to be done ! */
+	SIW_CM_WORK_MPATIMEOUT
 };
 
 struct siw_cm_work {
@@ -140,7 +134,6 @@ extern void siw_cep_upcall(struct siw_cep *, enum iw_cm_event_type);
 
 extern void siw_cep_put(struct siw_cep *);
 extern void siw_cep_get(struct siw_cep *);
-extern int siw_cep_in_close(struct siw_cep *);
 
 extern int siw_cm_queue_work(struct siw_cep *, enum siw_work_type);
 

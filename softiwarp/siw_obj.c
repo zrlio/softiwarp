@@ -322,7 +322,8 @@ static void siw_free_mem(struct kref *ref)
 	} else {
 		struct siw_mr *mr = container_of(m, struct siw_mr, mem);
 		dprint(DBG_MM|DBG_OBJ, "(MEM%d): Release UMem\n", OBJ_ID(m));
-		ib_umem_release(mr->umem);
+		if (mr->umem)
+			ib_umem_release(mr->umem);
 		kfree(mr);
 	}
 }
@@ -384,6 +385,7 @@ static inline void siw_free_inline_sgl(struct siw_sge *sge, int num_sge)
 {
 	while (num_sge--) {
 		kfree(sge->mem.buf); /* kfree handles NULL pointers */
+		sge->mem.buf = NULL;
 		sge++;
 	}
 }

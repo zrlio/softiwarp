@@ -458,7 +458,10 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 		case SIW_QP_STATE_ERROR:
 			siw_rq_flush(qp);
 			qp->attrs.state = SIW_QP_STATE_ERROR;
-			drop_conn = 1;
+			if (qp->cep) {
+				siw_cep_put(qp->cep);
+				qp->cep = NULL;
+			}
 			break;
 
 		case SIW_QP_STATE_RTR:

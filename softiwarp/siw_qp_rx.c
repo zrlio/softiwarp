@@ -256,6 +256,24 @@ out:
 	return copied;
 }
 
+static inline int siw_rx_kva(struct siw_iwarp_rx *rctx, int len, void *kva)
+{
+	int rv = skb_copy_bits(rctx->skb, rctx->skb_offset, kva, len);
+
+	if (likely(!rv)) {
+		rctx->skb_offset += len;
+		rctx->skb_copied += len;
+		rctx->skb_new -= len;
+		if (rctx->crc_enabled) {
+			rv = siw_crc_array(&rctx->mpa_crc_hd, kva, len);
+			if (rv)
+				goto done;
+		}
+		rv = len;
+	}
+done:
+	return rv;
+}
 
 /*
  * siw_rresp_check_ntoh()
@@ -436,14 +454,19 @@ static inline struct siw_wqe *siw_srq_fetch_wqe(struct siw_srq *srq)
 	if (!list_empty(&srq->rq)) {
 		wqe = list_first_wqe(&srq->rq);
 		list_del_init(&wqe->list);
-		qlen = srq->max_wr - atomic_inc_return(&srq->space);
-		unlock_srq(srq);
+		/*
+		 * The SRQ wqe is counted for SRQ space until completed.
+		 */
+		qlen = srq->max_wr - (atomic_read(&srq->space) + 1);
+		dprint(DBG_RX, " SRQ(%p): qlen:%d, limit:%d, armed:%d, max:%d, space:%d\n",
+			srq, qlen, srq->limit, srq->armed, srq->max_wr, atomic_read(&srq->space));
 		if (srq->armed && qlen < srq->limit) {
 			srq->armed = 0;
+			dprint(DBG_RX, " SRQ(%p): Post SRQ limit event\n", srq);
 			siw_async_srq_ev(srq, IB_EVENT_SRQ_LIMIT_REACHED);
 		}
-	} else
-		unlock_srq(srq);
+	}
+	unlock_srq(srq);
 
 	return wqe;
 }
@@ -530,7 +553,6 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	while (data_bytes) {
 		struct siw_pd	*pd;
 		u32	sge_bytes;	/* data bytes avail for SGE */
-		int	umem_ends;	/* 1 if umem ends with current rcv */
 
 		sge = &wqe->wr.sgl.sge[rctx->sge_idx];
 
@@ -555,36 +577,38 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		}
 		mr = siw_mem2mr(sge->mem.obj);
 
-		if (rctx->sge_off == 0) {
+		if (mr->umem) {
 			/*
-			 * started a new sge: update receive pointers
+			 * Are we going to finish placing
+			 * - the last fragment of the current SGE or
+			 * - the last DDP segment (L=1) of the current
+			 *   RDMAP message?
+			 *
+			 * siw_rx_umem() must advance umem page_chunk position
+			 * after sucessful receive only, if receive into current
+			 * umem does not end. umem ends, if:
+			 * - current SGE gets completely filled, OR
+			 * - current MPA FPDU is last AND gets consumed now
 			 */
-			rv = siw_rx_umem_init(rctx, mr, sge->addr);
-			if (rv)
-				break;
-		}
-		/*
-		 * Are we going to finish placing
-		 * - the last fragment of the current SGE or
-		 * - the last DDP segment (L=1) of the current RDMAP message?
-		 *
-		 * siw_rx_umem() must advance umem page_chunk position
-		 * after sucessful receive only, if receive into current
-		 * umem does not end. umem ends, if:
-		 * - current SGE gets completely filled, OR
-		 * - current MPA FPDU is last AND gets consumed now
-		 */
-		umem_ends = ((sge_bytes + rctx->sge_off == sge->len) ||
-			      (!rctx->more_ddp_segs &&
-			       rctx->fpdu_part_rcvd + sge_bytes ==
-					rctx->fpdu_part_rem)) ? 1 : 0;
+			int umem_ends =
+				((sge_bytes + rctx->sge_off == sge->len) ||
+				  (!rctx->more_ddp_segs &&
+				   rctx->fpdu_part_rcvd + sge_bytes ==
+				   rctx->fpdu_part_rem)) ? 1 : 0;
 
-		rv = siw_rx_umem(rctx, sge_bytes, umem_ends);
+			if (rctx->sge_off == 0) {
+				/*
+				 * started a new sge: update receive pointers
+				 */
+				rv = siw_rx_umem_init(rctx, mr, sge->addr);
+				if (rv)
+					break;
+			}
+			rv = siw_rx_umem(rctx, sge_bytes, umem_ends);
+		} else
+			rv = siw_rx_kva(rctx, sge_bytes,
+					(void *)(sge->addr + rctx->sge_off));
 		if (rv != sge_bytes) {
-			/*
-			 * siw_rx_umem() must have updated
-			 * skb_new and skb_copied
-			 */
 			wqe->processed += rcvd_bytes;
 			return -EINVAL;
 		}
@@ -626,8 +650,8 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	struct siw_dev		*dev = qp->hdr.dev;
 	struct iwarp_rdma_write	*write = &rctx->hdr.rwrite;
 	struct siw_mem		*mem;
+	struct siw_mr		*mr;
 	int			bytes,
-				last_write,
 				rv;
 
 	if (rctx->state == SIW_GET_DATA_START) {
@@ -673,33 +697,31 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		siw_async_ev(qp, NULL, IB_EVENT_QP_ACCESS_ERR);
 		return rv;
 	}
-	if (rctx->first_ddp_seg) {
-		rv = siw_rx_umem_init(rctx, siw_mem2mr(mem), write->sink_to);
-		if (rv)
-			return -EINVAL;
+	mr = siw_mem2mr(mem);
 
-	} else if (!rctx->umem_chunk) {
+	if (mr->umem) {
 		/*
-		 * This should never happen.
+		 * Are we going to place the last piece of the last
+		 * DDP segment of the current RDMAP message?
 		 *
-		 * TODO: Remove tentative debug aid.
+		 * It is last if:
+		 * - rctx->fpdu_part_rem <= rctx->skb_new AND
+		 * - payload_rem (of current DDP segment) <= rctx->skb_new
 		 */
-		dprint(DBG_RX|DBG_ON, "(QP%d): "
-			"Umem chunk not resolved!\n", QP_ID(qp));
-		return -EINVAL;
-	}
-	/*
-	 * Are we going to place the last piece of the last
-	 * DDP segment of the current RDMAP message?
-	 *
-	 * It is last if:
-	 * - rctx->fpdu_part_rem <= rctx->skb_new AND
-	 * - payload_rem (of current DDP segment) <= rctx->skb_new
-	 */
-	last_write = ((rctx->fpdu_part_rem <= rctx->skb_new) &&
-		      !rctx->more_ddp_segs) ? 1 : 0;
+		int last_write = ((rctx->fpdu_part_rem <= rctx->skb_new) &&
+				   !rctx->more_ddp_segs) ? 1 : 0;
 
-	rv = siw_rx_umem(rctx, bytes, last_write);
+		if (rctx->first_ddp_seg) {
+			rv = siw_rx_umem_init(rctx, mr, write->sink_to);
+			if (rv)
+				return -EINVAL;
+
+		}
+		rv = siw_rx_umem(rctx, bytes, last_write);
+	} else
+		rv = siw_rx_kva(rctx, bytes,
+			       (void *)(write->sink_to + rctx->fpdu_part_rcvd));
+
 	if (rv != bytes)
 		return -EINVAL;
 
@@ -829,7 +851,6 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	struct siw_mr	*mr;
 	struct siw_sge	*sge;
 	int		bytes,
-			is_last,
 			rv;
 
 	if (rctx->first_ddp_seg) {
@@ -896,34 +917,28 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	}
 	mr = siw_mem2mr(sge->mem.obj);
 
-	if (rctx->first_ddp_seg) {
-		rv = siw_rx_umem_init(rctx, mr, sge->addr);
-		if (rv) {
-			wqe->wc_status = IB_WC_LOC_PROT_ERR;
-			goto done;
-		}
-	} else if (!rctx->umem_chunk) {
+	if (mr->umem) {
 		/*
-		 * This should never happen.
+		 * Are we going to finish placing the last DDP segment (L=1)
+		 * of the current RDMAP message?
 		 *
-		 * TODO: Remove tentative debug aid.
+		 * NOTE: siw_rresp_check_ntoh() guarantees that the
+		 * last inbound RDMAP Read Response message exactly matches
+		 * with the RREQ WR.
 		 */
-		dprint(DBG_RX|DBG_ON, "(QP%d): No target mem!\n", QP_ID(qp));
-		wqe->wc_status = IB_WC_GENERAL_ERR;
-		rv = -EPROTO;
-		goto done;
-	}
-	/*
-	 * Are we going to finish placing the last DDP segment (L=1)
-	 * of the current RDMAP message?
-	 *
-	 * NOTE: siw_rresp_check_ntoh() guarantees that the
-	 * last inbound RDMAP Read Response message exactly matches
-	 * with the RREQ WR.
-	 */
-	is_last = (bytes + wqe->processed == wqe->bytes) ? 1 : 0;
+		int is_last = (bytes + wqe->processed == wqe->bytes) ? 1 : 0;
 
-	rv = siw_rx_umem(rctx,  bytes, is_last);
+		if (rctx->first_ddp_seg) {
+			rv = siw_rx_umem_init(rctx, mr, sge->addr);
+			if (rv) {
+				wqe->wc_status = IB_WC_LOC_PROT_ERR;
+				goto done;
+			}
+		}
+		rv = siw_rx_umem(rctx,  bytes, is_last);
+	} else
+		rv = siw_rx_kva(rctx,  bytes,
+				(void *)(sge->addr + wqe->processed));
 	if (rv != bytes) {
 		wqe->wc_status = IB_WC_GENERAL_ERR;
 		rv = -EINVAL;
