@@ -141,7 +141,7 @@ static void siw_sync_single_for_device(struct ib_device *dev, u64 addr,
 }
 
 static void *siw_dma_alloc_coherent(struct ib_device *dev, size_t size,
-                                      u64 *dma_addr, gfp_t flag)
+				    u64 *dma_addr, gfp_t flag)
 {
 	struct page *page;
 	void *kva = NULL;

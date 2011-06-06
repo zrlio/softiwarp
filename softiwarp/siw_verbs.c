@@ -1472,7 +1472,7 @@ struct ib_mr *siw_get_dma_mr(struct ib_pd *ofa_pd, int rights)
 
 	mr->pd = pd;
 	siw_pd_get(pd);
-	
+
 	return &mr->ofa_mr;
 
 err_out:
@@ -1587,7 +1587,8 @@ int siw_modify_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs,
 			rv =  -EINVAL;
 			goto out;
 		}
-		if (attrs->max_wr < srq->max_wr) { /* shrink */
+		if (attrs->max_wr < srq->max_wr) {
+			/* shrink */
 			if (attrs->max_wr <
 			    srq->max_wr - atomic_read(&srq->space)) {
 				rv = -EBUSY;

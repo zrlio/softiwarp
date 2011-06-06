@@ -152,7 +152,7 @@ extern void siw_cm_exit(void);
  */
 static inline unsigned int get_tcp_mss(struct sock *sk)
 {
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 30)
 	return ((struct tcp_sock *)sk)->xmit_size_goal;
 #else
 	struct tcp_sock *tp = tcp_sk(sk);

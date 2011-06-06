@@ -191,7 +191,7 @@ static struct siw_cep *siw_cep_alloc(struct siw_dev  *dev)
 		spin_lock_irqsave(&dev->idr_lock, flags);
 		list_add_tail(&cep->devq, &dev->cep_list);
 		spin_unlock_irqrestore(&dev->idr_lock, flags);
-		atomic_inc(&dev->num_cep);	
+		atomic_inc(&dev->num_cep);
 
 		dprint(DBG_OBJ|DBG_CM, "(CEP 0x%p): New Object\n", cep);
 	}
@@ -271,7 +271,7 @@ static void siw_cm_release(struct siw_cep *cep)
 {
 	dprint(DBG_CM, " (CEP 0x%p): mpa_timer=%s, sock=0x%p, QP%d, id=0x%p\n",
 		cep, cep->mpa_timer?"y":"n", cep->llp.sock,
-		cep->qp?QP_ID(cep->qp):-1, cep->cm_id);
+		cep->qp?QP_ID(cep->qp): -1, cep->cm_id);
 
 	siw_cancel_mpatimer(cep);
 
@@ -314,7 +314,7 @@ static void __siw_cep_dealloc(struct kref *ref)
 	spin_lock_irqsave(&dev->idr_lock, flags);
 	list_del(&cep->devq);
 	spin_unlock_irqrestore(&dev->idr_lock, flags);
-	atomic_dec(&dev->num_cep);	
+	atomic_dec(&dev->num_cep);
 	kfree(cep);
 }
 
@@ -380,7 +380,7 @@ void siw_qp_cm_drop(struct siw_qp *qp, int schedule)
 		 */
 		dprint(DBG_CM, "(): immediate close, cep=0x%p, state=%d, "
 			"id=0x%p, sock=0x%p, QP%d\n", cep, cep->state,
-			cep->cm_id, cep->llp.sock, cep->qp?QP_ID(cep->qp):-1);
+			cep->cm_id, cep->llp.sock, cep->qp?QP_ID(cep->qp): -1);
 
 		if (cep->cm_id) {
 			switch (cep->state) {
@@ -646,7 +646,7 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 
 		goto out;
 	}
-	
+
 out_err:
 	(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
 			    IW_CM_EVENT_STATUS_EINVAL);
@@ -992,13 +992,16 @@ static void siw_cm_work_handler(struct work_struct *w)
 				/*
 				 * Wait for the CM to call its accept/reject
 				 */
-				dprint(DBG_CM, "(): STATE_RECVD_MPAREQ: wait for CM:\n");
+				dprint(DBG_CM, "(): STATE_RECVD_MPAREQ: "
+					"wait for CM:\n");
 				break;
 			case SIW_EPSTATE_AWAIT_MPAREQ:
 				/*
 				 * Socket close before MPA request received.
 				 */
-				dprint(DBG_CM, "(): STATE_AWAIT_MPAREQ: unlink from Listener\n");
+				dprint(DBG_CM,
+					"(): STATE_AWAIT_MPAREQ: "
+					"unlink from Listener\n");
 				siw_cep_put(cep->listen_cep);
 				cep->listen_cep = NULL;
 
@@ -1023,7 +1026,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 			 * timeout
 			 */
 			cep->mpa.hdr.params.pd_len = 0;
-	
+
 			if (cep->cm_id)
 				siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
 					      IW_CM_EVENT_STATUS_TIMEOUT);
@@ -1571,7 +1574,7 @@ int siw_reject(struct iw_cm_id *id, const void *pdata, u8 plen)
 		BUG();
 	}
 	dprint(DBG_CM, "(id=0x%p): cep->state=%d\n", id, cep->state);
-	dprint(DBG_CM, " Reject: %d: %x\n",plen,
+	dprint(DBG_CM, " Reject: %d: %x\n", plen,
 		plen ? *(char *)pdata:0);
 	dprint(DBG_CM, " Sending REJECT not yet implemented\n");
 
@@ -1738,7 +1741,7 @@ static void siw_drop_listeners(struct iw_cm_id *id)
 		list_del(p);
 
 		dprint(DBG_CM, "(id=0x%p): drop CEP 0x%p, state %d\n",
-			id, cep, cep->state); 
+			id, cep, cep->state);
 		siw_cep_set_inuse(cep);
 
 		if (cep->cm_id) {

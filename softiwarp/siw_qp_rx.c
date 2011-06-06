@@ -458,11 +458,9 @@ static inline struct siw_wqe *siw_srq_fetch_wqe(struct siw_srq *srq)
 		 * The SRQ wqe is counted for SRQ space until completed.
 		 */
 		qlen = srq->max_wr - (atomic_read(&srq->space) + 1);
-		dprint(DBG_RX, " SRQ(%p): qlen:%d, limit:%d, armed:%d, max:%d, space:%d\n",
-			srq, qlen, srq->limit, srq->armed, srq->max_wr, atomic_read(&srq->space));
 		if (srq->armed && qlen < srq->limit) {
 			srq->armed = 0;
-			dprint(DBG_RX, " SRQ(%p): Post SRQ limit event\n", srq);
+			dprint(DBG_RX, " SRQ(%p): SRQ limit event\n", srq);
 			siw_async_srq_ev(srq, IB_EVENT_SRQ_LIMIT_REACHED);
 		}
 	}
@@ -1074,9 +1072,8 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 		rctx->skb_copied += bytes;
 
 		if (!rctx->skb_new ||
-			rctx->fpdu_part_rcvd < sizeof(struct iwarp_ctrl)) {
+			rctx->fpdu_part_rcvd < sizeof(struct iwarp_ctrl))
 			return -EAGAIN;
-		}
 
 		if (c_hdr->opcode > RDMAP_TERMINATE) {
 			dprint(DBG_RX|DBG_ON, " opcode %d\n", c_hdr->opcode);

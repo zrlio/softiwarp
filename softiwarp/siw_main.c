@@ -115,7 +115,7 @@ static ssize_t show_stats(struct device *dev,
 #if DPRINT_MASK > 0
 			"WQEs", atomic_read(&siw_num_wqe),
 #endif
-			siw_dev->ofa_dev.name, 
+			siw_dev->ofa_dev.name,
 			"PDs", atomic_read(&siw_dev->num_pd),
 			"QPs", atomic_read(&siw_dev->num_qp),
 			"CQs", atomic_read(&siw_dev->num_cq),
@@ -140,8 +140,8 @@ static ssize_t show_ceps(struct device *dev,
 		len = 0;
 
 	if (num_cep)
-		printk("\n%d CEPs on device %s:\n",
-		       num_cep, siw_dev->ofa_dev.name);
+		printk(KERN_INFO "\n%d CEPs on device %s:\n",
+			num_cep, siw_dev->ofa_dev.name);
 	else
 		return len;
 
@@ -156,7 +156,7 @@ static ssize_t show_ceps(struct device *dev,
 			" 0x%-16p\n",
 			cep, cep->state,
 			atomic_read(&cep->ref.refcount),
-			cep->qp?QP_ID(cep->qp):-1,
+			cep->qp?QP_ID(cep->qp): -1,
 			list_empty(&cep->listenq)?"n":"y",
 			cep->listen_cep?"y":"n",
 			cep->in_use,
@@ -179,7 +179,7 @@ static ssize_t show_qps(struct device *dev,
 		      num_qp, num_qp?"- see dmesg for details":"");
 
 	if (num_qp)
-		printk("\n%d QPs on device %s:\n",
+		printk(KERN_INFO "\n%d QPs on device %s:\n",
 		       num_qp, siw_dev->ofa_dev.name);
 	else
 		return len;
@@ -460,8 +460,8 @@ static void siw_deregister_device(struct siw_dev *dev)
 			kfree(cep);
 			num_ceps++;
 		}
-		printk("siw_deregister_device: free'd %d orphaned CEPs\n",
-			num_ceps);
+		printk(KERN_INFO "siw_deregister_device: "
+			"free'd %d orphaned CEPs\n", num_ceps);
 	}
 	for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i)
 #if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
