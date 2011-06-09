@@ -352,10 +352,9 @@ static int siw_qp_enable_crc(struct siw_qp *qp)
 		rv = -PTR_ERR(c_tx->mpa_crc_hd.tfm);
 		goto out;
 	}
-	
 	c_rx->mpa_crc_hd.tfm = crypto_alloc_hash("crc32c", 0, CRYPTO_ALG_ASYNC);
 	if (IS_ERR(c_rx->mpa_crc_hd.tfm)) {
-		rv = -PTR_ERR(c_tx->mpa_crc_hd.tfm);
+		rv = -PTR_ERR(c_rx->mpa_crc_hd.tfm);
 		crypto_free_hash(c_tx->mpa_crc_hd.tfm);
 	}
 out:
