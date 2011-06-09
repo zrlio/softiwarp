@@ -59,7 +59,11 @@
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 31)
 static int mpa_crc_enabled;
 module_param(mpa_crc_enabled, int, 0644);
+static int mpa_crc_strict = 1;
+module_param(mpa_crc_strict, int, 0644);
 #else
+static bool mpa_crc_strict = 1;
+module_param(mpa_crc_strict, bool, 0644);
 static bool mpa_crc_enabled;
 module_param(mpa_crc_enabled, bool, 0644);
 #endif
@@ -179,7 +183,6 @@ static struct siw_cep *siw_cep_alloc(struct siw_dev  *dev)
 		INIT_LIST_HEAD(&cep->devq);
 		INIT_LIST_HEAD(&cep->work_freelist);
 
-		cep->mpa.hdr.params.c = mpa_crc_enabled ? 1 : 0;
 		cep->mpa.hdr.params.m = 0;
 		cep->mpa.hdr.params.rev = mpa_revision ? 1 : 0;
 		kref_init(&cep->ref);
@@ -454,6 +457,55 @@ static inline int ksock_recv(struct socket *sock, char *buf, size_t size,
 }
 
 /*
+ * Expects params->pd_len in host byte order
+ *
+ * TODO: We might want to combine the arguments params and pdata to a single
+ * pointer to a struct siw_mpa_info as defined in siw_cm.h.
+ * This way, all private data parameters would be in a common struct.
+ */
+static int siw_send_mpareqrep(struct socket *s, struct mpa_rr_params *params,
+			      char *key, char *pdata)
+{
+	struct mpa_rr	hdr;
+	struct kvec	iov[2];
+	struct msghdr	msg;
+
+	int		rv;
+	unsigned short	pd_len = params->pd_len;
+
+	memset(&msg, 0, sizeof(msg));
+	memset(&hdr, 0, sizeof hdr);
+	memcpy(hdr.key, key, 16);
+
+	/*
+	 * TODO: By adding a union to struct mpa_rr_params, it should be
+	 * possible to replace the next 4 statements by one
+	 */
+	hdr.params.r = params->r;
+	hdr.params.c = params->c;
+	hdr.params.m = params->m;
+	hdr.params.rev = params->rev;
+
+	if (pd_len > MPA_MAX_PRIVDATA)
+		return -EINVAL;
+
+	hdr.params.pd_len = htons(pd_len);
+
+	iov[0].iov_base = &hdr;
+	iov[0].iov_len = sizeof hdr;
+
+	if (pd_len) {
+		iov[1].iov_base = pdata;
+		iov[1].iov_len = pd_len;
+
+		rv =  kernel_sendmsg(s, &msg, iov, 2, pd_len + sizeof hdr);
+	} else
+		rv =  kernel_sendmsg(s, &msg, iov, 1, sizeof hdr);
+
+	return rv < 0 ? rv : 0;
+}
+
+/*
  * Receive MPA Request/Reply heder.
  *
  * Returns 0 if complete MPA Request/Reply haeder including
@@ -522,9 +574,7 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 
 	/*
 	 * At this point, we must have hdr->params.pd_len != 0.
-	 * A private data buffer gets allocated iff hdr->params.pd_len != 0.
-	 * Ownership of this buffer will be transferred to the IWCM
-	 * when calling siw_cm_upcall().
+	 * A private data buffer gets allocated if hdr->params.pd_len != 0.
 	 */
 	if (!cep->mpa.pdata) {
 		cep->mpa.pdata = kmalloc(hdr->params.pd_len + 4, GFP_KERNEL);
@@ -575,6 +625,28 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 		rv = -EPROTO;
 		goto out;
 	}
+
+	if (cep->mpa.hdr.params.c == 1 && !mpa_crc_enabled && mpa_crc_strict) {
+		/*
+		 * RFC 5044, page 27: CRC must be used if one peer requests it.
+		 * siw specific:
+		 * 'mpa_crc_strict' parameter to reject connections if
+		 * local CRC off should be enforced (default).
+		 */
+		cep->mpa.hdr.params.c = 0;
+		cep->mpa.hdr.params.r = 1; /* reject */
+		cep->mpa.hdr.params.pd_len = 0;
+		kfree(cep->mpa.pdata);
+		cep->mpa.pdata = NULL;
+
+		dprint(DBG_CM|DBG_ON, "(cep=0x%p): CRC not enabled\n", cep);
+
+		(void)siw_send_mpareqrep(cep->llp.sock, &cep->mpa.hdr.params,
+					 MPA_KEY_REP, NULL);
+		rv = -EOPNOTSUPP;
+		goto out;
+	}
+
 	cep->state = SIW_EPSTATE_RECVD_MPAREQ;
 
 	/* Keep reference until IWCM accepts/rejects */
@@ -609,14 +681,29 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 		rv = -EPROTO;
 		goto out_err;
 	}
-	/*
-	 * TODO: 1. handle eventual MPA reject (upcall with ECONNREFUSED)
-	 *       2. finish mpa parameter check/negotiation
-	 */
+	if (cep->mpa.hdr.params.r) {
+		dprint(DBG_CM, "(cep=0x%p): Got MPA reject\n", cep);
+		(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
+				    IW_CM_EVENT_STATUS_REJECTED);
+		rv = -ECONNRESET;
+		goto out;
+	}
+	if ((mpa_crc_enabled && !cep->mpa.hdr.params.c) ||
+	    (mpa_crc_strict && !mpa_crc_enabled && cep->mpa.hdr.params.c)) {
+
+		dprint(DBG_CM, "(cep=0x%p): CRC negotiation failed: "
+			"request: %d, reply: %d, strict: %d\n", cep,
+			mpa_crc_enabled, cep->mpa.hdr.params.c, mpa_crc_strict);
+
+		(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
+				    IW_CM_EVENT_STATUS_REJECTED);
+		rv = -EINVAL;
+		goto out;
+	}
 	memset(&qp_attrs, 0, sizeof qp_attrs);
 	qp_attrs.mpa.marker_rcv = 0;
 	qp_attrs.mpa.marker_snd = 0;
-	qp_attrs.mpa.crc = CONFIG_RDMA_SIW_CRC_ENFORCED;
+	qp_attrs.mpa.crc = cep->mpa.hdr.params.c;
 	qp_attrs.mpa.version = 1;
 	qp_attrs.ird = cep->ird;
 	qp_attrs.ord = cep->ord;
@@ -651,9 +738,6 @@ out_err:
 	(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
 			    IW_CM_EVENT_STATUS_EINVAL);
 out:
-	/*
-	 * TODO: Send MPA reject for -EPROTO cases
-	 */
 	return rv;
 }
 
@@ -766,55 +850,6 @@ error:
 }
 
 /*
- * Expects params->pd_len in host byte order
- *
- * TODO: We might want to combine the arguments params and pdata to a single
- * pointer to a struct siw_mpa_info as defined in siw_cm.h.
- * This way, all private data parameters would be in a common struct.
- */
-static int siw_send_mpareqrep(struct socket *s, struct mpa_rr_params *params,
-				char *key, char *pdata)
-{
-	struct mpa_rr	hdr;
-	struct kvec	iov[2];
-	struct msghdr	msg;
-
-	int		rv;
-	unsigned short	pd_len = params->pd_len;
-
-	memset(&msg, 0, sizeof(msg));
-	memset(&hdr, 0, sizeof hdr);
-	memcpy(hdr.key, key, 16);
-
-	/*
-	 * TODO: By adding a union to struct mpa_rr_params, it should be
-	 * possible to replace the next 4 statements by one
-	 */
-	hdr.params.r = params->r;
-	hdr.params.c = params->c;
-	hdr.params.m = params->m;
-	hdr.params.rev = params->rev;
-
-	if (pd_len > MPA_MAX_PRIVDATA)
-		return -EINVAL;
-
-	hdr.params.pd_len = htons(pd_len);
-
-	iov[0].iov_base = &hdr;
-	iov[0].iov_len = sizeof hdr;
-
-	if (pd_len) {
-		iov[1].iov_base = pdata;
-		iov[1].iov_len = pd_len;
-
-		rv =  kernel_sendmsg(s, &msg, iov, 2, pd_len + sizeof hdr);
-	} else
-		rv =  kernel_sendmsg(s, &msg, iov, 1, sizeof hdr);
-
-	return rv < 0 ? rv : 0;
-}
-
-/*
  * siw_cm_upcall()
  *
  * Upcall to IWCM to inform about async connection events
@@ -836,18 +871,6 @@ int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 		event.private_data_len = cep->mpa.hdr.params.pd_len;
 		event.private_data = cep->mpa.pdata;
 
-#ifdef OFED_PRIVATE_DATA_BY_REFERENCE
-		/*
-		 * The cm_id->event_handler() is called in process
-		 * context below. Since we allocated a private data
-		 * buffer already, it would make sense to transfer the
-		 * ownership of this buffer to cm_id->event_handler()
-		 * instead of doing another copy at the iwcm.
-		 * This would require a change to
-		 * infiniband/drivers/core/iwcm.c::cm_event_handler().
-		 */
-		cep->mpa.pdata = NULL;
-#endif /* OFED_PRIVATE_DATA_BY_REFERENCE */
 		cep->mpa.hdr.params.pd_len = 0;
 	}
 	if (reason == IW_CM_EVENT_CONNECT_REQUEST ||
@@ -1308,10 +1331,14 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		rv = -ENOMEM;
 		goto error;
 	}
+
+	cep->mpa.hdr.params.c = mpa_crc_enabled ? 1 : 0;
 	cep->mpa.hdr.params.pd_len = pd_len;
 	cep->ird = params->ird;
 	cep->ord = params->ord;
 	cep->state = SIW_EPSTATE_CONNECTING;
+
+	dprint(DBG_CM, "(id=0x%p, QP%d): pd_len = %u\n", id, QP_ID(qp), pd_len);
 
 	rv = kernel_peername(s, &cep->llp.raddr);
 	if (rv)
@@ -1321,9 +1348,6 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	if (rv)
 		goto error;
 
-	dprint(DBG_CM, "(id=0x%p, QP%d): pd_len = %u\n", id, QP_ID(qp), pd_len);
-	if (pd_len)
-		dprint(DBG_CM, " %d bytes private_data\n", pd_len);
 	/*
 	 * Associate CEP with socket
 	 */
@@ -1333,12 +1357,11 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 
 	rv = siw_send_mpareqrep(cep->llp.sock, &cep->mpa.hdr.params,
 				MPA_KEY_REQ, (char *)params->private_data);
-
 	/*
-	 * Reset private data len: in case connection drops w/o peer
-	 * sending MPA reply we would report stale data pointer during
-	 * IW_CM_EVENT_CONNECT_REPLY.
+	 * Reset private data.
 	 */
+	kfree(cep->mpa.pdata);
+	cep->mpa.pdata = NULL;
 	cep->mpa.hdr.params.pd_len = 0;
 
 	if (rv >= 0) {
@@ -1466,7 +1489,7 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	 */
 	qp_attrs.mpa.marker_rcv = 0;
 	qp_attrs.mpa.marker_snd = 0;
-	qp_attrs.mpa.crc = CONFIG_RDMA_SIW_CRC_ENFORCED;
+	qp_attrs.mpa.crc = cep->mpa.hdr.params.c;
 	qp_attrs.mpa.version = 0;
 	qp_attrs.state = SIW_QP_STATE_RTS;
 

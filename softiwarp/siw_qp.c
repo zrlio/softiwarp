@@ -341,6 +341,34 @@ static void siw_send_terminate(struct siw_qp *qp)
 }
 
 
+static int siw_qp_enable_crc(struct siw_qp *qp)
+{
+	struct siw_iwarp_rx *c_rx = &qp->rx_ctx;
+	struct siw_iwarp_tx *c_tx = &qp->tx_ctx;
+	int rv = 0;
+
+	c_tx->mpa_crc_hd.tfm = crypto_alloc_hash("crc32c", 0, CRYPTO_ALG_ASYNC);
+	if (IS_ERR(c_tx->mpa_crc_hd.tfm)) {
+		rv = -PTR_ERR(c_tx->mpa_crc_hd.tfm);
+		goto out;
+	}
+	
+	c_rx->mpa_crc_hd.tfm = crypto_alloc_hash("crc32c", 0, CRYPTO_ALG_ASYNC);
+	if (IS_ERR(c_rx->mpa_crc_hd.tfm)) {
+		rv = -PTR_ERR(c_tx->mpa_crc_hd.tfm);
+		crypto_free_hash(c_tx->mpa_crc_hd.tfm);
+	}
+out:
+	if (rv)
+		dprint(DBG_ON, "(QP%d): Failed loading crc32c: error=%d.",
+			QP_ID(qp), rv);
+	else
+		c_tx->crc_enabled = c_rx->crc_enabled = 1;
+
+	return rv;
+}
+
+
 /*
  * caller holds qp->state_lock
  */
@@ -348,7 +376,7 @@ int
 siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 	      enum siw_qp_attr_mask mask)
 {
-	int	drop_conn, rv;
+	int	drop_conn = 0, rv = 0;
 
 	if (!mask)
 		return 0;
@@ -388,7 +416,6 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 		siw_qp_state_to_string[qp->attrs.state],
 		siw_qp_state_to_string[attrs->state]);
 
-	drop_conn = 0;
 
 	switch (qp->attrs.state) {
 
@@ -399,13 +426,20 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 
 		case SIW_QP_STATE_RTS:
 
+			if (attrs->mpa.crc) {
+				rv = siw_qp_enable_crc(qp);
+				if (rv)
+					break;
+			}
 			if (!(mask & SIW_QP_ATTR_LLP_HANDLE)) {
 				dprint(DBG_ON, "(QP%d): socket?\n", QP_ID(qp));
-				return -EINVAL;
+				rv = -EINVAL;
+				break;
 			}
 			if (!(mask & SIW_QP_ATTR_MPA)) {
 				dprint(DBG_ON, "(QP%d): MPA?\n", QP_ID(qp));
-				return -EINVAL;
+				rv = -EINVAL;
+				break;
 			}
 			dprint(DBG_CM, "(QP%d): Enter RTS: "
 				"peer 0x%08x, local 0x%08x\n", QP_ID(qp),
@@ -434,7 +468,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			++attrs->ird;
 			rv = siw_qp_irq_init(qp, attrs->ird);
 			if (rv)
-				return rv;
+				break;
 
 			atomic_set(&qp->orq_space, attrs->ord);
 
@@ -606,7 +640,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 	if (drop_conn)
 		siw_qp_cm_drop(qp, 0);
 
-	return 0;
+	return rv;
 }
 
 struct ib_qp *siw_get_ofaqp(struct ib_device *dev, int id)
