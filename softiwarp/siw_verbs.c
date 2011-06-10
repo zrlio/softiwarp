@@ -503,27 +503,6 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 	c_tx = &qp->tx_ctx;
 	c_rx = &qp->rx_ctx;
 
-	c_tx->crc_enabled = c_rx->crc_enabled = CONFIG_RDMA_SIW_CRC_ENFORCED;
-
-	if (c_tx->crc_enabled) {
-		c_tx->mpa_crc_hd.tfm =
-			crypto_alloc_hash("crc32c", 0, CRYPTO_ALG_ASYNC);
-		if (IS_ERR(c_tx->mpa_crc_hd.tfm)) {
-			rv = -PTR_ERR(c_tx->mpa_crc_hd.tfm);
-			dprint(DBG_ON, "(QP%d): Failed loading crc32c"
-				" with error %d. ", QP_ID(qp), rv);
-			goto err_out_idr;
-		}
-	}
-	if (c_rx->crc_enabled) {
-		c_rx->mpa_crc_hd.tfm =
-			crypto_alloc_hash("crc32c", 0, CRYPTO_ALG_ASYNC);
-		if (IS_ERR(c_rx->mpa_crc_hd.tfm)) {
-			rv = -PTR_ERR(c_rx->mpa_crc_hd.tfm);
-			crypto_free_hash(c_tx->mpa_crc_hd.tfm);
-			goto err_out_idr;
-		}
-	}
 	atomic_set(&qp->tx_ctx.in_use, 0);
 
 	qp->ofa_qp.qp_num = QP_ID(qp);
@@ -555,10 +534,9 @@ err_out:
 }
 
 /*
- * Minimum siw_query_qp() verb interface to allow for qperf application
- * to run on siw.
- *
- * TODO: all.
+ * Minimum siw_query_qp() verb interface.
+ * 
+ * @qp_attr_mask is not used but all available information is provided
  */
 int siw_query_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *qp_attr,
 		 int qp_attr_mask, struct ib_qp_init_attr *qp_init_attr)

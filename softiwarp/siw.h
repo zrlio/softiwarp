@@ -92,13 +92,6 @@ enum siw_if_type {
 #define	SIW_NODE_DESC		"Software iWARP stack"
 
 
-/*
- * Softiwarp TX/RX configuration options
- */
-
-#define CONFIG_RDMA_SIW_CRC_ENFORCED	0
-
-
 struct siw_devinfo {
 	unsigned		device;
 	unsigned		version;
@@ -406,10 +399,10 @@ enum siw_qp_attr_mask {
 };
 
 struct siw_mpa_attrs {
-	__u8	marker_rcv;
-	__u8	marker_snd;
+	__u8	marker_rcv; /* always 0 */
+	__u8	marker_snd; /* always 0, consider support */
 	__u8	crc;
-	__u8	version;
+	__u8	unused;
 };
 
 struct siw_sk_upcalls {
