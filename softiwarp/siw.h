@@ -399,10 +399,10 @@ enum siw_qp_attr_mask {
 };
 
 struct siw_mpa_attrs {
-	__u8	marker_rcv;
-	__u8	marker_snd;
+	__u8	marker_rcv; /* always 0 */
+	__u8	marker_snd; /* always 0, consider support */
 	__u8	crc;
-	__u8	version;
+	__u8	unused;
 };
 
 struct siw_sk_upcalls {

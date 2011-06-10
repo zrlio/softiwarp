@@ -1,3 +1,25 @@
+Date:   Fri Jun 10 2011
+
+Changed module parameters:
+
+	mpa_crc_required: replaces old 'mpa_crc_enabled' parameter.
+		if set, siw will always enforce CRC generation
+
+	mpa_crc_strict: new parameter.
+		if set, siw will enforce not to use CRC even if requested
+		by peer. Since RFC 5044 defines both peers MUST use CRC
+		if one peer requires it, connection will be aborted if
+		peer requestes CRC and 'mpa_crc_strict' is set.
+
+---
+Date:   Sun Jun 5 2011
+
+Added kernel client support.
+
+
+---
+Date:   Tue Sep 21 2010
+
 The softiwarp kernel module can be build now without access
 to the kernel source tree. This directory contains all files
 needed to build a SoftiWARP kernel module 'siw.ko' which was
@@ -51,3 +73,4 @@ module parameters:
 		one 2.5 GHz CPU may drop from 55 percent down to 23 percent
 		if serving 100KByte READ responses at 10GbE's line speed.
 
+---

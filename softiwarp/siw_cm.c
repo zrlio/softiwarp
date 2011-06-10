@@ -57,19 +57,17 @@
 #include "siw_obj.h"
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 31)
-static int mpa_crc_enabled;
-module_param(mpa_crc_enabled, int, 0644);
+static int mpa_crc_required;
+module_param(mpa_crc_required, int, 0644);
 static int mpa_crc_strict = 1;
 module_param(mpa_crc_strict, int, 0644);
 #else
 static bool mpa_crc_strict = 1;
 module_param(mpa_crc_strict, bool, 0644);
-static bool mpa_crc_enabled;
-module_param(mpa_crc_enabled, bool, 0644);
+static bool mpa_crc_required;
+module_param(mpa_crc_required, bool, 0644);
 #endif
-MODULE_PARM_DESC(mpa_crc_enabled, "MPA CRC enabled");
-
-static int mpa_revision = 1;
+MODULE_PARM_DESC(mpa_crc_required, "MPA CRC required");
 
 
 /*
@@ -184,7 +182,7 @@ static struct siw_cep *siw_cep_alloc(struct siw_dev  *dev)
 		INIT_LIST_HEAD(&cep->work_freelist);
 
 		cep->mpa.hdr.params.m = 0;
-		cep->mpa.hdr.params.rev = mpa_revision ? 1 : 0;
+		cep->mpa.hdr.params.rev = MPA_REVISION_1;
 		kref_init(&cep->ref);
 		cep->state = SIW_EPSTATE_IDLE;
 		init_waitqueue_head(&cep->waitq);
@@ -464,7 +462,7 @@ static inline int ksock_recv(struct socket *sock, char *buf, size_t size,
  * This way, all private data parameters would be in a common struct.
  */
 static int siw_send_mpareqrep(struct socket *s, struct mpa_rr_params *params,
-			      char *key, char *pdata)
+			      char *key, const void *pdata)
 {
 	struct mpa_rr	hdr;
 	struct kvec	iov[2];
@@ -495,7 +493,7 @@ static int siw_send_mpareqrep(struct socket *s, struct mpa_rr_params *params,
 	iov[0].iov_len = sizeof hdr;
 
 	if (pd_len) {
-		iov[1].iov_base = pdata;
+		iov[1].iov_base = (char *)pdata;
 		iov[1].iov_len = pd_len;
 
 		rv =  kernel_sendmsg(s, &msg, iov, 2, pd_len + sizeof hdr);
@@ -626,26 +624,41 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 		goto out;
 	}
 
-	if (cep->mpa.hdr.params.c == 1 && !mpa_crc_enabled && mpa_crc_strict) {
+	if ((cep->mpa.hdr.params.m == 1) ||
+	    (cep->mpa.hdr.params.c == 1 && !mpa_crc_required && mpa_crc_strict)) {
 		/*
-		 * RFC 5044, page 27: CRC must be used if one peer requests it.
-		 * siw specific:
-		 * 'mpa_crc_strict' parameter to reject connections if
-		 * local CRC off should be enforced (default).
+		 * MPA Markers: currently not supported. Marker TX to be added.
+		 *
+		 * CRC:
+		 *    RFC 5044, page 27: CRC MUST be used if peer requests it.
+		 *    siw specific: 'mpa_crc_strict' parameter to reject
+		 *    connection with CRC if local CRC off enforced by
+		 *    'mpa_crc_strict' module parameter.
 		 */
-		cep->mpa.hdr.params.c = 0;
+		dprint(DBG_CM|DBG_ON, " Reject: CRC %d:%d:%d, M %d:%d\n",
+			cep->mpa.hdr.params.c, mpa_crc_required, mpa_crc_strict,
+			cep->mpa.hdr.params.m, 0);
+
+		cep->mpa.hdr.params.m = 0;
 		cep->mpa.hdr.params.r = 1; /* reject */
+
+		if (!mpa_crc_required && mpa_crc_strict)
+			cep->mpa.hdr.params.c = 0;
+
 		cep->mpa.hdr.params.pd_len = 0;
 		kfree(cep->mpa.pdata);
 		cep->mpa.pdata = NULL;
-
-		dprint(DBG_CM|DBG_ON, "(cep=0x%p): CRC not enabled\n", cep);
 
 		(void)siw_send_mpareqrep(cep->llp.sock, &cep->mpa.hdr.params,
 					 MPA_KEY_REP, NULL);
 		rv = -EOPNOTSUPP;
 		goto out;
 	}
+	/*
+	 * Enable CRC if requested by module initialization
+	 */
+	if (!cep->mpa.hdr.params.c && mpa_crc_required)
+		cep->mpa.hdr.params.c = 1;
 
 	cep->state = SIW_EPSTATE_RECVD_MPAREQ;
 
@@ -688,12 +701,13 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 		rv = -ECONNRESET;
 		goto out;
 	}
-	if ((mpa_crc_enabled && !cep->mpa.hdr.params.c) ||
-	    (mpa_crc_strict && !mpa_crc_enabled && cep->mpa.hdr.params.c)) {
+	if ((cep->mpa.hdr.params.m == 1) ||
+	    (mpa_crc_required && !cep->mpa.hdr.params.c) ||
+	    (mpa_crc_strict && !mpa_crc_required && cep->mpa.hdr.params.c)) {
 
-		dprint(DBG_CM, "(cep=0x%p): CRC negotiation failed: "
-			"request: %d, reply: %d, strict: %d\n", cep,
-			mpa_crc_enabled, cep->mpa.hdr.params.c, mpa_crc_strict);
+		dprint(DBG_CM|DBG_ON, " Reply unsupp.: CRC %d:%d:%d, M %d:%d\n",
+			cep->mpa.hdr.params.c, mpa_crc_required, mpa_crc_strict,
+			cep->mpa.hdr.params.m, 0);
 
 		(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
 				    IW_CM_EVENT_STATUS_REJECTED);
@@ -704,7 +718,6 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 	qp_attrs.mpa.marker_rcv = 0;
 	qp_attrs.mpa.marker_snd = 0;
 	qp_attrs.mpa.crc = cep->mpa.hdr.params.c;
-	qp_attrs.mpa.version = 1;
 	qp_attrs.ird = cep->ird;
 	qp_attrs.ord = cep->ord;
 	qp_attrs.llp_stream_handle = cep->llp.sock;
@@ -933,6 +946,8 @@ static void siw_cm_work_handler(struct work_struct *w)
 				if (rv != -EAGAIN) {
 					siw_cep_put(cep->listen_cep);
 					cep->listen_cep = NULL;
+					if (rv)
+						siw_cep_put(cep);
 				}
 			}
 			break;
@@ -1332,7 +1347,7 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		goto error;
 	}
 
-	cep->mpa.hdr.params.c = mpa_crc_enabled ? 1 : 0;
+	cep->mpa.hdr.params.c = mpa_crc_required ? 1 : 0;
 	cep->mpa.hdr.params.pd_len = pd_len;
 	cep->ird = params->ird;
 	cep->ord = params->ord;
@@ -1374,7 +1389,7 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		}
 	}
 error:
-	dprint(DBG_ON, " Failed: %d\n", rv);
+	dprint(DBG_CM, " Failed: %d\n", rv);
 
 	if (cep) {
 		siw_socket_disassoc(s);
@@ -1485,12 +1500,11 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	qp_attrs.llp_stream_handle = cep->llp.sock;
 
 	/*
-	 * TODO: Add MPA negotiation
+	 * Currently no MPA markers support. Consider adding marker TX path.
 	 */
 	qp_attrs.mpa.marker_rcv = 0;
 	qp_attrs.mpa.marker_snd = 0;
 	qp_attrs.mpa.crc = cep->mpa.hdr.params.c;
-	qp_attrs.mpa.version = 0;
 	qp_attrs.state = SIW_QP_STATE_RTS;
 
 	dprint(DBG_CM, "(id=0x%p, QP%d): Moving to RTS\n", id, QP_ID(qp));
@@ -1515,12 +1529,6 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	if (rv)
 		goto error;
 
-
-	/*
-	 * TODO: It might be more elegant and concise to check the
-	 * private data length cep->mpa.hdr.params.pd_len
-	 * inside siw_send_mpareqrep().
-	 */
 	if (params->private_data_len) {
 		pdata = (char *)params->private_data;
 
@@ -1597,10 +1605,14 @@ int siw_reject(struct iw_cm_id *id, const void *pdata, u8 plen)
 		BUG();
 	}
 	dprint(DBG_CM, "(id=0x%p): cep->state=%d\n", id, cep->state);
-	dprint(DBG_CM, " Reject: %d: %x\n", plen,
-		plen ? *(char *)pdata:0);
-	dprint(DBG_CM, " Sending REJECT not yet implemented\n");
+	dprint(DBG_CM, " Reject: %d: %x\n", plen, plen ? *(char *)pdata:0);
 
+	if (cep->mpa.hdr.params.rev == MPA_REVISION_1) {
+		cep->mpa.hdr.params.r = 1; /* reject */
+		cep->mpa.hdr.params.pd_len = plen;
+		(void)siw_send_mpareqrep(cep->llp.sock, &cep->mpa.hdr.params,
+					 MPA_KEY_REP, pdata);
+	}
 	siw_socket_disassoc(cep->llp.sock);
 	sock_release(cep->llp.sock);
 	cep->llp.sock = NULL;
@@ -1735,7 +1747,7 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 	return 0;
 
 error:
-	dprint(DBG_ON, " Failed: %d\n", rv);
+	dprint(DBG_CM, " Failed: %d\n", rv);
 
 	if (cep) {
 		if (cep->cm_id) {
