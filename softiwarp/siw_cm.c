@@ -701,14 +701,11 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 		rv = -ECONNRESET;
 		goto out;
 	}
-		dprint(DBG_CM|DBG_ON, "Reply test.: CRC %d:%d:%d, M %d:%d\n",
-			cep->mpa.hdr.params.c, mpa_crc_required, mpa_crc_strict,
-			cep->mpa.hdr.params.m, 0);
 	if ((cep->mpa.hdr.params.m == 1) ||
 	    (mpa_crc_required && !cep->mpa.hdr.params.c) ||
 	    (mpa_crc_strict && !mpa_crc_required && cep->mpa.hdr.params.c)) {
 
-		dprint(DBG_CM|DBG_ON, "Reply unsupp.: CRC %d:%d:%d, M %d:%d\n",
+		dprint(DBG_CM|DBG_ON, " Reply unsupp.: CRC %d:%d:%d, M %d:%d\n",
 			cep->mpa.hdr.params.c, mpa_crc_required, mpa_crc_strict,
 			cep->mpa.hdr.params.m, 0);
 
@@ -1392,7 +1389,7 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		}
 	}
 error:
-	dprint(DBG_ON, " Failed: %d\n", rv);
+	dprint(DBG_CM, " Failed: %d\n", rv);
 
 	if (cep) {
 		siw_socket_disassoc(s);
@@ -1750,7 +1747,7 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 	return 0;
 
 error:
-	dprint(DBG_ON, " Failed: %d\n", rv);
+	dprint(DBG_CM, " Failed: %d\n", rv);
 
 	if (cep) {
 		if (cep->cm_id) {
