@@ -1371,7 +1371,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 			PTR_ERR(umem), current->mm->locked_vm,
 			current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur >>
 			PAGE_SHIFT);
-		rv = -PTR_ERR(umem);
+		rv = PTR_ERR(umem);
 		umem = NULL;
 		goto err_out;
 	}
