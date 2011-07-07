@@ -1326,9 +1326,10 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 	struct siw_dev		*dev = pd->hdr.dev;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 33)
-	int mem_limit = current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur;
+	unsigned long mem_limit =
+		current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur;
 #else
-	int mem_limit = rlimit(RLIMIT_MEMLOCK);
+	unsigned long mem_limit = rlimit(RLIMIT_MEMLOCK);
 #endif
 	int rv;
 
@@ -1349,13 +1350,13 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		goto err_out;
 	}
 	if (mem_limit != RLIM_INFINITY) {
-		int num_pages =
+		unsigned long num_pages =
 			(PAGE_ALIGN(len + (start & ~PAGE_MASK))) >> PAGE_SHIFT;
 		mem_limit >>= PAGE_SHIFT;
 
 		if (num_pages > mem_limit - current->mm->locked_vm) {
 			dprint(DBG_ON|DBG_MM,
-				": rlimit: req: %d, limit: %d, locked: %lu\n",
+				": pages req: %lu, limit: %lu, locked: %lu\n",
 				num_pages, mem_limit, current->mm->locked_vm);
 			rv = -ENOMEM;
 			goto err_out;
