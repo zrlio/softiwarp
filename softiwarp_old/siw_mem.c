@@ -4,7 +4,7 @@
  * Authors: Animesh Trivedi <atr@zurich.ibm.com>
  *          Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -41,7 +41,6 @@
 #include <rdma/ib_verbs.h>
 
 #include "siw.h"
-#include "siw_verbs.h"
 
 /*
  * DMA mapping/address translation functions.
@@ -136,8 +135,7 @@ static void siw_sync_single_for_cpu(struct ib_device *dev, u64 addr,
 }
 
 static void siw_sync_single_for_device(struct ib_device *dev, u64 addr,
-				       size_t size,
-				       enum dma_data_direction dir)
+				       size_t size, enum dma_data_direction dir)
 {
 	/* NOP */
 }

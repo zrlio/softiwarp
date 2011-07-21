@@ -4,7 +4,7 @@
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *          Fredy Neeser <nfd@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -79,73 +79,81 @@ static char siw_qp_state_to_string[SIW_QP_STATE_COUNT][sizeof "TERMINATE"] = {
 struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 	.hdr_len = sizeof(struct iwarp_rdma_write),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_rdma_write) - 2),
-	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_TAGGED | DDP_FLAG_LAST
-		| cpu_to_be16(DDP_VERSION << 8)
-		| cpu_to_be16(RDMAP_VERSION << 6)
-		| cpu_to_be16(RDMAP_RDMA_WRITE),
+	.ctrl.dv = DDP_VERSION,
+	.ctrl.opcode = RDMAP_RDMA_WRITE,
+	.ctrl.rv = RDMAP_VERSION,
+	.ctrl.t = 1,
+	.ctrl.l = 1,
 	.proc_data = siw_proc_write
 },
 {
 	.hdr_len = sizeof(struct iwarp_rdma_rreq),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_rdma_rreq) - 2),
-	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
-		| cpu_to_be16(DDP_VERSION << 8)
-		| cpu_to_be16(RDMAP_VERSION << 6)
-		| cpu_to_be16(RDMAP_RDMA_READ_REQ),
+	.ctrl.dv = DDP_VERSION,
+	.ctrl.opcode = RDMAP_RDMA_READ_REQ,
+	.ctrl.rv = RDMAP_VERSION,
+	.ctrl.t = 0,
+	.ctrl.l = 1,
 	.proc_data = siw_proc_rreq
 },
 {
 	.hdr_len = sizeof(struct iwarp_rdma_rresp),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_rdma_rresp) - 2),
-	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_TAGGED | DDP_FLAG_LAST
-		| cpu_to_be16(DDP_VERSION << 8)
-		| cpu_to_be16(RDMAP_VERSION << 6)
-		| cpu_to_be16(RDMAP_RDMA_READ_RESP),
+	.ctrl.dv = DDP_VERSION,
+	.ctrl.opcode = RDMAP_RDMA_READ_RESP,
+	.ctrl.rv = RDMAP_VERSION,
+	.ctrl.t = 1,
+	.ctrl.l = 1,
 	.proc_data = siw_proc_rresp
 },
 {
 	.hdr_len = sizeof(struct iwarp_send),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_send) - 2),
-	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
-		| cpu_to_be16(DDP_VERSION << 8)
-		| cpu_to_be16(RDMAP_VERSION << 6)
-		| cpu_to_be16(RDMAP_SEND),
+	.ctrl.dv = DDP_VERSION,
+	.ctrl.opcode = RDMAP_SEND,
+	.ctrl.rv = RDMAP_VERSION,
+	.ctrl.t = 0,
+	.ctrl.l = 1,
 	.proc_data = siw_proc_send
 },
 {
 	.hdr_len = sizeof(struct iwarp_send_inv),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_send_inv) - 2),
-	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
-		| cpu_to_be16(DDP_VERSION << 8)
-		| cpu_to_be16(RDMAP_VERSION << 6)
-		| cpu_to_be16(RDMAP_SEND_INVAL),
+	.ctrl.dv = DDP_VERSION,
+	.ctrl.opcode = RDMAP_SEND_INVAL,
+	.ctrl.rv = RDMAP_VERSION,
+	.ctrl.t = 0,
+	.ctrl.l = 1,
 	.proc_data = siw_proc_unsupp
 },
 {
 	.hdr_len = sizeof(struct iwarp_send),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_send) - 2),
-	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
-		| cpu_to_be16(DDP_VERSION << 8)
-		| cpu_to_be16(RDMAP_VERSION << 6)
-		| cpu_to_be16(RDMAP_SEND_SE),
+	.ctrl.dv = DDP_VERSION,
+	.ctrl.opcode = RDMAP_SEND_SE,
+	.ctrl.rv = RDMAP_VERSION,
+	.ctrl.t = 0,
+	.ctrl.l = 1,
 	.proc_data = siw_proc_send
 },
 {
 	.hdr_len = sizeof(struct iwarp_send_inv),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_send_inv) - 2),
-	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
-		| cpu_to_be16(DDP_VERSION << 8)
-		| cpu_to_be16(RDMAP_VERSION << 6)
-		| cpu_to_be16(RDMAP_SEND_SE_INVAL),
+	.ctrl.dv = DDP_VERSION,
+	.ctrl.opcode = RDMAP_SEND_SE_INVAL,
+	.ctrl.rv = RDMAP_VERSION,
+	.ctrl.t = 0,
+	.ctrl.l = 1,
 	.proc_data = siw_proc_unsupp
 },
 {
 	.hdr_len = sizeof(struct iwarp_terminate),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_terminate) - 2),
-	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
-		| cpu_to_be16(DDP_VERSION << 8)
-		| cpu_to_be16(RDMAP_VERSION << 6)
-		| cpu_to_be16(RDMAP_TERMINATE),
+	.ctrl.dv = DDP_VERSION,
+	.ctrl.opcode = RDMAP_TERMINATE,
+	.ctrl.rv = RDMAP_VERSION,
+	.ctrl.t = 0,
+	.ctrl.l = 1,
 	.proc_data = siw_proc_terminate
 } };
 
@@ -339,14 +347,12 @@ static int siw_qp_enable_crc(struct siw_qp *qp)
 	struct siw_iwarp_tx *c_tx = &qp->tx_ctx;
 	int rv = 0;
 
-	c_tx->mpa_crc_hd.tfm = crypto_alloc_hash("crc32c", 0,
-						 CRYPTO_ALG_ASYNC);
+	c_tx->mpa_crc_hd.tfm = crypto_alloc_hash("crc32c", 0, CRYPTO_ALG_ASYNC);
 	if (IS_ERR(c_tx->mpa_crc_hd.tfm)) {
 		rv = -PTR_ERR(c_tx->mpa_crc_hd.tfm);
 		goto out;
 	}
-	c_rx->mpa_crc_hd.tfm = crypto_alloc_hash("crc32c", 0,
-						 CRYPTO_ALG_ASYNC);
+	c_rx->mpa_crc_hd.tfm = crypto_alloc_hash("crc32c", 0, CRYPTO_ALG_ASYNC);
 	if (IS_ERR(c_rx->mpa_crc_hd.tfm)) {
 		rv = -PTR_ERR(c_rx->mpa_crc_hd.tfm);
 		crypto_free_hash(c_tx->mpa_crc_hd.tfm);
@@ -947,7 +953,7 @@ void siw_sq_flush(struct siw_qp *qp)
 		(*cq->ofa_cq.comp_handler)(&cq->ofa_cq, cq->ofa_cq.cq_context);
 
 	if (async_event)
-		siw_qp_event(qp, IB_EVENT_SQ_DRAINED);
+		siw_async_ev(qp, NULL, IB_EVENT_SQ_DRAINED);
 }
 
 /*
@@ -971,7 +977,7 @@ void siw_rq_flush(struct siw_qp *qp)
 	 * Flush an in-progess WQE if present
 	 */
 	if (rx_wqe(qp)) {
-		if (__rdmap_opcode(&qp->rx_ctx.hdr.ctrl) != RDMAP_RDMA_WRITE)
+		if (qp->rx_ctx.hdr.ctrl.opcode != RDMAP_RDMA_WRITE)
 			list_add(&rx_wqe(qp)->list, &qp->rq);
 		else
 			siw_mem_put(rx_mem(qp));

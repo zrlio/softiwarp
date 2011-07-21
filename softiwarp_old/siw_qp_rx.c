@@ -4,7 +4,7 @@
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *          Fredy Neeser <nfd@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -291,34 +291,36 @@ static inline int siw_rresp_check_ntoh(struct siw_iwarp_rx *rctx)
 	struct iwarp_rdma_rresp	*rresp = &rctx->hdr.rresp;
 	struct siw_wqe		*wqe = rctx->dest.wqe;
 
-	u32 sink_stag = be32_to_cpu(rresp->sink_stag);
-	u64 sink_to   = be64_to_cpu(rresp->sink_to);
+	rresp->sink_stag = be32_to_cpu(rresp->sink_stag);
+	rresp->sink_to   = be64_to_cpu(rresp->sink_to);
 
 	if (rctx->first_ddp_seg) {
 		rctx->ddp_stag = wqe->wr.rread.sge[0].lkey;
 		rctx->ddp_to   = wqe->wr.rread.sge[0].addr;
 	}
-	if (rctx->ddp_stag != sink_stag) {
+	if (rctx->ddp_stag != rresp->sink_stag) {
 		dprint(DBG_RX|DBG_ON,
 			" received STAG=%08x, expected STAG=%08x\n",
-			sink_stag, rctx->ddp_stag);
+			rresp->sink_stag, rctx->ddp_stag);
 		/*
 		 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
 		 */
 		return -EINVAL;
 	}
-	if (rctx->ddp_to != sink_to) {
+	if (rctx->ddp_to != rresp->sink_to) {
 		dprint(DBG_RX|DBG_ON,
 			" received TO=%016llx, expected TO=%016llx\n",
-			(unsigned long long)sink_to,
+			(unsigned long long)rresp->sink_to,
 			(unsigned long long)rctx->ddp_to);
 		/*
 		 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
 		 */
 		return -EINVAL;
 	}
-	if (!rctx->more_ddp_segs && (wqe->processed + rctx->fpdu_part_rem
-				     != wqe->bytes)) {
+	if (rctx->more_ddp_segs)
+		rctx->ddp_to += rctx->fpdu_part_rem;
+
+	else if (wqe->processed + rctx->fpdu_part_rem != wqe->bytes) {
 		dprint(DBG_RX|DBG_ON,
 			" RRESP length does not match RREQ, "
 			"peer sent=%d, expected %d\n",
@@ -343,26 +345,26 @@ static inline int siw_write_check_ntoh(struct siw_iwarp_rx *rctx)
 {
 	struct iwarp_rdma_write	*write = &rctx->hdr.rwrite;
 
-	u32 sink_stag = be32_to_cpu(write->sink_stag);
-	u64 sink_to   = be64_to_cpu(write->sink_to);
+	write->sink_stag = be32_to_cpu(write->sink_stag);
+	write->sink_to   = be64_to_cpu(write->sink_to);
 
 	if (rctx->first_ddp_seg) {
-		rctx->ddp_stag = sink_stag;
-		rctx->ddp_to   = sink_to;
+		rctx->ddp_stag = write->sink_stag;
+		rctx->ddp_to   = write->sink_to;
 	} else {
-		if (rctx->ddp_stag != sink_stag) {
+		if (rctx->ddp_stag != write->sink_stag) {
 			dprint(DBG_RX|DBG_ON,
 				" received STAG=%08x, expected STAG=%08x\n",
-				sink_stag, rctx->ddp_stag);
+				write->sink_stag, rctx->ddp_stag);
 			/*
 			 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
 			 */
 			return -EINVAL;
 		}
-		if (rctx->ddp_to != sink_to) {
+		if (rctx->ddp_to !=  write->sink_to) {
 			dprint(DBG_RX|DBG_ON,
 				" received TO=%016llx, expected TO=%016llx\n",
-				(unsigned long long)sink_to,
+				(unsigned long long)write->sink_to,
 				(unsigned long long)rctx->ddp_to);
 			/*
 			 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
@@ -370,6 +372,12 @@ static inline int siw_write_check_ntoh(struct siw_iwarp_rx *rctx)
 			return -EINVAL;
 		}
 	}
+	/*
+	 * Update expected target offset for next incoming DDP segment
+	 */
+	if (rctx->more_ddp_segs != 0)
+		rctx->ddp_to += rctx->fpdu_part_rem;
+
 	return 0;
 }
 
@@ -389,18 +397,18 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 	struct iwarp_send	*send = &rctx->hdr.send;
 	struct siw_wqe		*wqe = rctx->dest.wqe;
 
-	u32 ddp_msn = be32_to_cpu(send->ddp_msn);
-	u32 ddp_mo  = be32_to_cpu(send->ddp_mo);
-	u32 ddp_qn  = be32_to_cpu(send->ddp_qn);
+	send->ddp_msn = be32_to_cpu(send->ddp_msn);
+	send->ddp_mo  = be32_to_cpu(send->ddp_mo);
+	send->ddp_qn  = be32_to_cpu(send->ddp_qn);
 
-	if (ddp_qn != RDMAP_UNTAGGED_QN_SEND) {
+	if (send->ddp_qn != RDMAP_UNTAGGED_QN_SEND) {
 		dprint(DBG_RX|DBG_ON, " Invalid DDP QN %d for SEND\n",
-			ddp_qn);
+			send->ddp_qn);
 		return -EINVAL;
 	}
-	if (ddp_msn != rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]) {
+	if (send->ddp_msn != rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]) {
 		dprint(DBG_RX|DBG_ON, " received MSN=%d, expected MSN=%d\n",
-			rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND], ddp_msn);
+			rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND], send->ddp_msn);
 		/*
 		 * TODO: Error handling
 		 * async_event= RI_EVENT_QP_RQ_PROTECTION_ERROR_MSN_GAP;
@@ -408,9 +416,9 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		 */
 		return -EINVAL;
 	}
-	if (ddp_mo != wqe->processed) {
+	if (send->ddp_mo != wqe->processed) {
 		dprint(DBG_RX|DBG_ON, " Received MO=%u, expected MO=%u\n",
-			ddp_mo, wqe->processed);
+			send->ddp_mo, wqe->processed);
 		/*
 		 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
 		 */
@@ -453,7 +461,7 @@ static inline struct siw_wqe *siw_srq_fetch_wqe(struct siw_srq *srq)
 		if (srq->armed && qlen < srq->limit) {
 			srq->armed = 0;
 			dprint(DBG_RX, " SRQ(%p): SRQ limit event\n", srq);
-			siw_srq_event(srq, IB_EVENT_SRQ_LIMIT_REACHED);
+			siw_async_srq_ev(srq, IB_EVENT_SRQ_LIMIT_REACHED);
 		}
 	}
 	unlock_srq(srq);
@@ -531,7 +539,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	if (rctx->state == SIW_GET_DATA_START) {
 		rv = siw_send_check_ntoh(rctx);
 		if (rv) {
-			siw_qp_event(qp, IB_EVENT_QP_FATAL);
+			siw_async_ev(qp, NULL, IB_EVENT_QP_FATAL);
 			return rv;
 		}
 		if (!rctx->fpdu_part_rem) /* zero length SEND */
@@ -562,7 +570,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rv = siw_check_sge(pd, sge, SR_MEM_LWRITE, rctx->sge_off,
 				   sge_bytes);
 		if (rv) {
-			siw_qp_event(qp, IB_EVENT_QP_ACCESS_ERR);
+			siw_async_ev(qp, NULL, IB_EVENT_QP_ACCESS_ERR);
 			break;
 		}
 		mr = siw_mem2mr(sge->mem.obj);
@@ -575,11 +583,10 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			 *   RDMAP message?
 			 *
 			 * siw_rx_umem() must advance umem page_chunk position
-			 * after sucessful receive only, if receive into
-			 * current umem does not end.
-			 * umem ends, if:
-			 *   - current SGE gets completely filled, OR
-			 *   - current MPA FPDU is last AND gets consumed now
+			 * after sucessful receive only, if receive into current
+			 * umem does not end. umem ends, if:
+			 * - current SGE gets completely filled, OR
+			 * - current MPA FPDU is last AND gets consumed now
 			 */
 			int umem_ends =
 				((sge_bytes + rctx->sge_off == sge->len) ||
@@ -639,6 +646,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
 	struct siw_dev		*dev = qp->hdr.dev;
+	struct iwarp_rdma_write	*write = &rctx->hdr.rwrite;
 	struct siw_mem		*mem;
 	struct siw_mr		*mr;
 	int			bytes,
@@ -651,7 +659,7 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 		rv = siw_write_check_ntoh(rctx);
 		if (rv) {
-			siw_qp_event(qp, IB_EVENT_QP_FATAL);
+			siw_async_ev(qp, NULL, IB_EVENT_QP_FATAL);
 			return rv;
 		}
 	}
@@ -681,10 +689,10 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	 * Rtag not checked against mem's tag again because
 	 * hdr check guarantees same tag as before if fragmented
 	 */
-	rv = siw_check_mem(qp->pd, mem, rctx->ddp_to + rctx->fpdu_part_rcvd,
+	rv = siw_check_mem(qp->pd, mem, write->sink_to + rctx->fpdu_part_rcvd,
 			   SR_MEM_RWRITE, bytes);
 	if (rv) {
-		siw_qp_event(qp, IB_EVENT_QP_ACCESS_ERR);
+		siw_async_ev(qp, NULL, IB_EVENT_QP_ACCESS_ERR);
 		return rv;
 	}
 	mr = siw_mem2mr(mem);
@@ -702,7 +710,7 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 				   !rctx->more_ddp_segs) ? 1 : 0;
 
 		if (rctx->first_ddp_seg) {
-			rv = siw_rx_umem_init(rctx, mr, rctx->ddp_to);
+			rv = siw_rx_umem_init(rctx, mr, write->sink_to);
 			if (rv)
 				return -EINVAL;
 
@@ -710,8 +718,7 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rv = siw_rx_umem(rctx, bytes, last_write);
 	} else
 		rv = siw_rx_kva(rctx, bytes,
-			       (void *)(rctx->ddp_to +
-					rctx->fpdu_part_rcvd));
+			       (void *)(write->sink_to + rctx->fpdu_part_rcvd));
 
 	if (rv != bytes)
 		return -EINVAL;
@@ -719,10 +726,8 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	rctx->fpdu_part_rem -= rv;
 	rctx->fpdu_part_rcvd += rv;
 
-	if (!rctx->fpdu_part_rem) {
-		rctx->ddp_to += rctx->fpdu_part_rcvd;
+	if (!rctx->fpdu_part_rem)
 		return 0;
-	}
 
 	return (rv < 0) ? rv : -EAGAIN;
 }
@@ -736,7 +741,7 @@ int siw_proc_rreq(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		return 0;
 
 	dprint(DBG_ON|DBG_RX, "(QP%d): RREQ with MPA len %d\n", QP_ID(qp),
-		be16_to_cpu(rctx->hdr.ctrl.mpa_len));
+		rctx->hdr.ctrl.mpa_len);
 
 	return -EPROTO;
 }
@@ -794,7 +799,7 @@ int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			be32_to_cpu(rctx->hdr.rreq.source_stag);
 
 		rsp->wr.rresp.raddr = be64_to_cpu(rctx->hdr.rreq.sink_to);
-		rsp->wr.rresp.rtag = be32_to_cpu(rctx->hdr.rreq.sink_stag);
+		rsp->wr.rresp.rtag = rctx->hdr.rreq.sink_stag; /* NBO */
 
 	} else {
 		dprint(DBG_RX|DBG_ON, "(QP%d): IRD exceeded!\n", QP_ID(qp));
@@ -880,7 +885,7 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 		rv = siw_rresp_check_ntoh(rctx);
 		if (rv) {
-			siw_qp_event(qp, IB_EVENT_QP_FATAL);
+			siw_async_ev(qp, NULL, IB_EVENT_QP_FATAL);
 			goto done;
 		}
 	} else {
@@ -905,7 +910,7 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		dprint(DBG_RX|DBG_ON, "(QP%d): siw_check_sge failed: %d\n",
 			QP_ID(qp), rv);
 		wqe->wc_status = IB_WC_LOC_PROT_ERR;
-		siw_qp_event(qp, IB_EVENT_QP_ACCESS_ERR);
+		siw_async_ev(qp, NULL, IB_EVENT_QP_ACCESS_ERR);
 		goto done;
 	}
 	mr = siw_mem2mr(sge->mem.obj);
@@ -942,10 +947,8 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 	wqe->processed += rv;
 
-	if (!rctx->fpdu_part_rem) {
-		rctx->ddp_to += rctx->fpdu_part_rcvd;
+	if (!rctx->fpdu_part_rem)
 		return 0;
-	}
 done:
 	return (rv < 0) ? rv : -EAGAIN;
 }
@@ -968,7 +971,6 @@ static void siw_drain_pkt(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rctx->skb_offset += len;
 		rctx->skb_new -= len;
 		rctx->fpdu_part_rem -= len;
-		rctx->fpdu_part_rcvd += len;
 	}
 }
 
@@ -982,11 +984,11 @@ int siw_proc_unsupp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 int siw_proc_terminate(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	dprint(DBG_ON, " (QP%d): RX Terminate: type=%d, layer=%d, code=%d\n",
-		QP_ID(qp),
-		__rdmap_term_etype(&rctx->hdr.terminate),
-		__rdmap_term_layer(&rctx->hdr.terminate),
-		__rdmap_term_ecode(&rctx->hdr.terminate));
+	struct iwarp_terminate	*term = &rctx->hdr.terminate;
+
+	printk(KERN_INFO "(QP%d): RX Terminate: etype=%d, layer=%d, ecode=%d\n",
+		QP_ID(qp), term->term_ctrl.etype, term->term_ctrl.layer,
+		term->term_ctrl.ecode);
 
 	siw_drain_pkt(qp, rctx);
 	return 0;
@@ -1015,7 +1017,7 @@ static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rctx->fpdu_part_rem, avail);
 
 	if (!rctx->fpdu_part_rem) {
-		__be32	crc_in, crc_own = 0;
+		u32	crc_in, crc_own = 0;
 		/*
 		 * check crc if required
 		 */
@@ -1050,7 +1052,6 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 {
 	struct sk_buff		*skb = rctx->skb;
 	struct iwarp_ctrl	*c_hdr = &rctx->hdr.ctrl;
-	u8			opcode;
 
 	int bytes;
 
@@ -1058,8 +1059,8 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 		/*
 		 * copy first fix part of iwarp hdr
 		 */
-		bytes = min_t(int, rctx->skb_new, sizeof(struct iwarp_ctrl)
-				- rctx->fpdu_part_rcvd);
+		bytes = min_t(int, rctx->skb_new,
+			      sizeof(struct iwarp_ctrl) - rctx->fpdu_part_rcvd);
 
 		skb_copy_bits(skb, rctx->skb_offset,
 			      (char *)c_hdr + rctx->fpdu_part_rcvd, bytes);
@@ -1074,32 +1075,27 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 			rctx->fpdu_part_rcvd < sizeof(struct iwarp_ctrl))
 			return -EAGAIN;
 
-		if (__ddp_version(c_hdr) != DDP_VERSION) {
-			dprint(DBG_RX|DBG_ON, " dversion %d\n",
-				__ddp_version(c_hdr));
+		if (c_hdr->opcode > RDMAP_TERMINATE) {
+			dprint(DBG_RX|DBG_ON, " opcode %d\n", c_hdr->opcode);
 			return -EINVAL;
 		}
-		if (__rdmap_version(c_hdr) != RDMAP_VERSION) {
-			dprint(DBG_RX|DBG_ON, " rversion %d\n",
-				__rdmap_version(c_hdr));
+		if (c_hdr->dv != DDP_VERSION) {
+			dprint(DBG_RX|DBG_ON, " dversion %d\n", c_hdr->dv);
 			return -EINVAL;
 		}
-		opcode = __rdmap_opcode(c_hdr);
-
-		if (opcode > RDMAP_TERMINATE) {
-			dprint(DBG_RX|DBG_ON, " opcode %d\n", opcode);
+		if (c_hdr->rv != RDMAP_VERSION) {
+			dprint(DBG_RX|DBG_ON, " rversion %d\n", c_hdr->rv);
 			return -EINVAL;
 		}
 		dprint(DBG_RX, "(QP%d): New Header, opcode:%d\n",
-			RX_QPID(rctx), opcode);
-	} else
-		opcode = __rdmap_opcode(c_hdr);
+			RX_QPID(rctx), c_hdr->opcode);
+	}
 	/*
 	 * figure out len of current hdr: variable length of
 	 * iwarp hdr forces us to copy hdr information
 	 */
 	bytes = min(rctx->skb_new,
-		  iwarp_pktinfo[opcode].hdr_len - rctx->fpdu_part_rcvd);
+		  iwarp_pktinfo[c_hdr->opcode].hdr_len - rctx->fpdu_part_rcvd);
 
 	skb_copy_bits(skb, rctx->skb_offset,
 		      (char *)c_hdr + rctx->fpdu_part_rcvd, bytes);
@@ -1110,7 +1106,7 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 	rctx->skb_offset += bytes;
 	rctx->skb_copied += bytes;
 
-	if (rctx->fpdu_part_rcvd == iwarp_pktinfo[opcode].hdr_len) {
+	if (rctx->fpdu_part_rcvd == iwarp_pktinfo[c_hdr->opcode].hdr_len) {
 		/*
 		 * HDR receive completed. Check if the current DDP segment
 		 * starts a new RDMAP message or continues a previously
@@ -1127,18 +1123,17 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 
 		if (rctx->more_ddp_segs != 0) {
 			rctx->first_ddp_seg = 0;
-			if (rctx->prev_rdmap_opcode != opcode) {
+			if (rctx->prev_ddp_opcode != c_hdr->opcode) {
 				dprint(DBG_ON,
 					"packet intersection: %d <> %d\n",
-					rctx->prev_rdmap_opcode, opcode);
+					rctx->prev_ddp_opcode, c_hdr->opcode);
 				return -EPROTO;
 			}
 		} else {
-			rctx->prev_rdmap_opcode = opcode;
+			rctx->prev_ddp_opcode = c_hdr->opcode;
 			rctx->first_ddp_seg = 1;
 		}
-		rctx->more_ddp_segs =
-			c_hdr->ddp_rdmap_ctrl & DDP_FLAG_LAST ? 0 : 1;
+		rctx->more_ddp_segs = (c_hdr->l == 0) ? 1 : 0;
 
 		return 0;
 	}
@@ -1147,13 +1142,13 @@ static int siw_get_hdr(struct siw_iwarp_rx *rctx)
 
 static inline int siw_fpdu_payload_len(struct siw_iwarp_rx *rctx)
 {
-	return be16_to_cpu(rctx->hdr.ctrl.mpa_len) - rctx->fpdu_part_rcvd
+	return ((int)(rctx->hdr.ctrl.mpa_len) - rctx->fpdu_part_rcvd)
 		+ MPA_HDR_SIZE;
 }
 
 static inline int siw_fpdu_trailer_len(struct siw_iwarp_rx *rctx)
 {
-	int mpa_len = be16_to_cpu(rctx->hdr.ctrl.mpa_len) + MPA_HDR_SIZE;
+	int mpa_len = (int)rctx->hdr.ctrl.mpa_len + MPA_HDR_SIZE;
 
 	return MPA_CRC_SIZE + (-mpa_len & 0x3);
 }
@@ -1254,10 +1249,9 @@ static inline int siw_rdmap_complete(struct siw_qp *qp,
 				     struct siw_iwarp_rx *rctx)
 {
 	struct siw_wqe	*wqe;
-	u8 opcode = __rdmap_opcode(&rctx->hdr.ctrl);
 	int rv = 0;
 
-	switch (opcode) {
+	switch (rctx->hdr.ctrl.opcode) {
 
 	case RDMAP_SEND_SE:
 		wr_flags(rx_wqe(qp)) |= IB_SEND_SOLICITED;
@@ -1329,9 +1323,8 @@ static inline void
 siw_rdmap_error(struct siw_qp *qp, struct siw_iwarp_rx *rctx, int status)
 {
 	struct siw_wqe	*wqe;
-	u8 opcode = __rdmap_opcode(&rctx->hdr.ctrl);
 
-	switch (opcode) {
+	switch (rctx->hdr.ctrl.opcode) {
 
 	case RDMAP_SEND_SE:
 	case RDMAP_SEND:
@@ -1341,7 +1334,7 @@ siw_rdmap_error(struct siw_qp *qp, struct siw_iwarp_rx *rctx, int status)
 		if (!wqe)
 			return;
 
-		if (opcode == RDMAP_SEND_SE)
+		if (rctx->hdr.ctrl.opcode == RDMAP_SEND_SE)
 			wr_flags(wqe) |= IB_SEND_SOLICITED;
 
 		if (!wqe->wc_status)
@@ -1444,6 +1437,9 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 					rv = -EINVAL;
 					break;
 				}
+				rctx->hdr.ctrl.mpa_len =
+					ntohs(rctx->hdr.ctrl.mpa_len);
+
 				rctx->fpdu_part_rem =
 					siw_fpdu_payload_len(rctx);
 
@@ -1497,8 +1493,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 				rctx->state = SIW_GET_HDR;
 				rctx->fpdu_part_rcvd = 0;
 
-				if (!(rctx->hdr.ctrl.ddp_rdmap_ctrl
-					& DDP_FLAG_LAST))
+				if (!rctx->hdr.ctrl.l)
 					/* more frags */
 					break;
 

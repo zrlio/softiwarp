@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -57,8 +57,10 @@ static int siw_wc_op_siw2ofa[SIW_WR_NUM] = {
 	[SIW_WR_RDMA_READ_REQ]		= IB_WC_RDMA_READ,
 	[SIW_WR_ATOMIC_CMP_AND_SWP]	= IB_WC_COMP_SWAP,
 	[SIW_WR_ATOMIC_FETCH_AND_ADD]	= IB_WC_FETCH_ADD,
+#if (OFA_VERSION >= 140)
 	[SIW_WR_FASTREG]		= IB_WC_FAST_REG_MR,
 	[SIW_WR_INVAL_STAG]		= IB_WC_LOCAL_INV,
+#endif
 	[SIW_WR_RECEIVE]		= IB_WC_RECV,
 	[SIW_WR_RDMA_READ_RESP]		= 0 /* not used */
 };

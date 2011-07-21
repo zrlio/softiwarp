@@ -4,7 +4,7 @@
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *          Fredy Neeser <nfd@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -53,19 +53,22 @@
 #define MPA_KEY_REP		"MPA ID Rep Frame"
 
 struct mpa_rr_params {
-	__be16	bits;
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__be16	res:5,
+		r:1,
+		c:1,
+		m:1,
+		rev:8;
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	__be16	m:1,
+		c:1,
+		r:1,
+		res:5,
+		rev:8;
+#else
+#error "Adjust your <asm/byteorder.h> defines"
+#endif
 	__be16	pd_len;
-};
-
-/*
- * MPA request/response hdr bits & fields
- */
-enum {
-	MPA_RR_FLAG_MARKERS	= __cpu_to_be16(0x8000),
-	MPA_RR_FLAG_CRC		= __cpu_to_be16(0x4000),
-	MPA_RR_FLAG_REJECT	= __cpu_to_be16(0x2000),
-	MPA_RR_RESERVED		= __cpu_to_be16(0x1f00),
-	MPA_RR_MASK_REVISION	= __cpu_to_be16(0x00ff)
 };
 
 /*
@@ -75,19 +78,6 @@ struct mpa_rr {
 	__u8	key[16];
 	struct mpa_rr_params params;
 };
-
-
-static inline void __mpa_rr_set_revision(u16 *bits, u8 rev)
-{
-	*bits = (*bits & ~MPA_RR_MASK_REVISION)
-		| (cpu_to_be16(rev) & MPA_RR_MASK_REVISION);
-}
-
-static inline u8 __mpa_rr_revision(u16 mpa_rr_bits)
-{
-	return (u8)(be16_to_cpu(mpa_rr_bits & MPA_RR_MASK_REVISION));
-}
-
 
 /*
  * Don't change the layout/size of this struct!
@@ -126,52 +116,51 @@ struct mpa_trailer {
  */
 struct iwarp_ctrl {
 	__be16	mpa_len;
-	__be16	ddp_rdmap_ctrl;
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__be16	dv:2,		/* DDP Version */
+		rsvd:4,		/* DDP reserved, MBZ */
+		l:1,		/* DDP Last flag */
+		t:1,		/* DDP Tagged flag */
+		opcode:4,	/* RDMAP opcode */
+		rsv:2,		/* RDMAP reserved, MBZ */
+		rv:2;		/* RDMAP Version, 01 for IETF, 00 for RDMAC */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	__be16	t:1,		/* DDP Tagged flag */
+		l:1,		/* DDP Last flag */
+		rsvd:4,		/* DDP reserved, MBZ */
+		dv:2,		/* DDP Version */
+		rv:2,		/* RDMAP Version, 01 for IETF, 00 for RDMAC */
+		rsv:2,		/* RDMAP reserved, MBZ */
+		opcode:4;	/* RDMAP opcode */
+#else
+#error "Adjust your <asm/byteorder.h> defines"
+#endif
 };
 
-enum {
-	DDP_FLAG_TAGGED		= __cpu_to_be16(0x8000),
-	DDP_FLAG_LAST		= __cpu_to_be16(0x4000),
-	DDP_MASK_RESERVED	= __cpu_to_be16(0x3C00),
-	DDP_MASK_VERSION	= __cpu_to_be16(0x0300),
-	RDMAP_MASK_VERSION	= __cpu_to_be16(0x00C0),
-	RDMAP_MASK_RESERVED	= __cpu_to_be16(0x0030),
-	RDMAP_MASK_OPCODE	= __cpu_to_be16(0x000f)
+
+struct rdmap_terminate_ctrl {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__be32	etype:4,
+		layer:4,
+		ecode:8,
+		rsvd1:5,
+		r:1,
+		d:1,
+		m:1,
+		rsvd2:8;
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	__be32	layer:4,
+		etype:4,
+		ecode:8,
+		m:1,
+		d:1,
+		r:1,
+		rsvd1:5,
+		rsvd2:8;
+#else
+#error "Adjust your <asm/byteorder.h> defines"
+#endif
 };
-
-static inline u8 __ddp_version(struct iwarp_ctrl *ctrl)
-{
-	return (u8)(be16_to_cpu(ctrl->ddp_rdmap_ctrl & DDP_MASK_VERSION) >> 8);
-};
-
-static inline void __ddp_set_version(struct iwarp_ctrl *ctrl, u8 version)
-{
-	ctrl->ddp_rdmap_ctrl = (ctrl->ddp_rdmap_ctrl & ~DDP_MASK_VERSION)
-		| (__cpu_to_be16((u16)version << 8) & DDP_MASK_VERSION);
-};
-
-static inline u8 __rdmap_version(struct iwarp_ctrl *ctrl)
-{
-	return (u8)(be16_to_cpu(ctrl->ddp_rdmap_ctrl & RDMAP_MASK_VERSION)
-			>> 6);
-};
-
-static inline void __rdmap_set_version(struct iwarp_ctrl *ctrl, u8 version)
-{
-	ctrl->ddp_rdmap_ctrl = (ctrl->ddp_rdmap_ctrl & ~RDMAP_MASK_VERSION)
-			| (__cpu_to_be16(version << 6) & RDMAP_MASK_VERSION);
-}
-
-static inline u8 __rdmap_opcode(struct iwarp_ctrl *ctrl)
-{
-	return (u8)be16_to_cpu(ctrl->ddp_rdmap_ctrl & RDMAP_MASK_OPCODE);
-}
-
-static inline void __rdmap_set_opcode(struct iwarp_ctrl *ctrl, u8 opcode)
-{
-	ctrl->ddp_rdmap_ctrl = (ctrl->ddp_rdmap_ctrl & ~RDMAP_MASK_OPCODE)
-				| (__cpu_to_be16(opcode) & RDMAP_MASK_OPCODE);
-}
 
 
 struct iwarp_rdma_write {
@@ -217,39 +206,11 @@ struct iwarp_send_inv {
 
 struct iwarp_terminate {
 	struct iwarp_ctrl	ctrl;
-	__be32			rsvd;
-	__be32			ddp_qn;
-	__be32			ddp_msn;
-	__be32			ddp_mo;
-	__be32			term_ctrl;
-};
-
-enum {
-	RDMAP_TERM_MASK_LAYER	= __cpu_to_be32(0xf0000000),
-	RDMAP_TERM_MASK_ETYPE	= __cpu_to_be32(0x0f000000),
-	RDMAP_TERM_MASK_ECODE	= __cpu_to_be32(0x00ff0000),
-	RDMAP_TERM_FLAG_M	= __cpu_to_be32(0x00008000),
-	RDMAP_TERM_FLAG_D	= __cpu_to_be32(0x00004000),
-	RDMAP_TERM_FLAG_R	= __cpu_to_be32(0x00002000),
-	RDMAP_TERM_MASK_RESVD	= __cpu_to_be32(0x00001fff)
-};
-
-static inline u8 __rdmap_term_layer(struct iwarp_terminate *ctrl)
-{
-	return (u8)(be32_to_cpu(ctrl->term_ctrl & RDMAP_TERM_MASK_LAYER)
-		    >> 28);
-};
-
-static inline u8 __rdmap_term_etype(struct iwarp_terminate *ctrl)
-{
-	return (u8)(be32_to_cpu(ctrl->term_ctrl & RDMAP_TERM_MASK_ETYPE)
-		    >> 24);
-};
-
-static inline u8 __rdmap_term_ecode(struct iwarp_terminate *ctrl)
-{
-	return (u8)(be32_to_cpu(ctrl->term_ctrl & RDMAP_TERM_MASK_ECODE)
-		    >> 20);
+	__be32				rsvd;
+	__be32				ddp_qn;
+	__be32				ddp_msn;
+	__be32				ddp_mo;
+	struct rdmap_terminate_ctrl	term_ctrl;
 };
 
 

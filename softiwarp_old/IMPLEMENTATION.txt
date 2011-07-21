@@ -112,6 +112,17 @@ MPA Marker reception (not very useful)
 Explicit WR fencing
 
 
+Credits:
+========
+I wish to thank my collegue Fredy Neeser for substantially
+contributing to that implementation. He is the main
+author of an early prototype which was not targeted at OFA integration.
+Many of his ideas and code have made it into siw.
+
+Philip Frey was helping in siw debugging and early performance
+evaluation. Many fruitful discussions improved the quality of the
+siw code.
+
 
 Comments:
 =========

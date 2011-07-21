@@ -4,7 +4,7 @@
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *          Fredy Neeser <nfd@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -56,37 +56,41 @@
 #include "siw_cm.h"
 #include "siw_obj.h"
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 31)
+static int mpa_crc_required;
+module_param(mpa_crc_required, int, 0644);
+static int mpa_crc_strict = 1;
+module_param(mpa_crc_strict, int, 0644);
+#else
 static bool mpa_crc_strict = 1;
 module_param(mpa_crc_strict, bool, 0644);
 static bool mpa_crc_required;
 module_param(mpa_crc_required, bool, 0644);
-static bool tcp_nodelay = 1;
-module_param(tcp_nodelay, bool, 0644);
-
+#endif
 MODULE_PARM_DESC(mpa_crc_required, "MPA CRC required");
-MODULE_PARM_DESC(mpa_crc_strict, "MPA CRC off enforced");
-MODULE_PARM_DESC(tcp_nodelay, "Set TCP NODELAY");
 
 
 /*
  * siw_sock_nodelay() - Disable Nagle algorithm
+ *
+ * See also fs/ocfs2/cluster/tcp.c, o2net_set_nodelay()
  */
 static int siw_sock_nodelay(struct socket *sock)
 {
+	int ret, val = 1;
 	mm_segment_t oldfs;
-	int rv, val = 1;
-
-	if (!tcp_nodelay)
-		return 0;
-
 	oldfs = get_fs();
-
 	set_fs(KERNEL_DS);
 
-	rv = sock->ops->setsockopt(sock, SOL_TCP, TCP_NODELAY,
+	/*
+	 * Don't use sock_setsockopt() for SOL_TCP. It doesn't check its level
+	 * argument and assumes SOL_SOCKET so, say, your TCP_NODELAY will
+	 * silently turn into SO_DEBUG.
+	 */
+	ret = sock->ops->setsockopt(sock, SOL_TCP, TCP_NODELAY,
 				    (char __user *)&val, sizeof(val));
 	set_fs(oldfs);
-	return rv;
+	return ret;
 }
 
 static void siw_cm_llp_state_change(struct sock *);
@@ -177,6 +181,8 @@ static struct siw_cep *siw_cep_alloc(struct siw_dev  *dev)
 		INIT_LIST_HEAD(&cep->devq);
 		INIT_LIST_HEAD(&cep->work_freelist);
 
+		cep->mpa.hdr.params.m = 0;
+		cep->mpa.hdr.params.rev = MPA_REVISION_1;
 		kref_init(&cep->ref);
 		cep->state = SIW_EPSTATE_IDLE;
 		init_waitqueue_head(&cep->waitq);
@@ -265,8 +271,8 @@ static void siw_cep_set_free(struct siw_cep *cep)
 static void siw_cm_release(struct siw_cep *cep)
 {
 	dprint(DBG_CM, " (CEP 0x%p): mpa_timer=%s, sock=0x%p, QP%d, id=0x%p\n",
-		cep, cep->mpa_timer ? "y" : "n", cep->llp.sock,
-		cep->qp ? QP_ID(cep->qp) : -1, cep->cm_id);
+		cep, cep->mpa_timer?"y":"n", cep->llp.sock,
+		cep->qp?QP_ID(cep->qp): -1, cep->cm_id);
 
 	siw_cancel_mpatimer(cep);
 
@@ -349,50 +355,6 @@ static int siw_cm_alloc_work(struct siw_cep *cep, int num)
 }
 
 /*
- * siw_cm_upcall()
- *
- * Upcall to IWCM to inform about async connection events
- */
-static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
-			 int status)
-{
-	struct iw_cm_event	event;
-	struct iw_cm_id		*cm_id;
-	u16			pd_len;
-
-	memset(&event, 0, sizeof event);
-	event.status = status;
-	event.event = reason;
-
-	pd_len = be16_to_cpu(cep->mpa.hdr.params.pd_len);
-	if (pd_len) {
-		/*
-		 * hand over MPA private data
-		 */
-		event.private_data_len = pd_len;
-		event.private_data = cep->mpa.pdata;
-
-		cep->mpa.hdr.params.pd_len = 0;
-	}
-	if (reason == IW_CM_EVENT_CONNECT_REQUEST ||
-	    reason == IW_CM_EVENT_CONNECT_REPLY) {
-		event.local_addr = cep->llp.laddr;
-		event.remote_addr = cep->llp.raddr;
-	}
-	if (reason == IW_CM_EVENT_CONNECT_REQUEST) {
-		event.provider_data = cep;
-		cm_id = cep->listen_cep->cm_id;
-	} else
-		cm_id = cep->cm_id;
-
-	dprint(DBG_CM, " (QP%d): cep=0x%p, id=0x%p, dev(id)=%s, "
-		"reason=%d, status=%d\n",
-		cep->qp ? QP_ID(cep->qp) : -1, cep, cm_id,
-		cm_id->device->name, reason, status);
-
-	return cm_id->event_handler(cm_id, &event);
-}
-/*
  * siw_qp_cm_drop()
  *
  * Drops established LLP connection if present and not already
@@ -419,19 +381,19 @@ void siw_qp_cm_drop(struct siw_qp *qp, int schedule)
 		 */
 		dprint(DBG_CM, "(): immediate close, cep=0x%p, state=%d, "
 			"id=0x%p, sock=0x%p, QP%d\n", cep, cep->state,
-			cep->cm_id, cep->llp.sock,
-			cep->qp ? QP_ID(cep->qp) : -1);
+			cep->cm_id, cep->llp.sock, cep->qp?QP_ID(cep->qp): -1);
 
 		if (cep->cm_id) {
 			switch (cep->state) {
 
 			case SIW_EPSTATE_AWAIT_MPAREP:
 				siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-					      -EINVAL);
+					      IW_CM_EVENT_STATUS_EINVAL);
 				break;
 
 			case SIW_EPSTATE_RDMA_MODE:
-				siw_cm_upcall(cep, IW_CM_EVENT_CLOSE, 0);
+				siw_cm_upcall(cep, IW_CM_EVENT_CLOSE,
+					      IW_CM_EVENT_STATUS_OK);
 
 				break;
 
@@ -499,29 +461,44 @@ static inline int ksock_recv(struct socket *sock, char *buf, size_t size,
  * pointer to a struct siw_mpa_info as defined in siw_cm.h.
  * This way, all private data parameters would be in a common struct.
  */
-static int siw_send_mpareqrep(struct siw_cep *cep, const void *pdata,
-			      u8 pd_len)
+static int siw_send_mpareqrep(struct socket *s, struct mpa_rr_params *params,
+			      char *key, const void *pdata)
 {
-	struct socket	*s = cep->llp.sock;
-	struct mpa_rr	*rr = &cep->mpa.hdr;
+	struct mpa_rr	hdr;
 	struct kvec	iov[2];
 	struct msghdr	msg;
+
 	int		rv;
+	unsigned short	pd_len = params->pd_len;
 
 	memset(&msg, 0, sizeof(msg));
+	memset(&hdr, 0, sizeof hdr);
+	memcpy(hdr.key, key, 16);
 
-	rr->params.pd_len = cpu_to_be16(pd_len);
+	/*
+	 * TODO: By adding a union to struct mpa_rr_params, it should be
+	 * possible to replace the next 4 statements by one
+	 */
+	hdr.params.r = params->r;
+	hdr.params.c = params->c;
+	hdr.params.m = params->m;
+	hdr.params.rev = params->rev;
 
-	iov[0].iov_base = rr;
-	iov[0].iov_len = sizeof *rr;
+	if (pd_len > MPA_MAX_PRIVDATA)
+		return -EINVAL;
+
+	hdr.params.pd_len = htons(pd_len);
+
+	iov[0].iov_base = &hdr;
+	iov[0].iov_len = sizeof hdr;
 
 	if (pd_len) {
 		iov[1].iov_base = (char *)pdata;
 		iov[1].iov_len = pd_len;
 
-		rv =  kernel_sendmsg(s, &msg, iov, 2, pd_len + sizeof *rr);
+		rv =  kernel_sendmsg(s, &msg, iov, 2, pd_len + sizeof hdr);
 	} else
-		rv =  kernel_sendmsg(s, &msg, iov, 1, sizeof *rr);
+		rv =  kernel_sendmsg(s, &msg, iov, 1, sizeof hdr);
 
 	return rv < 0 ? rv : 0;
 }
@@ -539,7 +516,6 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 {
 	struct mpa_rr	*hdr = &cep->mpa.hdr;
 	struct socket	*s = cep->llp.sock;
-	u16		pd_len;
 	int		rcvd, to_rcv;
 
 	if (cep->mpa.bytes_rcvd < sizeof(struct mpa_rr)) {
@@ -556,17 +532,19 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 		if (cep->mpa.bytes_rcvd < sizeof(struct mpa_rr))
 			return -EAGAIN;
 
-		if (be16_to_cpu(hdr->params.pd_len) > MPA_MAX_PRIVDATA)
+		hdr->params.pd_len = ntohs(hdr->params.pd_len);
+
+		if (hdr->params.pd_len > MPA_MAX_PRIVDATA)
 			return -EPROTO;
 	}
-	pd_len = be16_to_cpu(hdr->params.pd_len);
 
 	/*
 	 * At least the MPA Request/Reply header (frame not including
 	 * private data) has been received.
 	 * Receive (or continue receiving) any private data.
 	 */
-	to_rcv = pd_len - (cep->mpa.bytes_rcvd - sizeof(struct mpa_rr));
+	to_rcv = hdr->params.pd_len -
+		 (cep->mpa.bytes_rcvd - sizeof(struct mpa_rr));
 
 	if (!to_rcv) {
 		/*
@@ -574,7 +552,7 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 		 * complete MPA Request/Reply frame.
 		 * Check against peer protocol violation.
 		 */
-		u32 word;
+		__u32 word;
 
 		rcvd = ksock_recv(s, (char *)&word, sizeof word, MSG_DONTWAIT);
 		if (rcvd == -EAGAIN)
@@ -597,7 +575,7 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 	 * A private data buffer gets allocated if hdr->params.pd_len != 0.
 	 */
 	if (!cep->mpa.pdata) {
-		cep->mpa.pdata = kmalloc(pd_len + 4, GFP_KERNEL);
+		cep->mpa.pdata = kmalloc(hdr->params.pd_len + 4, GFP_KERNEL);
 		if (!cep->mpa.pdata)
 			return -ENOMEM;
 	}
@@ -613,8 +591,8 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 	cep->mpa.bytes_rcvd += rcvd;
 
 	if (to_rcv == rcvd) {
-		dprint(DBG_CM, " %d bytes private_data received\n", pd_len);
-
+		dprint(DBG_CM, " %d bytes private_data received\n",
+			hdr->params.pd_len);
 		return 0;
 	}
 	return -EAGAIN;
@@ -629,34 +607,25 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
  */
 static int siw_proc_mpareq(struct siw_cep *cep)
 {
-	struct mpa_rr	*req;
-	int		rv;
-
-	rv = siw_recv_mpa_rr(cep);
+	int rv = siw_recv_mpa_rr(cep);
 	if (rv != -EAGAIN)
 		siw_cancel_mpatimer(cep);
 	if (rv)
 		goto out;
 
-	req = &cep->mpa.hdr;
-
-	if (__mpa_rr_revision(req->params.bits) > MPA_REVISION_1) {
+	if (cep->mpa.hdr.params.rev > MPA_REVISION_1) {
 		/* allow for 0 and 1 only */
 		rv = -EPROTO;
 		goto out;
 	}
-	if (memcmp(req->key, MPA_KEY_REQ, 16)) {
+
+	if (memcmp(cep->mpa.hdr.key, MPA_KEY_REQ, sizeof cep->mpa.hdr.key)) {
 		rv = -EPROTO;
 		goto out;
 	}
-	/*
-	 * Prepare for sending MPA reply
-	 */
-	memcpy(req->key, MPA_KEY_REP, 16);
 
-	if (req->params.bits & MPA_RR_FLAG_MARKERS
-		|| (req->params.bits & MPA_RR_FLAG_CRC
-			&& !mpa_crc_required && mpa_crc_strict)) {
+	if ((cep->mpa.hdr.params.m == 1) ||
+	    (cep->mpa.hdr.params.c == 1 && !mpa_crc_required && mpa_crc_strict)) {
 		/*
 		 * MPA Markers: currently not supported. Marker TX to be added.
 		 *
@@ -667,38 +636,36 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 		 *    'mpa_crc_strict' module parameter.
 		 */
 		dprint(DBG_CM|DBG_ON, " Reject: CRC %d:%d:%d, M %d:%d\n",
-			req->params.bits & MPA_RR_FLAG_CRC ? 1 : 0,
-			mpa_crc_required, mpa_crc_strict,
-			req->params.bits & MPA_RR_FLAG_MARKERS ? 1 : 0, 0);
+			cep->mpa.hdr.params.c, mpa_crc_required, mpa_crc_strict,
+			cep->mpa.hdr.params.m, 0);
 
-		req->params.bits &= ~MPA_RR_FLAG_MARKERS;
-		req->params.bits |= MPA_RR_FLAG_REJECT; /* reject */
+		cep->mpa.hdr.params.m = 0;
+		cep->mpa.hdr.params.r = 1; /* reject */
 
 		if (!mpa_crc_required && mpa_crc_strict)
-			req->params.bits &= ~MPA_RR_FLAG_CRC;
+			cep->mpa.hdr.params.c = 0;
 
+		cep->mpa.hdr.params.pd_len = 0;
 		kfree(cep->mpa.pdata);
 		cep->mpa.pdata = NULL;
 
-		(void)siw_send_mpareqrep(cep, NULL, 0);
+		(void)siw_send_mpareqrep(cep->llp.sock, &cep->mpa.hdr.params,
+					 MPA_KEY_REP, NULL);
 		rv = -EOPNOTSUPP;
 		goto out;
 	}
 	/*
 	 * Enable CRC if requested by module initialization
 	 */
-	if (!(req->params.bits & MPA_RR_FLAG_CRC) && mpa_crc_required)
-		req->params.bits |= MPA_RR_FLAG_CRC;
-#if 0
 	if (!cep->mpa.hdr.params.c && mpa_crc_required)
 		cep->mpa.hdr.params.c = 1;
-#endif
 
 	cep->state = SIW_EPSTATE_RECVD_MPAREQ;
 
 	/* Keep reference until IWCM accepts/rejects */
 	siw_cep_get(cep);
-	rv = siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REQUEST, 0);
+	rv = siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REQUEST,
+			   IW_CM_EVENT_STATUS_OK);
 	if (rv)
 		siw_cep_put(cep);
 out:
@@ -710,7 +677,6 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 {
 	struct siw_qp_attrs	qp_attrs;
 	struct siw_qp		*qp = cep->qp;
-	struct mpa_rr		*rep;
 	int			rv;
 
 	rv = siw_recv_mpa_rr(cep);
@@ -719,44 +685,39 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 	if (rv)
 		goto out_err;
 
-	rep = &cep->mpa.hdr;
-
-	if (__mpa_rr_revision(rep->params.bits) > MPA_REVISION_1) {
+	if (cep->mpa.hdr.params.rev > MPA_REVISION_1) {
 		/* allow for 0 and 1 only */
 		rv = -EPROTO;
 		goto out_err;
 	}
-	if (memcmp(rep->key, MPA_KEY_REP, 16)) {
+	if (memcmp(cep->mpa.hdr.key, MPA_KEY_REP, sizeof cep->mpa.hdr.key)) {
 		rv = -EPROTO;
 		goto out_err;
 	}
-	if (rep->params.bits & MPA_RR_FLAG_REJECT) {
+	if (cep->mpa.hdr.params.r) {
 		dprint(DBG_CM, "(cep=0x%p): Got MPA reject\n", cep);
 		(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-				    -ECONNRESET);
-
+				    IW_CM_EVENT_STATUS_REJECTED);
 		rv = -ECONNRESET;
 		goto out;
 	}
-	if ((rep->params.bits & MPA_RR_FLAG_MARKERS)
-		|| (mpa_crc_required && !(rep->params.bits & MPA_RR_FLAG_CRC))
-		|| (mpa_crc_strict && !mpa_crc_required
-			&& (rep->params.bits & MPA_RR_FLAG_CRC))) {
+	if ((cep->mpa.hdr.params.m == 1) ||
+	    (mpa_crc_required && !cep->mpa.hdr.params.c) ||
+	    (mpa_crc_strict && !mpa_crc_required && cep->mpa.hdr.params.c)) {
 
-		dprint(DBG_CM|DBG_ON, " Reply unsupp: CRC %d:%d:%d, M %d:%d\n",
-			rep->params.bits & MPA_RR_FLAG_CRC ? 1 : 0,
-			mpa_crc_required, mpa_crc_strict,
-			rep->params.bits & MPA_RR_FLAG_MARKERS ? 1 : 0, 0);
+		dprint(DBG_CM|DBG_ON, " Reply unsupp.: CRC %d:%d:%d, M %d:%d\n",
+			cep->mpa.hdr.params.c, mpa_crc_required, mpa_crc_strict,
+			cep->mpa.hdr.params.m, 0);
 
 		(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-				    -ECONNREFUSED);
+				    IW_CM_EVENT_STATUS_REJECTED);
 		rv = -EINVAL;
 		goto out;
 	}
 	memset(&qp_attrs, 0, sizeof qp_attrs);
 	qp_attrs.mpa.marker_rcv = 0;
 	qp_attrs.mpa.marker_snd = 0;
-	qp_attrs.mpa.crc = cep->mpa.hdr.params.bits & MPA_RR_FLAG_CRC ? 1 : 0;
+	qp_attrs.mpa.crc = cep->mpa.hdr.params.c;
 	qp_attrs.ird = cep->ird;
 	qp_attrs.ord = cep->ord;
 	qp_attrs.llp_stream_handle = cep->llp.sock;
@@ -778,7 +739,8 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 	up_write(&qp->state_lock);
 
 	if (!rv) {
-		rv = siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY, 0);
+		rv = siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
+				   IW_CM_EVENT_STATUS_OK);
 		if (!rv)
 			cep->state = SIW_EPSTATE_RDMA_MODE;
 
@@ -786,7 +748,8 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 	}
 
 out_err:
-	(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY, -EINVAL);
+	(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
+			    IW_CM_EVENT_STATUS_EINVAL);
 out:
 	return rv;
 }
@@ -899,6 +862,48 @@ error:
 	dprint(DBG_CM|DBG_ON, "(cep=0x%p): ERROR: rv=%d\n", cep, rv);
 }
 
+/*
+ * siw_cm_upcall()
+ *
+ * Upcall to IWCM to inform about async connection events
+ */
+int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
+			    enum iw_cm_event_status status)
+{
+	struct iw_cm_event	event;
+	struct iw_cm_id		*cm_id;
+
+	memset(&event, 0, sizeof event);
+	event.status = status;
+	event.event = reason;
+
+	if (cep->mpa.hdr.params.pd_len != 0) {
+		/*
+		 * hand over MPA private data
+		 */
+		event.private_data_len = cep->mpa.hdr.params.pd_len;
+		event.private_data = cep->mpa.pdata;
+
+		cep->mpa.hdr.params.pd_len = 0;
+	}
+	if (reason == IW_CM_EVENT_CONNECT_REQUEST ||
+	    reason == IW_CM_EVENT_CONNECT_REPLY) {
+		event.local_addr = cep->llp.laddr;
+		event.remote_addr = cep->llp.raddr;
+	}
+	if (reason == IW_CM_EVENT_CONNECT_REQUEST) {
+		event.provider_data = cep;
+		cm_id = cep->listen_cep->cm_id;
+	} else
+		cm_id = cep->cm_id;
+
+	dprint(DBG_CM, " (QP%d): cep=0x%p, id=0x%p, dev(id)=%s, "
+		"reason=%d, status=%d\n",
+		cep->qp ? QP_ID(cep->qp) : -1, cep, cm_id,
+		cm_id->device->name, reason, status);
+
+	return cm_id->event_handler(cm_id, &event);
+}
 
 static void siw_cm_work_handler(struct work_struct *w)
 {
@@ -974,7 +979,8 @@ static void siw_cm_work_handler(struct work_struct *w)
 			cep->state);
 
 		if (cep->cm_id)
-			siw_cm_upcall(cep, IW_CM_EVENT_CLOSE, 0);
+			siw_cm_upcall(cep, IW_CM_EVENT_CLOSE,
+				      IW_CM_EVENT_STATUS_OK);
 
 		siw_cm_release(cep);
 
@@ -993,7 +999,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 				 * MPA reply not received, but connection drop
 				 */
 				siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-					      -ECONNRESET);
+					      IW_CM_EVENT_STATUS_RESET);
 				break;
 
 			case SIW_EPSTATE_RDMA_MODE:
@@ -1002,8 +1008,10 @@ static void siw_cm_work_handler(struct work_struct *w)
 				 *       to transition IWCM into CLOSING.
 				 *       FIXME: is that needed?
 				 */
-				siw_cm_upcall(cep, IW_CM_EVENT_DISCONNECT, 0);
-				siw_cm_upcall(cep, IW_CM_EVENT_CLOSE, 0);
+				siw_cm_upcall(cep, IW_CM_EVENT_DISCONNECT,
+					      IW_CM_EVENT_STATUS_OK);
+				siw_cm_upcall(cep, IW_CM_EVENT_CLOSE,
+					      IW_CM_EVENT_STATUS_OK);
 
 				break;
 
@@ -1059,7 +1067,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 
 			if (cep->cm_id)
 				siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-					      -ETIMEDOUT);
+					      IW_CM_EVENT_STATUS_TIMEOUT);
 			siw_cm_release(cep);
 
 		} else if (cep->state == SIW_EPSTATE_AWAIT_MPAREQ) {
@@ -1271,8 +1279,8 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	qp = siw_qp_id2obj(dev, params->qpn);
 	BUG_ON(!qp);
 
-	dprint(DBG_CM, "(id=0x%p, QP%d): dev(id)=%s, netdev=%s\n",
-		id, QP_ID(qp), dev->ofa_dev.name, dev->netdev->name);
+	dprint(DBG_CM, "(id=0x%p, QP%d): dev(id)=%s, l2dev=%s\n",
+		id, QP_ID(qp), dev->ofa_dev.name, dev->l2dev->name);
 	dprint(DBG_CM, "(id=0x%p, QP%d): laddr=(0x%x,%d), raddr=(0x%x,%d)\n",
 		id, QP_ID(qp),
 		ntohl(id->local_addr.sin_addr.s_addr),
@@ -1338,12 +1346,14 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		rv = -ENOMEM;
 		goto error;
 	}
+
+	cep->mpa.hdr.params.c = mpa_crc_required ? 1 : 0;
+	cep->mpa.hdr.params.pd_len = pd_len;
 	cep->ird = params->ird;
 	cep->ord = params->ord;
 	cep->state = SIW_EPSTATE_CONNECTING;
 
-	dprint(DBG_CM, " (id=0x%p, QP%d): pd_len = %u\n",
-		id, QP_ID(qp), pd_len);
+	dprint(DBG_CM, "(id=0x%p, QP%d): pd_len = %u\n", id, QP_ID(qp), pd_len);
 
 	rv = kernel_peername(s, &cep->llp.raddr);
 	if (rv)
@@ -1360,22 +1370,13 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 
 	cep->state = SIW_EPSTATE_AWAIT_MPAREP;
 
-	/*
-	 * Set MPA Request bits: CRC if required, no MPA Markers,
-	 * MPA Rev. 1, Key 'Request'.
-	 */
-	cep->mpa.hdr.params.bits = 0;
-	__mpa_rr_set_revision(&cep->mpa.hdr.params.bits, MPA_REVISION_1);
-
-	if (mpa_crc_required)
-		cep->mpa.hdr.params.bits |= MPA_RR_FLAG_CRC;
-
-	memcpy(cep->mpa.hdr.key, MPA_KEY_REQ, 16);
-
-	rv = siw_send_mpareqrep(cep, params->private_data, pd_len);
+	rv = siw_send_mpareqrep(cep->llp.sock, &cep->mpa.hdr.params,
+				MPA_KEY_REQ, (char *)params->private_data);
 	/*
 	 * Reset private data.
 	 */
+	kfree(cep->mpa.pdata);
+	cep->mpa.pdata = NULL;
 	cep->mpa.hdr.params.pd_len = 0;
 
 	if (rv >= 0) {
@@ -1438,6 +1439,7 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	struct siw_cep		*cep = (struct siw_cep *)id->provider_data;
 	struct siw_qp		*qp;
 	struct siw_qp_attrs	qp_attrs;
+	char			*pdata = NULL;
 	int rv;
 
 	siw_cep_set_inuse(cep);
@@ -1502,7 +1504,7 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	 */
 	qp_attrs.mpa.marker_rcv = 0;
 	qp_attrs.mpa.marker_snd = 0;
-	qp_attrs.mpa.crc = cep->mpa.hdr.params.bits & MPA_RR_FLAG_CRC ? 1 : 0;
+	qp_attrs.mpa.crc = cep->mpa.hdr.params.c;
 	qp_attrs.state = SIW_QP_STATE_RTS;
 
 	dprint(DBG_CM, "(id=0x%p, QP%d): Moving to RTS\n", id, QP_ID(qp));
@@ -1527,16 +1529,23 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	if (rv)
 		goto error;
 
-	dprint(DBG_CM, "(id=0x%p, QP%d): %d bytes private_data\n",
-			id, QP_ID(qp), params->private_data_len);
+	if (params->private_data_len) {
+		pdata = (char *)params->private_data;
+
+		dprint(DBG_CM, "(id=0x%p, QP%d): %d bytes private_data\n",
+				id, QP_ID(qp), params->private_data_len);
+	}
+	cep->mpa.hdr.params.pd_len = params->private_data_len;
 
 	dprint(DBG_CM, "(id=0x%p, QP%d): Sending MPA Reply\n", id, QP_ID(qp));
 
-	rv = siw_send_mpareqrep(cep, params->private_data,
-				params->private_data_len);
+	rv = siw_send_mpareqrep(cep->llp.sock, &cep->mpa.hdr.params,
+				MPA_KEY_REP, pdata);
 
 	if (!rv) {
-		rv = siw_cm_upcall(cep, IW_CM_EVENT_ESTABLISHED, 0);
+		rv = siw_cm_upcall(cep, IW_CM_EVENT_ESTABLISHED,
+				   IW_CM_EVENT_STATUS_OK);
+
 		if (rv)
 			goto error;
 
@@ -1596,11 +1605,13 @@ int siw_reject(struct iw_cm_id *id, const void *pdata, u8 plen)
 		BUG();
 	}
 	dprint(DBG_CM, "(id=0x%p): cep->state=%d\n", id, cep->state);
-	dprint(DBG_CM, " Reject: %d: %x\n", plen, plen ? *(char *)pdata : 0);
+	dprint(DBG_CM, " Reject: %d: %x\n", plen, plen ? *(char *)pdata:0);
 
-	if (__mpa_rr_revision(cep->mpa.hdr.params.bits) == MPA_REVISION_1) {
-		cep->mpa.hdr.params.bits |= MPA_RR_FLAG_REJECT; /* reject */
-		(void)siw_send_mpareqrep(cep, pdata, plen);
+	if (cep->mpa.hdr.params.rev == MPA_REVISION_1) {
+		cep->mpa.hdr.params.r = 1; /* reject */
+		cep->mpa.hdr.params.pd_len = plen;
+		(void)siw_send_mpareqrep(cep->llp.sock, &cep->mpa.hdr.params,
+					 MPA_KEY_REP, pdata);
 	}
 	siw_socket_disassoc(cep->llp.sock);
 	sock_release(cep->llp.sock);
@@ -1627,6 +1638,10 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 			"sock_create(): rv=%d\n", id, rv);
 		return rv;
 	}
+#ifdef SIW_ON_BGP
+	if (backlog >= 100 && backlog < 4096)
+		backlog = 4096;
+#endif
 
 	s_val = SOCKBUFSIZE;
 	rv = kernel_setsockopt(s, SOL_SOCKET, SO_SNDBUF, (char *)&s_val,
@@ -1721,10 +1736,10 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 		INIT_LIST_HEAD((struct list_head *)id->provider_data);
 	}
 
-	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, netdev=%s, "
+	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, l2dev=%s, "
 		"id->provider_data=0x%p, cep=0x%p\n",
 		id, id->device->name,
-		siw_dev_ofa2siw(id->device)->netdev->name,
+		siw_dev_ofa2siw(id->device)->l2dev->name,
 		id->provider_data, cep);
 
 	list_add_tail(&cep->listenq, (struct list_head *)id->provider_data);
@@ -1826,14 +1841,18 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 	struct siw_dev		*dev = siw_dev_ofa2siw(ofa_dev);
 	int			rv = 0;
 
-	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, netdev=%s backlog=%d\n",
-		id, ofa_dev->name, dev->netdev->name, backlog);
+#ifdef SIW_ON_BGP
+	if (backlog >= 100 && backlog < 8192)
+		backlog = 8192;
+#endif
+	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, l2dev=%s backlog=%d\n",
+		id, ofa_dev->name, dev->l2dev->name, backlog);
 
 	/*
 	 * IPv4/v6 design differences regarding multi-homing
 	 * propagate up to iWARP:
-	 * o For IPv4, use dev->netdev->ip_ptr
-	 * o For IPv6, use dev->netdev->ipv6_ptr
+	 * o For IPv4, use dev->l2dev->ip_ptr
+	 * o For IPv6, use dev->l2dev->ipv6_ptr
 	 */
 	if (id->local_addr.sin_family == AF_INET) {
 		/* IPv4 */
@@ -1852,10 +1871,10 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 			r_ip[0], r_ip[1], r_ip[2], r_ip[3],
 			ntohs(id->remote_addr.sin_port));
 
-		in_dev = in_dev_get(dev->netdev);
+		in_dev = in_dev_get(dev->l2dev);
 		if (!in_dev) {
 			dprint(DBG_CM|DBG_ON, "(id=0x%p): "
-				"netdev has no in_device\n", id);
+				"l2dev has no in_device\n", id);
 			return -ENODEV;
 		}
 
@@ -1868,7 +1887,11 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 			 * contains the wildcard IP address OR
 			 * the IP address of the interface.
 			 */
+#ifdef KERNEL_VERSION_PRE_2_6_26
+			if (ZERONET(id->local_addr.sin_addr.s_addr) ||
+#else
 			if (ipv4_is_zeronet(id->local_addr.sin_addr.s_addr) ||
+#endif
 					id->local_addr.sin_addr.s_addr ==
 					ifa->ifa_address) {
 				laddr.sin_addr.s_addr = ifa->ifa_address;
@@ -1906,9 +1929,9 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 int siw_destroy_listen(struct iw_cm_id *id)
 {
 
-	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, netdev=%s\n",
+	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, l2dev=%s\n",
 		id, id->device->name,
-		siw_dev_ofa2siw(id->device)->netdev->name);
+		siw_dev_ofa2siw(id->device)->l2dev->name);
 
 	if (!id->provider_data) {
 		/*

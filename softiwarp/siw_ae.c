@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2010, IBM Corporation
+ * Copyright (c) 2008-2011, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -55,42 +55,60 @@
 #include "siw_obj.h"
 #include "siw_cm.h"
 
-/*
- * siw_async_ev()
- *
- * Report Asynchonous event to user.
- */
-void siw_async_ev(struct siw_qp *qp, struct siw_cq *cq,
-		  enum ib_event_type etype)
-{
-	static struct ib_event	event;
 
-	dprint(DBG_EH, "(QP%d): AE type %d\n", QP_ID(qp), etype);
+void siw_qp_event(struct siw_qp *qp, enum ib_event_type etype)
+{
+	struct ib_event event;
+	struct ib_qp	*ofa_qp = &qp->ofa_qp;
 
 	event.event = etype;
-	event.device = qp->ofa_qp.device;
-	if (cq)
-		event.element.cq = &cq->ofa_cq;
-	else
-		event.element.qp = &qp->ofa_qp;
+	event.device = ofa_qp->device;
+	event.element.qp = ofa_qp;
 
-	if (!(qp->attrs.flags & SIW_QP_IN_DESTROY) &&
-	    qp->ofa_qp.event_handler) {
-		dprint(DBG_EH, "(QP%d): Call AEH\n", QP_ID(qp));
-		(*qp->ofa_qp.event_handler)(&event, qp->ofa_qp.qp_context);
+	if (!(qp->attrs.flags & SIW_QP_IN_DESTROY) && ofa_qp->event_handler) {
+		dprint(DBG_EH, ": reporting %d\n", etype);
+		(*ofa_qp->event_handler)(&event, ofa_qp->qp_context);
 	}
 }
 
-void siw_async_srq_ev(struct siw_srq *srq, enum ib_event_type etype)
+void siw_cq_event(struct siw_cq *cq, enum ib_event_type etype)
 {
-	static struct ib_event	event;
-
-	dprint(DBG_EH, "(SRQ%p): AE type %d\n", srq, etype);
+	struct ib_event event;
+	struct ib_cq	*ofa_cq = &cq->ofa_cq;
 
 	event.event = etype;
-	event.device = srq->ofa_srq.device;
-	event.element.srq = &srq->ofa_srq;
+	event.device = ofa_cq->device;
+	event.element.cq = ofa_cq;
 
-	if (srq->ofa_srq.event_handler)
-		(*srq->ofa_srq.event_handler)(&event, srq->ofa_srq.srq_context);
+	if (ofa_cq->event_handler) {
+		dprint(DBG_EH, ": reporting %d\n", etype);
+		(*ofa_cq->event_handler)(&event, ofa_cq->cq_context);
+	}
+}
+
+void siw_srq_event(struct siw_srq *srq, enum ib_event_type etype)
+{
+	struct ib_event event;
+	struct ib_srq	*ofa_srq = &srq->ofa_srq;
+
+	event.event = etype;
+	event.device = ofa_srq->device;
+	event.element.srq = ofa_srq;
+
+	if (ofa_srq->event_handler) {
+		dprint(DBG_EH, ": reporting %d\n", etype);
+		(*ofa_srq->event_handler)(&event, ofa_srq->srq_context);
+	}
+}
+
+void siw_port_event(struct siw_dev *sdev, u8 port, enum ib_event_type etype)
+{
+	struct ib_event event;
+
+	event.event = etype;
+	event.device = &sdev->ofa_dev;
+	event.element.port_num = port;
+
+	dprint(DBG_EH, ": reporting %d\n", etype);
+	ib_dispatch_event(&event);
 }

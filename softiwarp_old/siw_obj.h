@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -43,12 +43,26 @@
 #include <linux/rwsem.h>
 #include <linux/version.h>
 #include <linux/sched.h>
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 26)
+#include <asm/semaphore.h>
+#else
 #include <linux/semaphore.h>
+#endif
 
 #include <rdma/ib_verbs.h>
 
 #include "siw_debug.h"
 
+extern atomic_t siw_num_wqe;
+
+#if DPRINT_MASK > 0
+#define SIW_INC_STAT_WQE	atomic_inc(&siw_num_wqe)
+#define SIW_DEC_STAT_WQE	atomic_dec(&siw_num_wqe)
+#else
+#define SIW_INC_STAT_WQE	do { } while (0)
+#define SIW_DEC_STAT_WQE	do { } while (0)
+#endif
 
 static inline struct siw_dev *siw_dev_ofa2siw(struct ib_device *ofa_dev)
 {

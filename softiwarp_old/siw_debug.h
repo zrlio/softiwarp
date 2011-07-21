@@ -2,9 +2,8 @@
  * Software iWARP device driver for Linux
  *
  * Authors: Fredy Neeser <nfd@zurich.ibm.com>
- *          Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -50,7 +49,7 @@
  * to assign debug messages to categories:
  *
  * dbgcat	Debug message belongs to category
- * ----------------------------------------------------------------------------
+ * -----------------------------------------------------------------------------
  * DBG_ON	Always on, for really important events or error conditions
  * DBG_TMP	Temporarily on for fine-grained debugging
  * DBQ_OBJ	Object management (object construction/destruction/refcounting)
@@ -98,12 +97,7 @@ DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|DBG_DM|DBG_ON)
  * DBG_KT|DBG_ON		Kernel threads
  * DBG_ALL			All categories
  */
-#define DPRINT_MASK	0
-
-extern void siw_debug_init(void);
-extern void siw_debugfs_add_device(struct siw_dev *);
-extern void siw_debugfs_del_device(struct siw_dev *);
-extern void siw_debugfs_delete(void);
+#define DPRINT_MASK	(DBG_ON|DBG_ALL)
 
 extern void siw_print_hdr(union iwarp_hdrs *, int, char *);
 extern void siw_print_rctx(struct siw_iwarp_rx *);
@@ -128,12 +122,12 @@ extern void siw_print_qp_attr_mask(enum ib_qp_attr_mask, char *);
 	do {								\
 		if ((dbgcat) & DPRINT_MASK) {				\
 			if (!in_interrupt())				\
-				pr_info("(%5d/%1d) %s" fmt,		\
+				printk(KERN_INFO "(%5d/%1d) %s" fmt,	\
 					current->pid,			\
 					current_thread_info()->cpu,	\
 					__func__, ## args);		\
 			else						\
-				pr_info("( irq /%1d) %s" fmt,		\
+				printk(KERN_INFO "( irq /%1d) %s" fmt,	\
 					current_thread_info()->cpu,	\
 					__func__, ## args);		\
 		}							\
@@ -141,19 +135,11 @@ extern void siw_print_qp_attr_mask(enum ib_qp_attr_mask, char *);
 
 
 #define siw_dprint_rctx(r)	siw_print_rctx(r)
-
 extern char ib_qp_state_to_string[IB_QPS_ERR+1][sizeof "RESET"];
-extern atomic_t siw_num_wqe;
-
-#define SIW_INC_STAT_WQE	atomic_inc(&siw_num_wqe)
-#define SIW_DEC_STAT_WQE	atomic_dec(&siw_num_wqe)
 
 #else
-
 #define dprint(dbgcat, fmt, args...)	do { } while (0)
 #define siw_dprint_rctx(r)	do { } while (0)
-#define SIW_INC_STAT_WQE	do { } while (0)
-#define SIW_DEC_STAT_WQE	do { } while (0)
 #endif
 
 

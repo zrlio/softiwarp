@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -381,6 +381,15 @@ inline struct siw_wqe *siw_freeq_wqe_get(struct siw_qp *qp)
 	return wqe;
 }
 
+static inline void siw_free_inline_sgl(struct siw_sge *sge, int num_sge)
+{
+	while (num_sge--) {
+		kfree(sge->mem.buf); /* kfree handles NULL pointers */
+		sge->mem.buf = NULL;
+		sge++;
+	}
+}
+
 static inline void siw_unref_mem_sgl(struct siw_sge *sge, int num_sge)
 {
 	while (num_sge--) {
@@ -404,10 +413,12 @@ void siw_wqe_put(struct siw_wqe *wqe)
 	case SIW_WR_RDMA_WRITE_WITH_IMM:
 	case SIW_WR_SEND_WITH_IMM:
 	case SIW_WR_RDMA_READ_REQ:
-		if (!SIW_INLINED_DATA(wqe))
+		if (likely(!SIW_INLINED_DATA(wqe)))
 			siw_unref_mem_sgl(wqe->wr.sgl.sge,
 					  wqe->wr.sgl.num_sge);
-
+		else
+			siw_free_inline_sgl(wqe->wr.sgl.sge,
+					    wqe->wr.sgl.num_sge);
 		if (qp->attrs.flags & SIW_KERNEL_VERBS)
 			siw_add_wqe(wqe, &qp->freeq, &qp->freeq_lock);
 		else {
@@ -422,8 +433,7 @@ void siw_wqe_put(struct siw_wqe *wqe)
 		if (qp->srq) {
 			struct siw_srq *srq = qp->srq;
 			if (srq->kernel_verbs)
-				siw_add_wqe(wqe, &srq->freeq,
-					    &srq->freeq_lock);
+				siw_add_wqe(wqe, &srq->freeq, &srq->freeq_lock);
 			else {
 				kfree(wqe);
 				SIW_DEC_STAT_WQE;

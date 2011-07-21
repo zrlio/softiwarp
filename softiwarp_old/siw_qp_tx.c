@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -55,8 +55,13 @@
 #include "siw_obj.h"
 #include "siw_cm.h"
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 31)
+static int zcopy_tx = 1;
+module_param(zcopy_tx, int, 0644);
+#else
 static bool zcopy_tx = 1;
 module_param(zcopy_tx, bool, 0644);
+#endif
 MODULE_PARM_DESC(zcopy_tx, "Zero copy user data transmit if possible");
 
 static DEFINE_PER_CPU(atomic_t, siw_workq_len);
@@ -152,7 +157,7 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 		       sizeof(struct iwarp_ctrl));
 
 		/* NBO */
-		c_tx->pkt.rresp.sink_stag = cpu_to_be32(wqe->wr.rresp.rtag);
+		c_tx->pkt.rresp.sink_stag = wqe->wr.rresp.rtag;
 		c_tx->pkt.rresp.sink_to = cpu_to_be64(wqe->wr.rresp.raddr);
 
 		c_tx->ctrl_len = sizeof(struct iwarp_rdma_rresp);
@@ -199,11 +204,10 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 	 * Inline buffers are already out of user control and can be
 	 * send 0copy.
 	 */
-	if (zcopy_tx
-	    && !SIW_INLINED_DATA(wqe)
-	    && !(wr_flags(wqe) & IB_SEND_SIGNALED)
-	    && wqe->bytes > SENDPAGE_THRESH
-	    && wr_type(wqe) != SIW_WR_RDMA_READ_REQ)
+	if (zcopy_tx &&
+	     (!(wr_flags(wqe) & IB_SEND_SIGNALED) || SIW_INLINED_DATA(wqe)) &&
+	     wqe->bytes > SENDPAGE_THRESH &&
+	     wr_type(wqe) != SIW_WR_RDMA_READ_REQ)
 		c_tx->use_sendpage = 1;
 	else
 		c_tx->use_sendpage = 0;
@@ -228,7 +232,7 @@ static inline int siw_tx_ctrl(struct siw_iwarp_tx *c_tx, struct socket *s,
 				c_tx->ctrl_len - c_tx->ctrl_sent);
 
 	dprint(DBG_TX, " (QP%d): op=%d, %d of %d sent (%d)\n",
-		TX_QPID(c_tx), __rdmap_opcode(&c_tx->pkt.ctrl),
+		TX_QPID(c_tx), c_tx->pkt.ctrl.opcode,
 		c_tx->ctrl_sent + rv, c_tx->ctrl_len, rv);
 
 	if (rv >= 0) {
@@ -418,6 +422,9 @@ siw_umem_chunk_update(struct siw_iwarp_tx *c_tx, struct siw_mr *mr,
 	c_tx->umem_chunk = chunk;
 }
 
+#define MAX_TRAILER (MPA_CRC_SIZE + 4)
+#define MAX_ARRAY 32	/* Max number of kernel_sendmsg elements */
+
 static inline void
 siw_save_txstate(struct siw_iwarp_tx *c_tx, struct ib_umem_chunk *chunk,
 		 unsigned int pg_idx, unsigned int sge_idx,
@@ -428,20 +435,6 @@ siw_save_txstate(struct siw_iwarp_tx *c_tx, struct ib_umem_chunk *chunk,
 	c_tx->sge_idx = sge_idx;
 	c_tx->sge_off = sge_off;
 }
-
-#define MAX_TRAILER (MPA_CRC_SIZE + 4)
-
-/*
- * siw_tx_hdt() tries to push a complete packet to TCP where all
- * packet fragments are referenced by the elements of one iovec.
- * For the data portion, each involved page must be referenced by
- * one extra element. All sge's data can be non-aligned to page
- * boundaries. Two more elements are referencing iWARP header
- * and trailer:
- * MAX_ARRAY = 64KB/PAGE_SIZE + 1 + (2 * (SIW_MAX_SGE - 1) + HDR + TRL
- */
-#define MAX_ARRAY ((0xffff / PAGE_SIZE) + 1 + (2 * (SIW_MAX_SGE - 1) + 2))
-
 /*
  * Write out iov referencing hdr, data and trailer of current FPDU.
  * Update transmit state dependent on write return status
@@ -543,8 +536,8 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 					siw_crc_sg(&c_tx->mpa_crc_hd, sl,
 						   fp_off, plen);
 			} else {
-				u64 pa = ((sge->addr + sge_off) & PAGE_MASK);
-				page_array[seg] = virt_to_page(pa);
+				u64 paddr = ((sge->addr + sge_off) & PAGE_MASK);
+				page_array[seg] = virt_to_page(paddr);
 				if (do_crc)
 					siw_crc_array(&c_tx->mpa_crc_hd,
 						(void *)(sge->addr + sge_off),
@@ -561,17 +554,18 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 				pg_idx = 0;
 			}
 			fp_off = 0;
-			if (++seg > (int)MAX_ARRAY) {
+			if (++seg > MAX_ARRAY) {
+				int i = (hdr_len > 0) ? 1 : 0;
+
 				dprint(DBG_ON, "(QP%d): Too many fragments\n",
 				       TX_QPID(c_tx));
 				if (!is_kva) {
-					int i = (hdr_len > 0) ? 1 : 0;
 					seg--;
 					while (i < seg)
 						kunmap(page_array[i++]);
 				}
-				wqe->processed -= c_tx->bytes_unsent;
-				rv = -EMSGSIZE;
+				wqe->processed = 0;
+				rv = -EINVAL;
 				goto done_crc;
 			}
 		}
@@ -608,8 +602,7 @@ sge_done:
 
 	data_len = c_tx->bytes_unsent;
 
-	if (c_tx->tcp_seglen >= (int)MPA_MIN_FRAG &&
-				 TX_MORE_WQE(TX_QP(c_tx))) {
+	if (c_tx->tcp_seglen >= (int)MPA_MIN_FRAG && TX_MORE_WQE(TX_QP(c_tx))) {
 		msg.msg_flags |= MSG_MORE;
 		c_tx->new_tcpseg = 0;
 	} else
@@ -650,8 +643,7 @@ sge_done:
 		/* all user data pushed to TCP or no data to push */
 		if (data_len > 0 && wqe->processed < wqe->bytes)
 			/* Save the current state for next tx */
-			siw_save_txstate(c_tx, chunk, pg_idx, sge_idx,
-					 sge_off);
+			siw_save_txstate(c_tx, chunk, pg_idx, sge_idx, sge_off);
 
 		rv -= data_len;
 
@@ -687,9 +679,8 @@ sge_done:
 			else {
 				while (sge->len <= c_tx->sge_off + rv) {
 					rv -= sge->len - c_tx->sge_off;
-					c_tx->sge_idx++;
+					sge = &wqe->wr.sgl.sge[++c_tx->sge_idx];
 					c_tx->sge_off = 0;
-					sge = &wqe->wr.sgl.sge[c_tx->sge_idx];
 				}
 				c_tx->umem_chunk = NULL;
 			}
@@ -713,6 +704,7 @@ static void siw_calculate_tcpseg(struct siw_iwarp_tx *c_tx, struct socket *s)
 	 */
 	if (c_tx->new_tcpseg || c_tx->tcp_seglen < (int)MPA_MIN_FRAG ||
 	     !tcp_send_head(s->sk))
+
 		c_tx->tcp_seglen = get_tcp_mss(s->sk);
 }
 
@@ -758,13 +750,13 @@ static int siw_prepare_fpdu(struct siw_qp *qp, struct siw_wqe *wqe)
 	 *	 to synchronize.
 	 *	 This version resumes with short packet.
 	 */
-	c_tx->ctrl_len = iwarp_pktinfo[__rdmap_opcode(&c_tx->pkt.ctrl)].hdr_len;
+	c_tx->ctrl_len = iwarp_pktinfo[c_tx->pkt.ctrl.opcode].hdr_len;
 	c_tx->ctrl_sent = 0;
 
 	/*
 	 * Update target buffer offset if any
 	 */
-	if (!(c_tx->pkt.ctrl.ddp_rdmap_ctrl & DDP_FLAG_TAGGED)) {
+	if (!c_tx->pkt.ctrl.t) {
 		/* Untagged message */
 		c_tx->pkt.c_untagged.ddp_mo = cpu_to_be32(wqe->processed);
 	} else {
@@ -784,14 +776,14 @@ static int siw_prepare_fpdu(struct siw_qp *qp, struct siw_wqe *wqe)
 
 	if (c_tx->tcp_seglen >= 0) {
 		/* Whole DDP segment fits into current TCP segment */
-		c_tx->pkt.ctrl.ddp_rdmap_ctrl |= DDP_FLAG_LAST;
+		c_tx->pkt.ctrl.l = 1;
 		c_tx->pad = -c_tx->bytes_unsent & 0x3;
 	} else {
 		/* Trim DDP payload to fit into current TCP segment */
 		c_tx->bytes_unsent += c_tx->tcp_seglen;
 		c_tx->bytes_unsent &= ~0x3;
 		c_tx->pad = 0;
-		c_tx->pkt.ctrl.ddp_rdmap_ctrl &= ~DDP_FLAG_LAST;
+		c_tx->pkt.ctrl.l = 0;
 	}
 	c_tx->pkt.ctrl.mpa_len =
 		htons(c_tx->ctrl_len + c_tx->bytes_unsent - MPA_HDR_SIZE);
@@ -906,11 +898,12 @@ next_segment:
 		if (unlikely(c_tx->tx_suspend)) {
 			rv = -ECONNABORTED;
 			goto tx_done;
-		} else if (c_tx->pkt.ctrl.ddp_rdmap_ctrl & DDP_FLAG_LAST) {
-			/*
-			 * One segment sent. Processing completed if last
-			 * segment, Do next segment otherwise.
-			 */
+		}
+		/*
+		 * One segment sent. Processing completed if last segment.
+		 * Do next segment otherwise. Stop if tx error.
+		 */
+		if (c_tx->pkt.ctrl.l == 1) {
 			dprint(DBG_TX, "(QP%d): WR completed\n", QP_ID(qp));
 			goto tx_done;
 		}
@@ -965,7 +958,7 @@ static void siw_wqe_sq_processed(struct siw_wqe *wqe, struct siw_qp *qp)
 
 static int siw_qp_sq_proc_local(struct siw_qp *qp, struct siw_wqe *wqe)
 {
-	pr_info("local WR's not yet implemented\n");
+	printk(KERN_ERR "local WR's not yet implemented\n");
 	BUG();
 	return 0;
 }
@@ -1151,7 +1144,7 @@ next_wqe:
 		/*
 		 * RREQ may have already been completed by inbound RRESP!
 		 */
-		if (tx_type == SIW_WR_RDMA_READ_REQ) {
+		if (tx_type == RDMAP_RDMA_READ_REQ) {
 			lock_orq(qp);
 			if (!ORQ_EMPTY(qp) &&
 			    wqe == list_entry_wqe(qp->orq.prev)) {
@@ -1168,7 +1161,8 @@ next_wqe:
 				/*
 				 * already completed by inbound RRESP
 				 */
-				dprint(DBG_ON, " (QP%d): Bad RREQ completed\n",
+				dprint(DBG_ON,
+					" (QP%d): Bad RREQ already Completed\n",
 					QP_ID(qp));
 				unlock_orq(qp);
 				tx_wqe(qp) = NULL;
@@ -1200,7 +1194,7 @@ next_wqe:
 				 */
 				siw_wqe_sq_processed(wqe, qp);
 
-			siw_qp_event(qp, IB_EVENT_QP_FATAL);
+			siw_async_ev(qp, NULL, IB_EVENT_QP_FATAL);
 
 			break;
 
@@ -1212,7 +1206,7 @@ next_wqe:
 				   "Processing RRESPONSE failed with %d\n",
 				    QP_ID(qp), rv);
 
-			siw_qp_event(qp, IB_EVENT_QP_REQ_ERR);
+			siw_async_ev(qp, NULL, IB_EVENT_QP_REQ_ERR);
 
 			siw_wqe_put(wqe);
 			break;

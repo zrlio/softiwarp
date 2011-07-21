@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2010, IBM Corporation
+ * Copyright (c) 2008-2011, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -56,41 +56,24 @@
 #include "siw_verbs.h"
 
 
+MODULE_AUTHOR("Bernard Metzler");
 MODULE_DESCRIPTION("Software iWARP Driver");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_VERSION("0.1");
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 31)
-static int loopback_enabled;
-module_param(loopback_enabled, int, 0644);
-#else
+#define SIW_MAX_IF 12
+static char *iface_list[SIW_MAX_IF];
+module_param_array(iface_list, charp, NULL, 0444);
+MODULE_PARM_DESC(iface_list, "Interface list siw attaches to if present");
+
 static bool loopback_enabled;
 module_param(loopback_enabled, bool, 0644);
-#endif
 MODULE_PARM_DESC(loopback_enabled, "enable_loopback");
 
-atomic_t siw_num_wqe;
-atomic_t siw_num_cep;
-
 static LIST_HEAD(siw_devlist);
+DEFINE_SPINLOCK(siw_dev_lock);
 
-#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
-static ssize_t show_sw_version(struct class_device *class_dev, char *buf)
-{
-	struct siw_dev *siw_dev = container_of(class_dev, struct siw_dev,
-					       ofa_dev.class_dev);
 
-	return sprintf(buf, "%x\n", siw_dev->attrs.version);
-}
-
-static ssize_t show_if_type(struct class_device *class_dev, char *buf)
-{
-	struct siw_dev *siw_dev = container_of(class_dev, struct siw_dev,
-					       ofa_dev.class_dev);
-
-	return sprintf(buf, "%d\n", siw_dev->attrs.iftype);
-}
-#else
 static ssize_t show_sw_version(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
@@ -98,114 +81,6 @@ static ssize_t show_sw_version(struct device *dev,
 						 ofa_dev.dev);
 
 	return sprintf(buf, "%x\n", siw_dev->attrs.version);
-}
-
-static ssize_t show_stats(struct device *dev,
-			  struct device_attribute *attr, char *buf)
-{
-	struct siw_dev *siw_dev = container_of(dev, struct siw_dev,
-					       ofa_dev.dev);
-
-	return sprintf(buf, "Allocated SIW Objects:\n"
-#if DPRINT_MASK > 0
-			"Global     :\t%s: %d\n"
-#endif
-			"Device %s:\t"
-			"%s: %d, %s: %d, %s: %d, %s: %d, %s: %d, %s: %d\n",
-#if DPRINT_MASK > 0
-			"WQEs", atomic_read(&siw_num_wqe),
-#endif
-			siw_dev->ofa_dev.name,
-			"PDs", atomic_read(&siw_dev->num_pd),
-			"QPs", atomic_read(&siw_dev->num_qp),
-			"CQs", atomic_read(&siw_dev->num_cq),
-			"SRQs", atomic_read(&siw_dev->num_srq),
-			"MRs", atomic_read(&siw_dev->num_mem),
-			"CEPs", atomic_read(&siw_dev->num_cep));
-}
-
-static ssize_t show_ceps(struct device *dev,
-			  struct device_attribute *attr, char *buf)
-{
-	struct siw_dev *siw_dev = container_of(dev, struct siw_dev,
-					       ofa_dev.dev);
-
-	struct list_head *pos, *tmp;
-	int len, num_cep = atomic_read(&siw_dev->num_cep);
-
-	if (buf)
-		len = sprintf(buf, "%s: %d CEPs %s\n", siw_dev->ofa_dev.name,
-			      num_cep, num_cep?"- see dmesg for details":"");
-	else
-		len = 0;
-
-	if (num_cep)
-		printk(KERN_INFO "\n%d CEPs on device %s:\n",
-			num_cep, siw_dev->ofa_dev.name);
-	else
-		return len;
-
-	printk(KERN_INFO "%-20s%-6s%-6s%-7s%-3s%-3s%-4s%-21s%-9s\n",
-		"CEP", "State", "Ref's", "QP-ID", "LQ", "LC", "U", "Sock",
-		"CM-ID");
-
-	list_for_each_safe(pos, tmp, &siw_dev->cep_list) {
-		struct siw_cep *cep = list_entry(pos, struct siw_cep, devq);
-
-		printk(KERN_INFO "0x%-18p%-6d%-6d%-7d%-3s%-3s%-4d0x%-18p"
-			" 0x%-16p\n",
-			cep, cep->state,
-			atomic_read(&cep->ref.refcount),
-			cep->qp?QP_ID(cep->qp): -1,
-			list_empty(&cep->listenq)?"n":"y",
-			cep->listen_cep?"y":"n",
-			cep->in_use,
-			cep->llp.sock,
-			cep->cm_id);
-	}
-	return len;
-}
-
-static ssize_t show_qps(struct device *dev,
-			  struct device_attribute *attr, char *buf)
-{
-	struct siw_dev *siw_dev = container_of(dev, struct siw_dev,
-					       ofa_dev.dev);
-
-	struct list_head *pos, *tmp;
-	int len, num_qp = atomic_read(&siw_dev->num_qp);
-
-	len = sprintf(buf, "%s: %d QPs %s\n", siw_dev->ofa_dev.name,
-		      num_qp, num_qp?"- see dmesg for details":"");
-
-	if (num_qp)
-		printk(KERN_INFO "\n%d QPs on device %s:\n",
-		       num_qp, siw_dev->ofa_dev.name);
-	else
-		return len;
-
-	printk(KERN_INFO "%-7s%-6s%-6s%-5s%-5s%-5s%-5s%-5s%-20s%-20s\n",
-		"QP-ID", "State", "Ref's", "SQ", "RQ", "IRQ", "ORQ", "s/r",
-		"Sock", "CEP");
-
-	list_for_each_safe(pos, tmp, &siw_dev->qp_list) {
-		struct siw_qp *qp = list_entry(pos, struct siw_qp, devq);
-
-		printk(KERN_INFO "%-7d%-6d%-6d%-5d%-5d%-5d%-5d%d/%-3d0x%-17p"
-			" 0x%-18p\n",
-			QP_ID(qp),
-			qp->attrs.state,
-			atomic_read(&qp->hdr.ref.refcount),
-			qp->attrs.sq_size - atomic_read(&qp->sq_space),
-			qp->attrs.rq_size - atomic_read(&qp->rq_space),
-			qp->attrs.ird - atomic_read(&qp->irq_space),
-			qp->attrs.ord - atomic_read(&qp->orq_space),
-			tx_wqe(qp)?1:0,
-			rx_wqe(qp)?1:0,
-			qp->attrs.llp_stream_handle,
-			qp->cep);
-	}
-	return len;
 }
 
 static ssize_t show_if_type(struct device *dev,
@@ -216,44 +91,189 @@ static ssize_t show_if_type(struct device *dev,
 
 	return sprintf(buf, "%d\n", siw_dev->attrs.iftype);
 }
-#endif
 
-#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
-static CLASS_DEVICE_ATTR(sw_version, S_IRUGO, show_sw_version, NULL);
-static CLASS_DEVICE_ATTR(if_type, S_IRUGO, show_if_type, NULL);
-
-static struct class_device_attribute *siw_dev_attributes[] = {
-	&class_device_attr_sw_version,
-	&class_device_attr_if_type
-};
-#else
 static DEVICE_ATTR(sw_version, S_IRUGO, show_sw_version, NULL);
 static DEVICE_ATTR(if_type, S_IRUGO, show_if_type, NULL);
-static DEVICE_ATTR(stats, S_IRUGO, show_stats, NULL);
-static DEVICE_ATTR(qp, S_IRUGO, show_qps, NULL);
-static DEVICE_ATTR(cep, S_IRUGO, show_ceps, NULL);
 
 static struct device_attribute *siw_dev_attributes[] = {
 	&dev_attr_sw_version,
-	&dev_attr_if_type,
-	&dev_attr_stats,
-	&dev_attr_qp,
-	&dev_attr_cep
+	&dev_attr_if_type
 };
-#endif
 
-
-static int siw_register_device(struct siw_dev *dev)
+static int siw_modify_port(struct ib_device *ofa_dev, u8 port, int mask,
+			   struct ib_port_modify *props)
 {
-	struct ib_device *ibdev = &dev->ofa_dev;
+	return -EOPNOTSUPP;
+}
+
+
+static void siw_device_register(struct siw_dev *sdev)
+{
+	struct ib_device *ibdev = &sdev->ofa_dev;
 	int rv, i;
 
-	if (dev->l2dev->type != ARPHRD_LOOPBACK)
+	rv = ib_register_device(ibdev, NULL);
+	if (rv) {
+		dprint(DBG_DM|DBG_ON, "(dev=%s): "
+			"ib_register_device failed: rv=%d\n", ibdev->name, rv);
+		return;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i) {
+		rv = device_create_file(&ibdev->dev, siw_dev_attributes[i]);
+		if (rv) {
+			dprint(DBG_DM|DBG_ON, "(dev=%s): "
+				"device_create_file failed: i=%d, rv=%d\n",
+				ibdev->name, i, rv);
+			ib_unregister_device(ibdev);
+			return;
+		}
+	}
+	siw_debugfs_add_device(sdev);
+
+	dprint(DBG_DM, ": Registered '%s' for interface '%s', "
+		"HWaddr=%02x.%02x.%02x.%02x.%02x.%02x\n",
+		ibdev->name, sdev->netdev->name,
+		*(u8 *)sdev->netdev->dev_addr,
+		*((u8 *)sdev->netdev->dev_addr + 1),
+		*((u8 *)sdev->netdev->dev_addr + 2),
+		*((u8 *)sdev->netdev->dev_addr + 3),
+		*((u8 *)sdev->netdev->dev_addr + 4),
+		*((u8 *)sdev->netdev->dev_addr + 5));
+
+	sdev->is_registered = 1;
+}
+
+static void siw_device_deregister(struct siw_dev *sdev)
+{
+	int i;
+
+	siw_debugfs_del_device(sdev);
+
+	if (sdev->is_registered) {
+
+		dprint(DBG_DM, ": deregister %s at %s\n", sdev->ofa_dev.name,
+			sdev->netdev->name);
+
+		for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i)
+			device_remove_file(&sdev->ofa_dev.dev,
+					   siw_dev_attributes[i]);
+
+		ib_unregister_device(&sdev->ofa_dev);
+	}
+	WARN_ON(atomic_read(&sdev->num_srq) || atomic_read(&sdev->num_qp) ||
+		atomic_read(&sdev->num_cq) || atomic_read(&sdev->num_mem) ||
+		atomic_read(&sdev->num_pd) || atomic_read(&sdev->num_cep));
+
+	if (!list_empty(&sdev->cep_list)) {
+		int num_ceps = 0;
+
+		while (!list_empty(&sdev->cep_list)) {
+			struct siw_cep  *cep = list_entry(sdev->cep_list.next,
+						struct siw_cep, devq);
+			list_del(&cep->devq);
+			dprint(DBG_ON, ": Free CEP (0x%p), state: %d\n",
+				cep, cep->state);
+			kfree(cep);
+			num_ceps++;
+		}
+		pr_warning("siw_device_deregister: free'd %d orphaned CEPs\n",
+			   num_ceps);
+	}
+	sdev->is_registered = 0;
+}
+
+static void siw_device_destroy(struct siw_dev *sdev)
+{
+	dprint(DBG_DM, ": destroy siw device at %s\n", sdev->netdev->name);
+
+	siw_idr_release(sdev);
+	kfree(sdev->ofa_dev.iwcm);
+	dev_put(sdev->netdev);
+	ib_dealloc_device(&sdev->ofa_dev);
+}
+
+
+static int siw_match_iflist(struct net_device *dev)
+{
+	int i = 0, found = *iface_list ? 0 : 1;
+
+	while (iface_list[i]) {
+		if (!strcmp(iface_list[i++], dev->name)) {
+			found = 1;
+			break;
+		}
+	}
+	return found;
+}
+
+static struct siw_dev *siw_dev_from_netdev(struct net_device *dev)
+{
+	if (!list_empty(&siw_devlist)) {
+		struct list_head *pos;
+		list_for_each(pos, &siw_devlist) {
+			struct siw_dev *sdev =
+				list_entry(pos, struct siw_dev, list);
+			if (sdev->netdev == dev)
+				return sdev;
+		}
+	}
+	return NULL;
+}
+
+static int siw_dev_qualified(struct net_device *dev)
+{
+	if (!siw_match_iflist(dev)) {
+		dprint(DBG_DM|DBG_ON, ": %s (not selected)\n",
+			dev->name);
+		return 0;
+	}
+#ifdef CHECK_DMA_CAPABILITIES
+	if (!dev->dev.parent || !get_dma_ops(dev->dev.parent)) {
+		dprint(DBG_DM|DBG_ON, ": No DMA ops: %s (skipped)\n",
+			dev->name);
+		return 0;
+	}
+#endif
+	/*
+	 * Additional hardware support can be added here
+	 * (e.g. ARPHRD_FDDI, ARPHRD_ATM, ...) - see
+	 * <linux/if_arp.h> for type identifiers.
+	 */
+	if (dev->type == ARPHRD_ETHER ||
+	    dev->type == ARPHRD_IEEE802 ||
+	    (dev->type == ARPHRD_LOOPBACK && loopback_enabled))
+		return 1;
+
+	return 0;
+}
+
+static struct siw_dev *siw_device_create(struct net_device *dev)
+{
+	struct siw_dev *sdev = (struct siw_dev *)ib_alloc_device(sizeof *sdev);
+	struct ib_device *ibdev;
+
+	if (!sdev)
+		goto out;
+
+	ibdev = &sdev->ofa_dev;
+
+	ibdev->iwcm = kmalloc(sizeof(struct iw_cm_verbs), GFP_KERNEL);
+	if (!ibdev->iwcm) {
+		ib_dealloc_device(ibdev);
+		sdev = NULL;
+		goto out;
+	}
+
+	sdev->netdev = dev;
+	list_add_tail(&sdev->list, &siw_devlist);
+
+	if (dev->type != ARPHRD_LOOPBACK)
 		strlcpy(ibdev->name, "siw%d", IB_DEVICE_NAME_MAX);
 	else
 		strlcpy(ibdev->name, "siw_lo%d", IB_DEVICE_NAME_MAX);
 	memset(&ibdev->node_guid, 0, sizeof(ibdev->node_guid));
-	memcpy(&ibdev->node_guid, dev->l2dev->dev_addr, 6);
+	memcpy(&ibdev->node_guid, dev->dev_addr, 6);
 
 	ibdev->owner = THIS_MODULE;
 
@@ -300,11 +320,11 @@ static int siw_register_device(struct siw_dev *dev)
 	 * (for siw case useless) translation of memory to DMA
 	 * adresses for that device.
 	 */
-	ibdev->dma_device = dev->l2dev->dev.parent;
+	ibdev->dma_device = dev->dev.parent;
 	ibdev->query_device = siw_query_device;
 	ibdev->query_port = siw_query_port;
 	ibdev->query_qp = siw_query_qp;
-	ibdev->modify_port = NULL;
+	ibdev->modify_port = siw_modify_port;
 	ibdev->query_pkey = siw_query_pkey;
 	ibdev->query_gid = siw_query_gid;
 	ibdev->alloc_ucontext = siw_alloc_ucontext;
@@ -346,10 +366,6 @@ static int siw_register_device(struct siw_dev *dev)
 
 	ibdev->dma_ops = &siw_dma_mapping_ops;
 
-	ibdev->iwcm = kmalloc(sizeof(struct iw_cm_verbs), GFP_KERNEL);
-	if (!ibdev->iwcm)
-		return -ENOMEM;
-
 	ibdev->iwcm->connect = siw_connect;
 	ibdev->iwcm->accept = siw_accept;
 	ibdev->iwcm->reject = siw_reject;
@@ -361,260 +377,210 @@ static int siw_register_device(struct siw_dev *dev)
 	/*
 	 * set and register sw version + user if type
 	 */
-	dev->attrs.version = VERSION_ID_SOFTIWARP;
-	dev->attrs.iftype  = SIW_IF_OFED;
+	sdev->attrs.version = VERSION_ID_SOFTIWARP;
+	sdev->attrs.iftype  = SIW_IF_OFED;
 
-	dev->attrs.vendor_id = SIW_VENDOR_ID;
-	dev->attrs.vendor_part_id = SIW_VENDORT_PART_ID;
-	dev->attrs.sw_version = SIW_SW_VERSION;
-	dev->attrs.max_qp = SIW_MAX_QP;
-	dev->attrs.max_qp_wr = SIW_MAX_QP_WR;
-	dev->attrs.max_ord = SIW_MAX_ORD;
-	dev->attrs.max_ird = SIW_MAX_IRD;
-	dev->attrs.cap_flags = 0;
-	dev->attrs.max_sge = SIW_MAX_SGE;
-	dev->attrs.max_sge_rd = SIW_MAX_SGE_RD;
-	dev->attrs.max_cq = SIW_MAX_CQ;
-	dev->attrs.max_cqe = SIW_MAX_CQE;
-	dev->attrs.max_mr = SIW_MAX_MR;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 33)
-	dev->attrs.max_mr_size = current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur;
-#else
-	dev->attrs.max_mr_size = rlimit(RLIMIT_MEMLOCK);
-#endif
-	dev->attrs.max_pd = SIW_MAX_PD;
-	dev->attrs.max_mw = SIW_MAX_MW;
-	dev->attrs.max_fmr = SIW_MAX_FMR;
-	dev->attrs.max_srq = SIW_MAX_SRQ;
-	dev->attrs.max_srq_wr = SIW_MAX_SRQ_WR;
-	dev->attrs.max_srq_sge = SIW_MAX_SGE;
+	sdev->attrs.vendor_id = SIW_VENDOR_ID;
+	sdev->attrs.vendor_part_id = SIW_VENDORT_PART_ID;
+	sdev->attrs.sw_version = SIW_SW_VERSION;
+	sdev->attrs.max_qp = SIW_MAX_QP;
+	sdev->attrs.max_qp_wr = SIW_MAX_QP_WR;
+	sdev->attrs.max_ord = SIW_MAX_ORD;
+	sdev->attrs.max_ird = SIW_MAX_IRD;
+	sdev->attrs.cap_flags = 0;
+	sdev->attrs.max_sge = SIW_MAX_SGE;
+	sdev->attrs.max_sge_rd = SIW_MAX_SGE_RD;
+	sdev->attrs.max_cq = SIW_MAX_CQ;
+	sdev->attrs.max_cqe = SIW_MAX_CQE;
+	sdev->attrs.max_mr = SIW_MAX_MR;
+	sdev->attrs.max_mr_size = rlimit(RLIMIT_MEMLOCK);
+	sdev->attrs.max_pd = SIW_MAX_PD;
+	sdev->attrs.max_mw = SIW_MAX_MW;
+	sdev->attrs.max_fmr = SIW_MAX_FMR;
+	sdev->attrs.max_srq = SIW_MAX_SRQ;
+	sdev->attrs.max_srq_wr = SIW_MAX_SRQ_WR;
+	sdev->attrs.max_srq_sge = SIW_MAX_SGE;
 
-	siw_idr_init(dev);
-	INIT_LIST_HEAD(&dev->cep_list);
-	INIT_LIST_HEAD(&dev->qp_list);
+	siw_idr_init(sdev);
+	INIT_LIST_HEAD(&sdev->cep_list);
+	INIT_LIST_HEAD(&sdev->qp_list);
 
-	atomic_set(&dev->num_srq, 0);
-	atomic_set(&dev->num_qp, 0);
-	atomic_set(&dev->num_cq, 0);
-	atomic_set(&dev->num_mem, 0);
-	atomic_set(&dev->num_pd, 0);
-	atomic_set(&dev->num_cep, 0);
+	atomic_set(&sdev->num_srq, 0);
+	atomic_set(&sdev->num_qp, 0);
+	atomic_set(&sdev->num_cq, 0);
+	atomic_set(&sdev->num_mem, 0);
+	atomic_set(&sdev->num_pd, 0);
+	atomic_set(&sdev->num_cep, 0);
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 34)
-	rv = ib_register_device(ibdev, NULL);
-#else
-	rv = ib_register_device(ibdev);
-#endif
-	if (rv) {
-		dprint(DBG_DM|DBG_ON, "(dev=%s): "
-			"ib_register_device failed: rv=%d\n", ibdev->name, rv);
-		return rv;
-	}
+	sdev->is_registered = 0;
+out:
+	if (sdev)
+		dev_hold(dev);
 
-	for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i) {
-#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
-		rv = class_device_create_file(&ibdev->class_dev,
-					      siw_dev_attributes[i]);
-#else
-		rv = device_create_file(&ibdev->dev, siw_dev_attributes[i]);
-#endif
-		if (rv) {
-			dprint(DBG_DM|DBG_ON, "(dev=%s): "
-				"device_create_file failed: i=%d, rv=%d\n",
-				ibdev->name, i, rv);
-			ib_unregister_device(ibdev);
-			return rv;
-		}
-	}
-
-	dprint(DBG_DM, ": dev 0x%p: Registered '%s' for interface '%s', "
-		"HWaddr=%02x.%02x.%02x.%02x.%02x.%02x\n",
-		dev, ibdev->name, dev->l2dev->name,
-		*(u8 *)dev->l2dev->dev_addr,
-		*((u8 *)dev->l2dev->dev_addr + 1),
-		*((u8 *)dev->l2dev->dev_addr + 2),
-		*((u8 *)dev->l2dev->dev_addr + 3),
-		*((u8 *)dev->l2dev->dev_addr + 4),
-		*((u8 *)dev->l2dev->dev_addr + 5));
-	return 0;
-}
-
-static void siw_deregister_device(struct siw_dev *dev)
-{
-	int i;
-
-	siw_idr_release(dev);
-
-	WARN_ON(atomic_read(&dev->num_srq) || atomic_read(&dev->num_qp) ||
-		atomic_read(&dev->num_cq) || atomic_read(&dev->num_mem) ||
-		atomic_read(&dev->num_pd));
-
-	if (!list_empty(&dev->cep_list)) {
-		int num_ceps = 0;
-
-		show_ceps(&dev->ofa_dev.dev, NULL, NULL);
-		while (!list_empty(&dev->cep_list)) {
-			struct siw_cep  *cep = list_entry(dev->cep_list.next,
-						struct siw_cep, devq);
-			list_del(&cep->devq);
-			kfree(cep);
-			num_ceps++;
-		}
-		printk(KERN_INFO "siw_deregister_device: "
-			"free'd %d orphaned CEPs\n", num_ceps);
-	}
-	for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i)
-#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
-		class_device_remove_file(&dev->ofa_dev.class_dev,
-					 siw_dev_attributes[i]);
-#else
-		device_remove_file(&dev->ofa_dev.dev, siw_dev_attributes[i]);
-#endif
-
-	dprint(DBG_OBJ, ": Unregister '%s' for interface '%s'\n",
-		dev->ofa_dev.name, dev->l2dev->name);
-
-	ib_unregister_device(&dev->ofa_dev);
+	return sdev;
 }
 
 
-/*
- * siw_init_module - Initialize Softiwarp module and create Softiwarp devices
- *
- * There are three design options for Softiwarp device management supporting
- * - multiple physical Ethernet ports, i.e., multiple net_device instances
- * - and multi-homing, i.e., multiple IP addresses associated with net_device,
- * as follows:
- *
- *    Option 1: One Softiwarp device per net_device and
- *              IP address associated with the net_device
- *    Option 2: One Softiwarp device per net_device
- *              (and all IP addresses associated with the net_device)
- *    Option 3: Single Softiwarp device for all net_device instances
- *              (and all IP addresses associated with these instances)
- *
- * We currently use Option 2, registering a separate siw_dev for
- * each net_device.
- *
- * TODO: Dynamic device management (network device registration/removal).
- *       IPv6 support.
- */
-static __init int siw_init_module(void)
-{
-	struct net_device	*dev;
-	struct siw_dev		*siw_p;
-	int rv = 0;
 
-	/*
-	 * Identify all net_device instances and create a
-	 * Softiwarp device for each net_device supporting IPv4
-	 *
-	 * TODO:
-	 * - Do we have to generalize for IPv6?
-	 * - Exclude devices based on IPoIB - if any
-	 * - Consider excluding Ethernet devices with an
-	 *   associated iWARP hardware device
-	 */
-	rtnl_lock();
-	for_each_netdev(&init_net, dev) {
-		struct in_device *in_dev;
+static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
+			    void *arg)
+{
+	struct net_device	*dev = arg;
+	struct in_device	*in_dev;
+	struct siw_dev		*sdev;
+
+	dprint(DBG_DM, " (dev=%s): Event %lu\n", dev->name, event);
+
+	if (dev_net(dev) != &init_net)
+		goto done;
+
+	if (!spin_trylock(&siw_dev_lock))
+		/* The module is being removed */
+		goto done;
+
+	sdev = siw_dev_from_netdev(dev);
+
+	switch (event) {
+
+	case NETDEV_UP:
+		if (!sdev)
+			break;
+
+
+		if (sdev->is_registered) {
+			sdev->state = IB_PORT_ACTIVE;
+			siw_port_event(sdev, 1, IB_EVENT_PORT_ACTIVE);
+			break;
+		}
 
 		in_dev = in_dev_get(dev);
 		if (!in_dev) {
-			dprint(DBG_DM, ": Skipped %s (no in_dev)\n", dev->name);
-			continue;
+			dprint(DBG_DM, ": %s: no in_dev\n", dev->name);
+			sdev->state = IB_PORT_INIT;
+			break;
 		}
-		if (!in_dev->ifa_list) {
-			dprint(DBG_DM, ": Skipped %s (no ifa)\n", dev->name);
-			in_dev_put(in_dev);
-			continue;
-		}
-		/*
-		 * This device has an in_device attached. Attach to it
-		 * if it is LOOPBACK or ETHER or IEEE801-TR device.
-		 *
-		 * Additional hardware support can be added here
-		 * (e.g. ARPHRD_FDDI, ARPHRD_ATM, ...) - see
-		 * <linux/if_arp.h> for type identifiers.
-		 *
-		 * NOTE: ARPHRD_TUNNEL/6 are excluded.
-		 */
-		if (dev->type == ARPHRD_ETHER ||
-		    dev->type == ARPHRD_IEEE802 ||
-		    (dev->type == ARPHRD_LOOPBACK && loopback_enabled)) {
-#ifdef CHECK_DMA_CAPABILITIES
-			if (!dev->dev.parent || !get_dma_ops(dev->dev.parent)) {
-				dprint(DBG_DM|DBG_ON,
-					": No DMA capabilities: %s (skipped)\n",
-					dev->name);
-				in_dev_put(in_dev);
-				continue;
-			}
-#endif
-			siw_p =
-			      (struct siw_dev *)ib_alloc_device(sizeof *siw_p);
 
-			if (!siw_p) {
-				in_dev_put(in_dev);
-				rv = -ENOMEM;
-				break;
-			}
-
-			siw_p->l2dev = dev;
-			list_add_tail(&siw_p->list, &siw_devlist);
-
-			rv = siw_register_device(siw_p);
-			if (rv) {
-				list_del(&siw_p->list);
-				in_dev_put(in_dev);
-				ib_dealloc_device(&siw_p->ofa_dev);
-
-				break;
-			}
+		if (in_dev->ifa_list) {
+			sdev->state = IB_PORT_ACTIVE;
+			siw_device_register(sdev);
 		} else {
-			dprint(DBG_DM, ": Skipped %s (type %d)\n",
-				dev->name, dev->type);
-			in_dev_put(in_dev);
+			dprint(DBG_DM, ": %s: no ifa\n", dev->name);
+			sdev->state = IB_PORT_INIT;
 		}
-	}
-	rtnl_unlock();
+		in_dev_put(in_dev);
 
-	if (list_empty(&siw_devlist))
-		return -ENODEV;
+		break;
 
-	if (rv)
-		return rv;
+	case NETDEV_DOWN:
+		if (sdev->is_registered) {
+			sdev->state = IB_PORT_DOWN;
+			siw_port_event(sdev, 1, IB_EVENT_PORT_ERR);
+			break;
+		}
+		break;
+
+	case NETDEV_REGISTER:
+		if (!sdev) {
+			if (!siw_dev_qualified(dev))
+				break;
+
+			sdev = siw_device_create(dev);
+			if (sdev) {
+				sdev->state = IB_PORT_INIT;
+				dprint(DBG_DM, ": new siw device for %s\n",
+					dev->name);
+			}
+		}
+		break;
+
+	case NETDEV_UNREGISTER:
+		if (sdev) {
+			if (sdev->is_registered)
+				siw_device_deregister(sdev);
+			list_del(&sdev->list);
+			siw_device_destroy(sdev);
+		}
+		break;
+
+	case NETDEV_CHANGEADDR:
+		if (sdev->is_registered) {
+			siw_port_event(sdev, 1, IB_EVENT_LID_CHANGE);
+			break;
+		}
+		break;
 	/*
-	 * FIXME: In case of error, we leave devices allocated.
-	 *        Is this correct?
+	 * Todo: Below netdev events are currently not handled.
 	 */
-	rv = siw_cm_init();
+	case NETDEV_CHANGEMTU:
+	case NETDEV_GOING_DOWN:
+	case NETDEV_CHANGE:
+
+		break;
+
+	default:
+		break;
+	}
+	spin_unlock(&siw_dev_lock);
+done:
+	return NOTIFY_OK;
+}
+
+
+static struct notifier_block siw_netdev_nb = {
+	.notifier_call = siw_netdev_event,
+};
+
+/*
+ * siw_init_module - Initialize Softiwarp module and register with netdev
+ *                   subsystem to create Softiwarp devices per net_device
+ */
+static __init int siw_init_module(void)
+{
+	int rv = siw_cm_init();
 	if (rv)
-		return rv;
+		goto out;
 
 	rv = siw_sq_worker_init();
+	if (rv)
+		goto out;
 
-	atomic_set(&siw_num_wqe, 0);
-	atomic_set(&siw_num_cep, 0);
+	siw_debug_init();
 
-	printk(KERN_INFO "SoftIWARP attached\n");
+	rv = register_netdevice_notifier(&siw_netdev_nb);
+out:
+	if (rv) {
+		pr_info("SoftIWARP attach failed. Error: %d\n", rv);
+		siw_sq_worker_exit();
+		siw_cm_exit();
+	} else
+		pr_info("SoftIWARP attached\n");
+
 	return rv;
 }
 
 static void __exit siw_exit_module(void)
 {
+	spin_lock(&siw_dev_lock);
+
+	unregister_netdevice_notifier(&siw_netdev_nb);
+
+	spin_unlock(&siw_dev_lock);
+
 	siw_sq_worker_exit();
 	siw_cm_exit();
 
 	while (!list_empty(&siw_devlist)) {
-		struct siw_dev  *siw_p =
+		struct siw_dev  *sdev =
 			list_entry(siw_devlist.next, struct siw_dev, list);
-		list_del(&siw_p->list);
-		siw_deregister_device(siw_p);
-		in_dev_put(siw_p->l2dev->ip_ptr);
-		ib_dealloc_device(&siw_p->ofa_dev);
+		list_del(&sdev->list);
+		if (sdev->is_registered)
+			siw_device_deregister(sdev);
+
+		siw_device_destroy(sdev);
 	}
-	printk(KERN_INFO "SoftIWARP detached\n");
+	siw_debugfs_delete();
+
+	pr_info("SoftIWARP detached\n");
 }
 
 module_init(siw_init_module);

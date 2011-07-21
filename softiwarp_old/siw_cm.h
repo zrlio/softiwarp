@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -103,8 +103,8 @@ struct siw_cep {
 	void    (*sk_error_report)(struct sock *sk);
 };
 
-#define MPAREQ_TIMEOUT	(HZ*10)
-#define MPAREP_TIMEOUT	(HZ*5)
+#define MPAREQ_TIMEOUT	HZ*10
+#define MPAREP_TIMEOUT	HZ*5
 
 enum siw_work_type {
 	SIW_CM_WORK_ACCEPT	= 1,
@@ -127,8 +127,14 @@ extern int siw_reject(struct iw_cm_id *, const void *, u8);
 extern int siw_create_listen(struct iw_cm_id *, int);
 extern int siw_destroy_listen(struct iw_cm_id *);
 
-extern void siw_cep_get(struct siw_cep *);
+extern int siw_cm_upcall(struct siw_cep *, enum iw_cm_event_type,
+			    enum iw_cm_event_status);
+
+extern void siw_cep_upcall(struct siw_cep *, enum iw_cm_event_type);
+
 extern void siw_cep_put(struct siw_cep *);
+extern void siw_cep_get(struct siw_cep *);
+
 extern int siw_cm_queue_work(struct siw_cep *, enum siw_work_type);
 
 extern int siw_cm_init(void);
@@ -146,13 +152,18 @@ extern void siw_cm_exit(void);
  */
 static inline unsigned int get_tcp_mss(struct sock *sk)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 30)
+	return ((struct tcp_sock *)sk)->xmit_size_goal;
+#else
 	struct tcp_sock *tp = tcp_sk(sk);
+
 
 	if (tp->xmit_size_goal_segs)
 		return tp->xmit_size_goal_segs * tp->mss_cache;
 
 	else
 		return tp->mss_cache;
+#endif
 }
 
 #endif

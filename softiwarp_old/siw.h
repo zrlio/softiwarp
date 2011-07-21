@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -54,6 +54,11 @@
 #include "siw_user.h"
 #include "iwarp.h"
 
+#include <linux/version.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 26)
+#define KERNEL_VERSION_PRE_2_6_26
+#endif
+
 enum siw_if_type {
 	SIW_IF_OFED = 0,	/* only via standard ofed syscall if */
 	SIW_IF_MAPPED = 1	/* private qp and cq mapping */
@@ -68,7 +73,7 @@ enum siw_if_type {
 #define SIW_MAX_QP_WR		(1024 * 32)
 #define SIW_MAX_ORD		128
 #define SIW_MAX_IRD		128
-#define SIW_MAX_SGE		4
+#define SIW_MAX_SGE		10
 #define SIW_MAX_SGE_RD		1	/* iwarp limitation. we could relax */
 #define SIW_MAX_CQ		(1024 * 100)
 #define SIW_MAX_CQE		(SIW_MAX_QP_WR * 100)
@@ -80,6 +85,7 @@ enum siw_if_type {
 #define SIW_MAX_SRQ_WR		(SIW_MAX_QP_WR * 10)
 
 #define SENDPAGE_THRESH		256	/* min bytes for using sendpage() */
+#define SIW_MAX_INLINE		SENDPAGE_THRESH
 #define SOCKBUFSIZE		(PAGE_SIZE * 40)
 #define SQ_USER_MAXBURST	10
 
@@ -117,17 +123,11 @@ struct siw_devinfo {
 	enum siw_if_type	iftype;
 };
 
-
 struct siw_dev {
 	struct ib_device	ofa_dev;
 	struct list_head	list;
-	struct net_device	*netdev;
+	struct net_device	*l2dev;
 	struct siw_devinfo	attrs;
-	int			is_registered; /* Registered with OFA core */
-
-	/* physical port state (only one port per device) */
-	enum ib_port_state	state;
-
 	/* object management */
 	struct list_head	cep_list;
 	struct list_head	qp_list;
@@ -136,7 +136,6 @@ struct siw_dev {
 	struct idr		cq_idr;
 	struct idr		pd_idr;
 	struct idr		mem_idr;	/* MRs & MWs */
-
 	/* active objects statistics */
 	atomic_t		num_qp;
 	atomic_t		num_cq;
@@ -144,8 +143,6 @@ struct siw_dev {
 	atomic_t		num_mem;
 	atomic_t		num_srq;
 	atomic_t		num_cep;
-
-	struct dentry		*debugfs;
 };
 
 struct siw_objhdr {
@@ -227,7 +224,7 @@ struct siw_mw {
 	struct siw_mem	mem;
 };
 
-/********** WR definitions ****************/
+/********** WR definitions  ****************/
 
 enum siw_wr_opcode {
 	SIW_WR_RDMA_WRITE		= IB_WR_RDMA_WRITE,
@@ -239,8 +236,10 @@ enum siw_wr_opcode {
 	/* Unsupported */
 	SIW_WR_ATOMIC_CMP_AND_SWP	= IB_WR_ATOMIC_CMP_AND_SWP,
 	SIW_WR_ATOMIC_FETCH_AND_ADD	= IB_WR_ATOMIC_FETCH_AND_ADD,
+#if (OFA_VERSION >= 140)
 	SIW_WR_INVAL_STAG		= IB_WR_LOCAL_INV,
 	SIW_WR_FASTREG			= IB_WR_FAST_REG_MR,
+#endif
 
 	SIW_WR_RECEIVE,
 	SIW_WR_RDMA_READ_RESP,		/* pseudo WQE */
@@ -273,7 +272,7 @@ struct siw_wr_common {
  */
 struct siw_wr_with_sgl {
 	struct siw_wr_common	hdr;
-	int			num_sge;
+	int                     num_sge;
 	struct siw_sge		sge[0]; /* Start of source or dest. SGL */
 };
 
@@ -299,31 +298,12 @@ struct siw_wr_rdma_rread {
 	u32			rtag;
 };
 
-/*
- * Inline data are kept within the work request itself occupying
- * the space of sge[1] .. sge[n]. Therefore, inline data cannot be
- * supported if SIW_MAX_SGE is below 2 elements.
- */
-#if SIW_MAX_SGE < 2
-#error "SIW_MAX_SGE must be at least 2"
-#endif
-
-#define SIW_MAX_INLINE	(sizeof(struct siw_sge) * (SIW_MAX_SGE - 1))
-
-struct siw_wr_inline_data {
-	struct siw_wr_common	hdr;
-	int			num_sge;	/* always 1 */
-	struct siw_sge		sge;		/* single SGE, points to data */
-	char			data[SIW_MAX_INLINE];
-};
-
-
 struct siw_wr_rdma_rresp {
 	struct	siw_wr_common	hdr;
 	int			num_sge; /* must be 1 */
 	struct siw_sge		sge;
 	u64			raddr;
-	u32			rtag;
+	u32			rtag;  /* uninterpreted, NBO */
 };
 
 struct siw_wr_bind {
@@ -343,7 +323,7 @@ struct siw_wr_recv {
 };
 
 enum siw_wr_state {
-	SR_WR_QUEUED		= 0,	/* processing has not started yet */
+	SR_WR_QUEUED            = 0,	/* processing has not started yet */
 	SR_WR_INPROGRESS	= 1,	/* initiated processing of the WR */
 	SR_WR_DONE		= 2,
 };
@@ -354,7 +334,6 @@ struct siw_wqe {
 	union {
 		struct siw_wr_common		hdr;
 		struct siw_wr_with_sgl		sgl;
-		struct siw_wr_inline_data	inlined_data;
 		struct siw_wr_send		send;
 		struct siw_wr_rmda_write	write;
 		struct siw_wr_rdma_rread	rread;
@@ -366,7 +345,7 @@ struct siw_wqe {
 	enum siw_wr_state	wr_status;
 	enum ib_wc_status	wc_status;
 	u32			bytes;		/* # bytes to processed */
-	u32			processed;	/* # bytes processed */
+	u32			processed;	/* # bytes sucessfully proc'd */
 	int			error;
 };
 
@@ -427,10 +406,10 @@ struct siw_mpa_attrs {
 };
 
 struct siw_sk_upcalls {
-	void	(*sk_state_change)(struct sock *sk);
-	void	(*sk_data_ready)(struct sock *sk, int bytes);
-	void	(*sk_write_space)(struct sock *sk);
-	void	(*sk_error_report)(struct sock *sk);
+	void    (*sk_state_change)(struct sock *sk);
+	void    (*sk_data_ready)(struct sock *sk, int bytes);
+	void    (*sk_write_space)(struct sock *sk);
+	void    (*sk_error_report)(struct sock *sk);
 };
 
 struct siw_sq_work {
@@ -454,10 +433,10 @@ struct siw_srq {
 
 struct siw_qp_attrs {
 	enum siw_qp_state	state;
-	char			terminate_buffer[52];
+	char                    terminate_buffer[52];
 	u32			terminate_msg_length;
 	u32			ddp_rdmap_version; /* 0 or 1 */
-	char			*stream_msg_buf;
+	char                    *stream_msg_buf;
 	u32			stream_msg_buf_length;
 	u32			rq_hiwat;
 	u32			sq_size;
@@ -484,7 +463,7 @@ enum siw_rx_state {
 	SIW_GET_HDR = 0,	/* await new hdr or within hdr */
 	SIW_GET_DATA_START = 1,	/* start of inbound DDP payload */
 	SIW_GET_DATA_MORE = 2,	/* continuation of (misaligned) DDP payload */
-	SIW_GET_TRAILER	= 3	/* await new trailer or within trailer */
+	SIW_GET_TRAILER	= 3	/* await new trailer or within trailer (+pad) */
 };
 
 
@@ -534,15 +513,15 @@ struct siw_iwarp_rx {
 	enum siw_rx_state	state;
 
 	u8			crc_enabled:1,
-				first_ddp_seg:1,   /* this is first DDP seg */
+				first_ddp_seg:1,   /* receiving first DDP seg */
 				more_ddp_segs:1,   /* more DDP segs expected */
 				rx_suspend:1,	   /* stop rcv DDP segs. */
-				prev_rdmap_opcode:4; /* opcode of prev msg */
+				prev_ddp_opcode:4; /* opcode of prev DDP msg */
 	char			pad;		/* # of pad bytes expected */
 };
 
 #define siw_rx_data(qp, rctx)	\
-	(iwarp_pktinfo[__rdmap_opcode(&rctx->hdr.ctrl)].proc_data(qp, rctx))
+	(iwarp_pktinfo[rctx->hdr.ctrl.opcode].proc_data(qp, rctx))
 
 /*
  * Shorthands for short packets w/o payload
@@ -607,15 +586,15 @@ struct siw_iwarp_tx {
 
 	atomic_t		in_use;		/* tx currently under way */
 
+	char			pad;		/* # pad in current fpdu */
 	u8			crc_enabled:1,	/* compute and ship crc */
 				do_crc:1,	/* do crc for segment */
 				use_sendpage:1,	/* send w/o copy */
 				new_tcpseg:1,	/* start new tcp segment */
+				wspace_update:1,/* new write space indicated */
 				tx_suspend:1,	/* stop sending DDP segs. */
-				pad:2,		/* # pad in current fpdu */
-				rsvd:2;
+				rsvd:3;
 
-	u8			unused;
 	u16			fpdu_len;	/* len of FPDU to tx */
 
 	int			tcp_seglen;	/* remaining tcp seg space */
@@ -684,8 +663,7 @@ struct siw_qp {
 #define unlock_cq(cq)	spin_unlock(&cq->lock)
 
 #define lock_cq_rxsave(cq, flags)	spin_lock_irqsave(&cq->lock, flags)
-#define unlock_cq_rxsave(cq, flags)\
-	spin_unlock_irqrestore(&cq->lock, flags)
+#define unlock_cq_rxsave(cq, flags)	spin_unlock_irqrestore(&cq->lock, flags)
 
 #define lock_orq(qp)	spin_lock(&qp->orq_lock)
 #define unlock_orq(qp)	spin_unlock(&qp->orq_lock)
@@ -731,6 +709,8 @@ struct iwarp_msg_info {
 };
 
 extern struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1];
+
+
 extern struct siw_dev *siw;
 
 
@@ -792,11 +772,8 @@ void siw_sq_flush(struct siw_qp *);
 void siw_rq_flush(struct siw_qp *);
 int siw_reap_cqe(struct siw_cq *, struct ib_wc *);
 
-/* RDMA core event dipatching */
-void siw_qp_event(struct siw_qp *, enum ib_event_type);
-void siw_cq_event(struct siw_cq *, enum ib_event_type);
-void siw_srq_event(struct siw_srq *, enum ib_event_type);
-void siw_port_event(struct siw_dev *, u8, enum ib_event_type);
+void siw_async_ev(struct siw_qp *, struct siw_cq *, enum ib_event_type);
+void siw_async_srq_ev(struct siw_srq *, enum ib_event_type);
 
 static inline struct siw_wqe *
 siw_next_tx_wqe(struct siw_qp *qp) {

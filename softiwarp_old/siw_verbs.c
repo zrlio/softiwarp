@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2010, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -128,7 +128,11 @@ int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr)
 
 	memset(attr, 0, sizeof *attr);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 33)
+	attr->max_mr_size = current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur;
+#else
 	attr->max_mr_size = rlimit(RLIMIT_MEMLOCK); /* per process */
+#endif
 	attr->vendor_id = dev->attrs.vendor_id;
 	attr->vendor_part_id = dev->attrs.vendor_part_id;
 	attr->max_qp = dev->attrs.max_qp;
@@ -155,7 +159,7 @@ int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr)
 	attr->max_srq_wr = dev->attrs.max_srq_wr;
 	attr->max_srq_sge = dev->attrs.max_srq_sge;
 
-	memcpy(&attr->sys_image_guid, dev->netdev->dev_addr, 6);
+	memcpy(&attr->sys_image_guid, dev->l2dev->dev_addr, 6);
 
 	/*
 	 * TODO: understand what of the following should
@@ -206,12 +210,14 @@ static inline enum ib_mtu siw_mtu_net2ofa(unsigned short mtu)
 int siw_query_port(struct ib_device *ofa_dev, u8 port,
 		     struct ib_port_attr *attr)
 {
-	struct siw_dev *sdev = siw_dev_ofa2siw(ofa_dev);
+	struct siw_dev *dev = siw_dev_ofa2siw(ofa_dev);
 
 	memset(attr, 0, sizeof *attr);
-
-	attr->state = sdev->state;
-	attr->max_mtu = siw_mtu_net2ofa(sdev->netdev->mtu);
+	/*
+	 * TODO: fully understand what to do here
+	 */
+	attr->state = IB_PORT_ACTIVE;	/* ?? */
+	attr->max_mtu = siw_mtu_net2ofa(dev->l2dev->mtu);
 	attr->active_mtu = attr->max_mtu;
 	attr->gid_tbl_len = 1;
 	attr->port_cap_flags = IB_PORT_CM_SUP;	/* ?? */
@@ -250,7 +256,7 @@ int siw_query_gid(struct ib_device *ofa_dev, u8 port, int idx,
 
 	/* subnet_prefix == interface_id == 0; */
 	memset(gid, 0, sizeof *gid);
-	memcpy(&gid->raw[0], dev->netdev->dev_addr, 6);
+	memcpy(&gid->raw[0], dev->l2dev->dev_addr, 6);
 
 	return 0;
 }
@@ -353,8 +359,7 @@ int siw_no_mad(struct ib_device *ofa_dev, int flags, u8 port,
  * @udata:	used to provide QP ID, SQ and RQ size back to user.
  */
 
-struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
-			    struct ib_qp_init_attr *attrs,
+struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd, struct ib_qp_init_attr *attrs,
 			    struct ib_udata *udata)
 {
 	struct siw_qp			*qp = NULL;
@@ -391,9 +396,10 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 		rv = -EINVAL;
 		goto err_out;
 	}
-	if (attrs->cap.max_inline_data > SIW_MAX_INLINE) {
+	if (attrs->cap.max_inline_data > SIW_MAX_INLINE ||
+	    (kernel_verbs && attrs->cap.max_inline_data != 0)) {
 		dprint(DBG_ON, ": Max Inline Send %d > %d!\n",
-		       attrs->cap.max_inline_data, (int)SIW_MAX_INLINE);
+		       attrs->cap.max_inline_data, SIW_MAX_INLINE);
 		rv = -EINVAL;
 		goto err_out;
 	}
@@ -529,7 +535,7 @@ err_out:
 
 /*
  * Minimum siw_query_qp() verb interface.
- *
+ * 
  * @qp_attr_mask is not used but all available information is provided
  */
 int siw_query_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *qp_attr,
@@ -544,15 +550,19 @@ int siw_query_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *qp_attr,
 	} else
 		return -EINVAL;
 
-	qp_attr->cap.max_inline_data = SIW_MAX_INLINE;
-	qp_init_attr->cap.max_inline_data = SIW_MAX_INLINE;
-
+	if (qp->attrs.flags & SIW_KERNEL_VERBS) {
+		qp_attr->cap.max_inline_data = 0;
+		qp_init_attr->cap.max_inline_data = 0;
+	} else {
+		qp_attr->cap.max_inline_data = SIW_MAX_INLINE;
+		qp_init_attr->cap.max_inline_data = SIW_MAX_INLINE;
+	}
 	qp_attr->cap.max_send_wr = qp->attrs.sq_size;
 	qp_attr->cap.max_recv_wr = qp->attrs.rq_size;
 	qp_attr->cap.max_send_sge = qp->attrs.sq_max_sges;
 	qp_attr->cap.max_recv_sge = qp->attrs.rq_max_sges;
 
-	qp_attr->path_mtu = siw_mtu_net2ofa(dev->netdev->mtu);
+	qp_attr->path_mtu = siw_mtu_net2ofa(dev->l2dev->mtu);
 	qp_attr->max_rd_atomic = qp->attrs.ird;
 	qp_attr->max_dest_rd_atomic = qp->attrs.ord;
 
@@ -694,63 +704,64 @@ static int siw_copy_sgl(struct ib_sge *ofa_sge, struct siw_sge *siw_sge,
 /*
  * siw_copy_inline_sgl()
  *
- * Prepare sgl of inlined data for sending. For userland callers
- * function checks if given buffer addresses and len's are within
- * process context bounds.
- * Data from all provided sge's are copied together into the wqe,
- * referenced by a single sge.
+ * Prepare sgl of inlined data for sending.
+ * User provided sgl with unregistered user buffers. The function checks
+ * if the given buffer addresses and len's are within process context
+ * bounds and copies data into one kernel buffer. This implies dual copy
+ * operation in the tx path since TCP will make another copy for
+ * retransmission. There is room for efficiency improvement.
  */
-static int siw_copy_inline_sgl(struct ib_send_wr *ofa_wr, struct siw_wqe *wqe)
+static int siw_copy_inline_sgl(struct ib_sge *ofa_sge, struct siw_sge *siw_sge,
+			       int num_sge)
 {
-	struct ib_sge	*ofa_sge = ofa_wr->sg_list;
-	char		*kbuf	 = wqe->wr.inlined_data.data;
-	int		num_sge	 = ofa_wr->num_sge,
-			bytes	 = 0;
+	char	*kbuf;
+	int	i, bytes;
 
-	wqe->wr.inlined_data.sge.mem.buf = NULL;
-	wqe->wr.inlined_data.sge.addr = (u64)kbuf;
-	wqe->wr.inlined_data.sge.lkey = 0;
+	siw_sge->mem.buf = NULL;
+
+	for (i = 0, bytes = 0; i < num_sge; i++)
+		bytes += ofa_sge[i].length;
+
+	if (unlikely(bytes > SIW_MAX_INLINE)) {
+		bytes = -EINVAL;
+		goto out;
+	}
+	if (unlikely(!bytes))
+		goto out;
+
+	kbuf = kmalloc(bytes, GFP_KERNEL);
+	if (unlikely(!kbuf)) {
+		dprint(DBG_ON, " kmalloc\n");
+		bytes = -ENOMEM;
+		goto out;
+	}
+	siw_sge->mem.buf = kbuf;
+	siw_sge->addr = (u64)kbuf;
 
 	while (num_sge--) {
-		if (!ofa_sge->length) {
-			ofa_sge++;
-			continue;
-		}
-		bytes += ofa_sge->length;
-		if (bytes > SIW_MAX_INLINE) {
-			bytes = -EINVAL;
+		if (!access_ok(VERIFY_READ, (char __user *)ofa_sge->addr,
+			       ofa_sge->length)) {
+			bytes = -EFAULT;
 			break;
 		}
-		if (wqe->qp->attrs.flags & SIW_KERNEL_VERBS)
-			memcpy(kbuf,
-			       (void *)(uintptr_t)ofa_sge->addr,
-			       ofa_sge->length);
-		else {
-			if (!access_ok(VERIFY_READ,
-				       (__user void *)(uintptr_t)ofa_sge->addr,
-				       ofa_sge->length)) {
-				bytes = -EFAULT;
-				break;
-			}
-			if (__copy_from_user(kbuf, (__user void *)
-					     (uintptr_t)ofa_sge->addr,
-					     ofa_sge->length)) {
-				bytes = -EFAULT;
-				break;
-			}
+		if (__copy_from_user(kbuf, (char __user *)ofa_sge->addr,
+				     ofa_sge->length)) {
+			bytes = -EFAULT;
+			break;
 		}
 		kbuf += ofa_sge->length;
 		ofa_sge++;
 	}
-	wqe->wr.inlined_data.sge.len = bytes > 0 ? bytes : 0;
-	wqe->wr.inlined_data.num_sge = bytes > 0 ? 1 : 0;
-
-	dprint(DBG_WR, "(QP%d): Copied inline data: %d\n", QP_ID(wqe->qp),
-	       bytes);
-
+	if (bytes > 0) {
+		siw_sge->len = bytes;
+		siw_sge->lkey = 0;
+	} else {
+		kfree(siw_sge->mem.buf);
+		siw_sge->mem.buf = NULL;
+	}
+out:
 	return bytes;
 }
-
 
 /*
  * siw_wqe_alloc()
@@ -850,17 +861,30 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 		wr_flags(wqe) = wr->send_flags;
 		wr_id(wqe) = wr->wr_id;
 
+		if (SIW_INLINED_DATA(wqe)) {
+			dprint(DBG_WR, "(QP%d): INLINE DATA\n", QP_ID(qp));
+			if (unlikely(qp->attrs.flags & SIW_KERNEL_VERBS)) {
+				dprint(DBG_ON|DBG_WR,
+				       "(QP%d): Kernel verbs: No INLINE\n",
+				       QP_ID(qp));
+				rv = -EINVAL;
+				break;
+			}
+		}
+
 		switch (wr->opcode) {
 
 		case IB_WR_SEND:
 			if (!SIW_INLINED_DATA(wqe)) {
-				rv = siw_copy_sgl(wr->sg_list,
-						  wqe->wr.send.sge,
+				rv = siw_copy_sgl(wr->sg_list, wqe->wr.send.sge,
 						  wr->num_sge);
 				wqe->wr.send.num_sge = wr->num_sge;
-			} else
-				rv = siw_copy_inline_sgl(wr, wqe);
-
+			} else {
+				rv = siw_copy_inline_sgl(wr->sg_list,
+							 wqe->wr.send.sge,
+							 wr->num_sge);
+				wqe->wr.send.num_sge = 1;
+			}
 			if (rv <= 0) {
 				rv = -EINVAL;
 				break;
@@ -893,12 +917,15 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 
 		case IB_WR_RDMA_WRITE:
 			if (!SIW_INLINED_DATA(wqe)) {
-				rv = siw_copy_sgl(wr->sg_list,
-						  wqe->wr.send.sge,
+				rv = siw_copy_sgl(wr->sg_list, wqe->wr.send.sge,
 						  wr->num_sge);
 				wqe->wr.write.num_sge = wr->num_sge;
-			} else
-				rv = siw_copy_inline_sgl(wr, wqe);
+			} else {
+				rv = siw_copy_inline_sgl(wr->sg_list,
+							 wqe->wr.send.sge,
+							 wr->num_sge);
+				wqe->wr.write.num_sge = min(1, wr->num_sge);
+			}
 			/*
 			 * NOTE: zero length WRITE is allowed!
 			 */
@@ -1298,7 +1325,12 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 	struct siw_uresp_reg_mr	uresp;
 	struct siw_dev		*dev = pd->hdr.dev;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 33)
+	unsigned long mem_limit =
+		current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur;
+#else
 	unsigned long mem_limit = rlimit(RLIMIT_MEMLOCK);
+#endif
 	int rv;
 
 	dprint(DBG_MM|DBG_OBJ, " start: 0x%016llx, "
@@ -1330,7 +1362,11 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 			goto err_out;
 		}
 	}
+#if defined(KERNEL_VERSION_PRE_2_6_26) && (OFA_VERSION < 140)
+	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights);
+#else
 	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights, 0);
+#endif
 	if (IS_ERR(umem)) {
 		dprint(DBG_MM, " ib_umem_get:%ld LOCKED:%lu, LIMIT:%lu\n",
 			PTR_ERR(umem), current->mm->locked_vm,
@@ -1379,6 +1415,11 @@ err_out:
 	return ERR_PTR(rv);
 }
 
+struct ib_mr *siw_reg_phys_mr(struct ib_pd *ofa_pd, struct ib_phys_buf *pbl,
+			      int num_buf, int acc, u64 *iova_start)
+{
+	return (struct ib_mr *)NULL;
+}
 
 /*
  * siw_get_dma_mr()
