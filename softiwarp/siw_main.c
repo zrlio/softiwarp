@@ -503,10 +503,9 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 		break;
 
 	case NETDEV_CHANGEADDR:
-		if (sdev->is_registered) {
+		if (sdev->is_registered)
 			siw_port_event(sdev, 1, IB_EVENT_LID_CHANGE);
-			break;
-		}
+
 		break;
 	/*
 	 * Todo: Below netdev events are currently not handled.
