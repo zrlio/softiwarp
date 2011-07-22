@@ -1296,7 +1296,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 	struct ib_umem		*umem = NULL;
 	struct siw_ureq_reg_mr	ureq;
 	struct siw_uresp_reg_mr	uresp;
-	struct siw_dev		*sdev = pd->hdr.dev;
+	struct siw_dev		*sdev = pd->hdr.sdev;
 
 	unsigned long mem_limit = rlimit(RLIMIT_MEMLOCK);
 	int rv;
@@ -1392,7 +1392,7 @@ struct ib_mr *siw_get_dma_mr(struct ib_pd *ofa_pd, int rights)
 {
 	struct siw_mr	*mr;
 	struct siw_pd	*pd = siw_pd_ofa2siw(ofa_pd);
-	struct siw_dev	*sdev = pd->hdr.dev;
+	struct siw_dev	*sdev = pd->hdr.sdev;
 	int rv;
 
 	if (atomic_inc_return(&sdev->num_mem) > SIW_MAX_MR) {
@@ -1437,7 +1437,7 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 	struct siw_srq		*srq = NULL;
 	struct ib_srq_attr	*attrs = &init_attrs->attr;
 	struct siw_pd		*pd = siw_pd_ofa2siw(ofa_pd);
-	struct siw_dev		*sdev = pd->hdr.dev;
+	struct siw_dev		*sdev = pd->hdr.sdev;
 	struct siw_wqe		*wqe;
 
 	int kernel_verbs = ofa_pd->uobject ? 0 : 1;
@@ -1587,7 +1587,7 @@ int siw_query_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs)
 int siw_destroy_srq(struct ib_srq *ofa_srq)
 {
 	struct siw_srq		*srq = siw_srq_ofa2siw(ofa_srq);
-	struct siw_dev		*sdev = srq->pd->hdr.dev;
+	struct siw_dev		*sdev = srq->pd->hdr.sdev;
 
 	siw_drain_wq(&srq->rq);
 	siw_drain_wq(&srq->freeq);

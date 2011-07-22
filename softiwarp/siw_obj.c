@@ -161,7 +161,7 @@ int siw_qp_add(struct siw_dev *sdev, struct siw_qp *qp)
 	int rv = siw_add_obj(&sdev->idr_lock, &sdev->qp_idr, &qp->hdr);
 	if (!rv) {
 		dprint(DBG_OBJ, "(QP%d): New Object\n", QP_ID(qp));
-		qp->hdr.dev = sdev;
+		qp->hdr.sdev = sdev;
 	}
 	return rv;
 }
@@ -171,7 +171,7 @@ int siw_cq_add(struct siw_dev *sdev, struct siw_cq *cq)
 	int rv = siw_add_obj(&sdev->idr_lock, &sdev->cq_idr, &cq->hdr);
 	if (!rv) {
 		dprint(DBG_OBJ, "(CQ%d): New Object\n", cq->hdr.id);
-		cq->hdr.dev = sdev;
+		cq->hdr.sdev = sdev;
 	}
 	return rv;
 }
@@ -181,7 +181,7 @@ int siw_pd_add(struct siw_dev *sdev, struct siw_pd *pd)
 	int rv = siw_add_obj(&sdev->idr_lock, &sdev->pd_idr, &pd->hdr);
 	if (!rv) {
 		dprint(DBG_OBJ, "(PD%d): New Object\n", pd->hdr.id);
-		pd->hdr.dev = sdev;
+		pd->hdr.sdev = sdev;
 	}
 	return rv;
 }
@@ -235,7 +235,7 @@ again:
 	}
 	siw_objhdr_init(&m->hdr);
 	m->hdr.id = id;
-	m->hdr.dev = sdev;
+	m->hdr.sdev = sdev;
 	dprint(DBG_OBJ|DBG_MM, "(IDR%d): New Object\n", id);
 
 	return 0;
@@ -264,7 +264,7 @@ static void siw_free_cq(struct kref *ref)
 
 	dprint(DBG_OBJ, "(CQ%d): Free Object\n", cq->hdr.id);
 
-	atomic_dec(&cq->hdr.dev->num_cq);
+	atomic_dec(&cq->hdr.sdev->num_cq);
 	kfree(cq);
 }
 
@@ -273,7 +273,7 @@ static void siw_free_qp(struct kref *ref)
 	struct siw_qp	*qp =
 		container_of(container_of(ref, struct siw_objhdr, ref),
 			     struct siw_qp, hdr);
-	struct siw_dev	*sdev = qp->hdr.dev;
+	struct siw_dev	*sdev = qp->hdr.sdev;
 	unsigned long flags;
 
 	dprint(DBG_OBJ|DBG_CM, "(QP%d): Free Object\n", QP_ID(qp));
@@ -301,7 +301,7 @@ static void siw_free_pd(struct kref *ref)
 
 	dprint(DBG_OBJ, "(PD%d): Free Object\n", pd->hdr.id);
 
-	atomic_dec(&pd->hdr.dev->num_pd);
+	atomic_dec(&pd->hdr.sdev->num_pd);
 	kfree(pd);
 }
 
@@ -314,7 +314,7 @@ static void siw_free_mem(struct kref *ref)
 
 	dprint(DBG_MM|DBG_OBJ, "(MEM%d): Free Object\n", OBJ_ID(m));
 
-	atomic_dec(&m->hdr.dev->num_mem);
+	atomic_dec(&m->hdr.sdev->num_mem);
 
 	if (SIW_MEM_IS_MW(m)) {
 		struct siw_mw *mw = container_of(m, struct siw_mw, mem);

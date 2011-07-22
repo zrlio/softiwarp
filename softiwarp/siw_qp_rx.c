@@ -638,7 +638,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	struct siw_dev		*dev = qp->hdr.dev;
+	struct siw_dev		*dev = qp->hdr.sdev;
 	struct siw_mem		*mem;
 	struct siw_mr		*mr;
 	int			bytes,

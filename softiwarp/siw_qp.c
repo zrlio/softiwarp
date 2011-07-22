@@ -730,7 +730,7 @@ int
 siw_check_sge(struct siw_pd *pd, struct siw_sge *sge,
 	      enum siw_access_flags perms, u32 off, int len)
 {
-	struct siw_dev	*sdev = pd->hdr.dev;
+	struct siw_dev	*sdev = pd->hdr.sdev;
 	struct siw_mem	*mem;
 	int		new_ref = 0, rv = 0;
 

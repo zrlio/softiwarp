@@ -181,7 +181,7 @@ static struct siw_cep *siw_cep_alloc(struct siw_dev  *sdev)
 		cep->state = SIW_EPSTATE_IDLE;
 		init_waitqueue_head(&cep->waitq);
 		spin_lock_init(&cep->lock);
-		cep->dev = sdev;
+		cep->sdev = sdev;
 
 		spin_lock_irqsave(&sdev->idr_lock, flags);
 		list_add_tail(&cep->devq, &sdev->cep_list);
@@ -292,7 +292,7 @@ static void siw_cm_release(struct siw_cep *cep)
 static void __siw_cep_dealloc(struct kref *ref)
 {
 	struct siw_cep *cep = container_of(ref, struct siw_cep, ref);
-	struct siw_dev *sdev = cep->dev;
+	struct siw_dev *sdev = cep->sdev;
 	unsigned long flags;
 
 	dprint(DBG_OBJ|DBG_CM, "(CEP 0x%p): Free Object\n", cep);
@@ -805,7 +805,7 @@ static void siw_accept_newconn(struct siw_cep *cep)
 	if (cep->state != SIW_EPSTATE_LISTENING)
 		goto error;
 
-	new_cep = siw_cep_alloc(cep->dev);
+	new_cep = siw_cep_alloc(cep->sdev);
 	if (!new_cep)
 		goto error;
 
@@ -1729,6 +1729,7 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 
 	list_add_tail(&cep->listenq, (struct list_head *)id->provider_data);
 	cep->state = SIW_EPSTATE_LISTENING;
+
 	return 0;
 
 error:
@@ -1745,6 +1746,7 @@ error:
 		siw_cep_put(cep);
 	}
 	sock_release(s);
+
 	return rv;
 }
 
@@ -1783,42 +1785,14 @@ static void siw_drop_listeners(struct iw_cm_id *id)
  * siw_create_listen - Create resources for a listener's IWCM ID @id
  *
  * Listens on the socket addresses id->local_addr and id->remote_addr.
- * We support listening on multi-homed devices, i.e., Softiwarp devices
- * whose underlying net_device is associated with multiple IP addresses.
- * Wildcard listening (listening with zero IP address) is also supported.
  *
- * There are three design options for Softiwarp device management supporting
- * - multiple physical Ethernet ports, i.e., multiple net_device instances, and
- * - multiple IP addresses associated with net_device,
- * as follows:
+ * If the listener's @id provides a specific local IP address, at most one
+ * listening socket is created and associated with @id.
  *
- *    Option 1: One Softiwarp device per net_device and
- *              IP address associated with the net_device
- *    Option 2: One Softiwarp device per net_device
- *              (and all IP addresses associated with the net_device)
- *    Option 3: Single Softiwarp device for all net_device instances
- *              (and all IP addresses associated with these instances)
+ * If the listener's @id provides the wildcard (zero) local IP address,
+ * a separate listen is performed for each local IP address of the device
+ * by creating a listening socket and binding to that local IP address.
  *
- * We currently use Option 2, registering a separate siw_dev for
- * each net_device. Consequently, siw_create_listen() (called separately
- * by the IWCM for each Softiwarp device) handles the associated IP address(es)
- * as follows:
- *
- * - If the listener's @id provides a specific local IP address, at most one
- *   listening socket is created and associated with @id.
- *
- * - If the listener's @id provides the wildcard (zero) local IP address,
- *   a separate listen is performed for each local IP address of the device
- *   by creating a listening socket and binding to that local IP address.
- *   This avoids attempts to bind to the wildcard (zero) IP address
- *   on multiple devices, which fails with -EADDRINUSE on the second and
- *   all subsequent devices.
- *
- *   For the given IWCM and Option 2 above, the alternative approach of doing
- *   a single wildcard listen by creating one listening socket and binding it
- *   to the wildcard IP address is not a good idea if
- *   - there is more than one Softiwarp device (e.g., for lo and eth0), or
- *   - there are non-Softiwarp iWARP devices that cannot cooperate.
  */
 int siw_create_listen(struct iw_cm_id *id, int backlog)
 {
@@ -1859,9 +1833,6 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 			return -ENODEV;
 		}
 
-		/*
-		 * If in_dev is not configured, in_dev->ifa_list may be empty
-		 */
 		for_ifa(in_dev) {
 			/*
 			 * Create a listening socket if id->local_addr
@@ -1894,6 +1865,7 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 
 	} else {
 		/* IPv6 */
+		rv = -EAFNOSUPPORT;
 		dprint(DBG_CM|DBG_ON, "(id=0x%p): TODO: IPv6 support\n", id);
 	}
 	if (!rv)

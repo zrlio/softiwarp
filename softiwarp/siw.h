@@ -151,7 +151,7 @@ struct siw_dev {
 struct siw_objhdr {
 	u32			id;	/* for idr based object lookup */
 	struct kref		ref;
-	struct siw_dev		*dev;
+	struct siw_dev		*sdev;
 };
 
 

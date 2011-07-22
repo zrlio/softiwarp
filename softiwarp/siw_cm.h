@@ -73,7 +73,7 @@ struct siw_dev;
 
 struct siw_cep {
 	struct iw_cm_id		*cm_id;
-	struct siw_dev		*dev;
+	struct siw_dev		*sdev;
 
 	struct list_head	devq;
 	/*
