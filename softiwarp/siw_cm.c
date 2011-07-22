@@ -167,7 +167,7 @@ static void siw_cep_socket_assoc(struct siw_cep *cep, struct socket *s)
 }
 
 
-static struct siw_cep *siw_cep_alloc(struct siw_dev  *dev)
+static struct siw_cep *siw_cep_alloc(struct siw_dev  *sdev)
 {
 	struct siw_cep *cep = kzalloc(sizeof *cep, GFP_KERNEL);
 	if (cep) {
@@ -181,12 +181,12 @@ static struct siw_cep *siw_cep_alloc(struct siw_dev  *dev)
 		cep->state = SIW_EPSTATE_IDLE;
 		init_waitqueue_head(&cep->waitq);
 		spin_lock_init(&cep->lock);
-		cep->dev = dev;
+		cep->dev = sdev;
 
-		spin_lock_irqsave(&dev->idr_lock, flags);
-		list_add_tail(&cep->devq, &dev->cep_list);
-		spin_unlock_irqrestore(&dev->idr_lock, flags);
-		atomic_inc(&dev->num_cep);
+		spin_lock_irqsave(&sdev->idr_lock, flags);
+		list_add_tail(&cep->devq, &sdev->cep_list);
+		spin_unlock_irqrestore(&sdev->idr_lock, flags);
+		atomic_inc(&sdev->num_cep);
 
 		dprint(DBG_OBJ|DBG_CM, "(CEP 0x%p): New Object\n", cep);
 	}
@@ -292,7 +292,7 @@ static void siw_cm_release(struct siw_cep *cep)
 static void __siw_cep_dealloc(struct kref *ref)
 {
 	struct siw_cep *cep = container_of(ref, struct siw_cep, ref);
-	struct siw_dev *dev = cep->dev;
+	struct siw_dev *sdev = cep->dev;
 	unsigned long flags;
 
 	dprint(DBG_OBJ|DBG_CM, "(CEP 0x%p): Free Object\n", cep);
@@ -306,10 +306,10 @@ static void __siw_cep_dealloc(struct kref *ref)
 		siw_cm_free_work(cep);
 	spin_unlock_bh(&cep->lock);
 
-	spin_lock_irqsave(&dev->idr_lock, flags);
+	spin_lock_irqsave(&sdev->idr_lock, flags);
 	list_del(&cep->devq);
-	spin_unlock_irqrestore(&dev->idr_lock, flags);
-	atomic_dec(&dev->num_cep);
+	spin_unlock_irqrestore(&sdev->idr_lock, flags);
+	atomic_dec(&sdev->num_cep);
 	kfree(cep);
 }
 
@@ -1256,7 +1256,7 @@ done:
 
 int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 {
-	struct siw_dev	*dev = siw_dev_ofa2siw(id->device);
+	struct siw_dev	*sdev = siw_dev_ofa2siw(id->device);
 	struct siw_qp	*qp;
 	struct siw_cep	*cep = NULL;
 	struct socket	*s = NULL;
@@ -1268,11 +1268,11 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	if (pd_len > MPA_MAX_PRIVDATA)
 		return -EINVAL;
 
-	qp = siw_qp_id2obj(dev, params->qpn);
+	qp = siw_qp_id2obj(sdev, params->qpn);
 	BUG_ON(!qp);
 
 	dprint(DBG_CM, "(id=0x%p, QP%d): dev(id)=%s, netdev=%s\n",
-		id, QP_ID(qp), dev->ofa_dev.name, dev->netdev->name);
+		id, QP_ID(qp), sdev->ofa_dev.name, sdev->netdev->name);
 	dprint(DBG_CM, "(id=0x%p, QP%d): laddr=(0x%x,%d), raddr=(0x%x,%d)\n",
 		id, QP_ID(qp),
 		ntohl(id->local_addr.sin_addr.s_addr),
@@ -1316,7 +1316,7 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 			id, QP_ID(qp), rv);
 		goto error;
 	}
-	cep = siw_cep_alloc(dev);
+	cep = siw_cep_alloc(sdev);
 	if (!cep) {
 		rv =  -ENOMEM;
 		goto error;
@@ -1434,7 +1434,7 @@ error:
  */
 int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 {
-	struct siw_dev		*dev = siw_dev_ofa2siw(id->device);
+	struct siw_dev		*sdev = siw_dev_ofa2siw(id->device);
 	struct siw_cep		*cep = (struct siw_cep *)id->provider_data;
 	struct siw_qp		*qp;
 	struct siw_qp_attrs	qp_attrs;
@@ -1456,7 +1456,7 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		BUG();
 	}
 
-	qp = siw_qp_id2obj(dev, params->qpn);
+	qp = siw_qp_id2obj(sdev, params->qpn);
 	BUG_ON(!qp); /* The OFA core should prevent this */
 
 	down_write(&qp->state_lock);
@@ -1467,10 +1467,10 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	}
 
 	dprint(DBG_CM, "(id=0x%p, QP%d): dev(id)=%s\n",
-		id, QP_ID(qp), dev->ofa_dev.name);
+		id, QP_ID(qp), sdev->ofa_dev.name);
 
-	if (params->ord > dev->attrs.max_ord ||
-	    params->ird > dev->attrs.max_ord) {
+	if (params->ord > sdev->attrs.max_ord ||
+	    params->ird > sdev->attrs.max_ord) {
 		dprint(DBG_CM|DBG_ON, "(id=0x%p, QP%d): "
 			"ORD: %d (max: %d), IRD: %d (max: %d)\n",
 			id, QP_ID(qp),
@@ -1823,17 +1823,17 @@ static void siw_drop_listeners(struct iw_cm_id *id)
 int siw_create_listen(struct iw_cm_id *id, int backlog)
 {
 	struct ib_device	*ofa_dev = id->device;
-	struct siw_dev		*dev = siw_dev_ofa2siw(ofa_dev);
+	struct siw_dev		*sdev = siw_dev_ofa2siw(ofa_dev);
 	int			rv = 0;
 
 	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, netdev=%s backlog=%d\n",
-		id, ofa_dev->name, dev->netdev->name, backlog);
+		id, ofa_dev->name, sdev->netdev->name, backlog);
 
 	/*
 	 * IPv4/v6 design differences regarding multi-homing
 	 * propagate up to iWARP:
-	 * o For IPv4, use dev->netdev->ip_ptr
-	 * o For IPv6, use dev->netdev->ipv6_ptr
+	 * o For IPv4, use sdev->netdev->ip_ptr
+	 * o For IPv6, use sdev->netdev->ipv6_ptr
 	 */
 	if (id->local_addr.sin_family == AF_INET) {
 		/* IPv4 */
@@ -1852,7 +1852,7 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 			r_ip[0], r_ip[1], r_ip[2], r_ip[3],
 			ntohs(id->remote_addr.sin_port));
 
-		in_dev = in_dev_get(dev->netdev);
+		in_dev = in_dev_get(sdev->netdev);
 		if (!in_dev) {
 			dprint(DBG_CM|DBG_ON, "(id=0x%p): "
 				"netdev has no in_device\n", id);

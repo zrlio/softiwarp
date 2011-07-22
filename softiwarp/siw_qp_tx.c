@@ -196,8 +196,6 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 	 * local delivery to TCP. TCP may reuse the buffer for
 	 * retransmission. Changing unsent data also breaks the CRC,
 	 * if applied.
-	 * Inline buffers are already out of user control and can be
-	 * send 0copy.
 	 */
 	if (zcopy_tx
 	    && !SIW_INLINED_DATA(wqe)

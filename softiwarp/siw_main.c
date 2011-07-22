@@ -77,19 +77,17 @@ DEFINE_SPINLOCK(siw_dev_lock);
 static ssize_t show_sw_version(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
-	struct siw_dev *siw_dev = container_of(dev, struct siw_dev,
-						 ofa_dev.dev);
+	struct siw_dev *sdev = container_of(dev, struct siw_dev, ofa_dev.dev);
 
-	return sprintf(buf, "%x\n", siw_dev->attrs.version);
+	return sprintf(buf, "%x\n", sdev->attrs.version);
 }
 
 static ssize_t show_if_type(struct device *dev,
 			    struct device_attribute *attr, char *buf)
 {
-	struct siw_dev *siw_dev = container_of(dev, struct siw_dev,
-					       ofa_dev.dev);
+	struct siw_dev *sdev = container_of(dev, struct siw_dev, ofa_dev.dev);
 
-	return sprintf(buf, "%d\n", siw_dev->attrs.iftype);
+	return sprintf(buf, "%d\n", sdev->attrs.iftype);
 }
 
 static DEVICE_ATTR(sw_version, S_IRUGO, show_sw_version, NULL);
@@ -109,23 +107,23 @@ static int siw_modify_port(struct ib_device *ofa_dev, u8 port, int mask,
 
 static void siw_device_register(struct siw_dev *sdev)
 {
-	struct ib_device *ibdev = &sdev->ofa_dev;
+	struct ib_device *ofa_dev = &sdev->ofa_dev;
 	int rv, i;
 
-	rv = ib_register_device(ibdev, NULL);
+	rv = ib_register_device(ofa_dev, NULL);
 	if (rv) {
 		dprint(DBG_DM|DBG_ON, "(dev=%s): "
-			"ib_register_device failed: rv=%d\n", ibdev->name, rv);
+		       "ib_register_device failed: rv=%d\n", ofa_dev->name, rv);
 		return;
 	}
 
 	for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i) {
-		rv = device_create_file(&ibdev->dev, siw_dev_attributes[i]);
+		rv = device_create_file(&ofa_dev->dev, siw_dev_attributes[i]);
 		if (rv) {
 			dprint(DBG_DM|DBG_ON, "(dev=%s): "
 				"device_create_file failed: i=%d, rv=%d\n",
-				ibdev->name, i, rv);
-			ib_unregister_device(ibdev);
+				ofa_dev->name, i, rv);
+			ib_unregister_device(ofa_dev);
 			return;
 		}
 	}
@@ -133,7 +131,7 @@ static void siw_device_register(struct siw_dev *sdev)
 
 	dprint(DBG_DM, ": Registered '%s' for interface '%s', "
 		"HWaddr=%02x.%02x.%02x.%02x.%02x.%02x\n",
-		ibdev->name, sdev->netdev->name,
+		ofa_dev->name, sdev->netdev->name,
 		*(u8 *)sdev->netdev->dev_addr,
 		*((u8 *)sdev->netdev->dev_addr + 1),
 		*((u8 *)sdev->netdev->dev_addr + 2),
@@ -165,21 +163,20 @@ static void siw_device_deregister(struct siw_dev *sdev)
 		atomic_read(&sdev->num_cq) || atomic_read(&sdev->num_mem) ||
 		atomic_read(&sdev->num_pd) || atomic_read(&sdev->num_cep));
 
-	if (!list_empty(&sdev->cep_list)) {
-		int num_ceps = 0;
+	i = 0;
 
-		while (!list_empty(&sdev->cep_list)) {
-			struct siw_cep  *cep = list_entry(sdev->cep_list.next,
-						struct siw_cep, devq);
-			list_del(&cep->devq);
-			dprint(DBG_ON, ": Free CEP (0x%p), state: %d\n",
-				cep, cep->state);
-			kfree(cep);
-			num_ceps++;
-		}
-		pr_warning("siw_device_deregister: free'd %d orphaned CEPs\n",
-			   num_ceps);
+	while (!list_empty(&sdev->cep_list)) {
+		struct siw_cep *cep = list_entry(sdev->cep_list.next,
+						 struct siw_cep, devq);
+		list_del(&cep->devq);
+		dprint(DBG_ON, ": Free CEP (0x%p), state: %d\n",
+			cep, cep->state);
+		kfree(cep);
+		i++;
 	}
+	if (i)
+		pr_warning("siw_device_deregister: free'd %d CEPs\n", i);
+
 	sdev->is_registered = 0;
 }
 
@@ -248,36 +245,36 @@ static int siw_dev_qualified(struct net_device *dev)
 	return 0;
 }
 
-static struct siw_dev *siw_device_create(struct net_device *dev)
+static struct siw_dev *siw_device_create(struct net_device *netdev)
 {
 	struct siw_dev *sdev = (struct siw_dev *)ib_alloc_device(sizeof *sdev);
-	struct ib_device *ibdev;
+	struct ib_device *ofa_dev;
 
 	if (!sdev)
 		goto out;
 
-	ibdev = &sdev->ofa_dev;
+	ofa_dev = &sdev->ofa_dev;
 
-	ibdev->iwcm = kmalloc(sizeof(struct iw_cm_verbs), GFP_KERNEL);
-	if (!ibdev->iwcm) {
-		ib_dealloc_device(ibdev);
+	ofa_dev->iwcm = kmalloc(sizeof(struct iw_cm_verbs), GFP_KERNEL);
+	if (!ofa_dev->iwcm) {
+		ib_dealloc_device(ofa_dev);
 		sdev = NULL;
 		goto out;
 	}
 
-	sdev->netdev = dev;
+	sdev->netdev = netdev;
 	list_add_tail(&sdev->list, &siw_devlist);
 
-	if (dev->type != ARPHRD_LOOPBACK)
-		strlcpy(ibdev->name, "siw%d", IB_DEVICE_NAME_MAX);
-	else
-		strlcpy(ibdev->name, "siw_lo%d", IB_DEVICE_NAME_MAX);
-	memset(&ibdev->node_guid, 0, sizeof(ibdev->node_guid));
-	memcpy(&ibdev->node_guid, dev->dev_addr, 6);
+	strcpy(ofa_dev->name, "siw_");
+	strlcpy(ofa_dev->name + strlen("siw_"), netdev->name,
+		IB_DEVICE_NAME_MAX - strlen("siw_"));
 
-	ibdev->owner = THIS_MODULE;
+	memset(&ofa_dev->node_guid, 0, sizeof(ofa_dev->node_guid));
+	memcpy(&ofa_dev->node_guid, netdev->dev_addr, 6);
 
-	ibdev->uverbs_cmd_mask =
+	ofa_dev->owner = THIS_MODULE;
+
+	ofa_dev->uverbs_cmd_mask =
 	    (1ull << IB_USER_VERBS_CMD_GET_CONTEXT) |
 	    (1ull << IB_USER_VERBS_CMD_QUERY_DEVICE) |
 	    (1ull << IB_USER_VERBS_CMD_QUERY_PORT) |
@@ -302,17 +299,17 @@ static struct siw_dev *siw_device_create(struct net_device *dev)
 	    (1ull << IB_USER_VERBS_CMD_DESTROY_SRQ) |
 	    (1ull << IB_USER_VERBS_CMD_POST_SRQ_RECV);
 
-	ibdev->node_type = RDMA_NODE_RNIC;
-	memcpy(ibdev->node_desc, SIW_NODE_DESC, sizeof(SIW_NODE_DESC));
+	ofa_dev->node_type = RDMA_NODE_RNIC;
+	memcpy(ofa_dev->node_desc, SIW_NODE_DESC, sizeof(SIW_NODE_DESC));
 
 	/*
 	 * Current model (one-to-one device association):
 	 * One Softiwarp device per net_device or, equivalently,
 	 * per physical port.
 	 */
-	ibdev->phys_port_cnt = 1;
+	ofa_dev->phys_port_cnt = 1;
 
-	ibdev->num_comp_vectors = 1;
+	ofa_dev->num_comp_vectors = 1;
 	/*
 	 * While DMA adresses are not used a device must be provided
 	 * as long as the code relies on OFA's ib_umem_get() function for
@@ -320,60 +317,60 @@ static struct siw_dev *siw_device_create(struct net_device *dev)
 	 * (for siw case useless) translation of memory to DMA
 	 * adresses for that device.
 	 */
-	ibdev->dma_device = dev->dev.parent;
-	ibdev->query_device = siw_query_device;
-	ibdev->query_port = siw_query_port;
-	ibdev->query_qp = siw_query_qp;
-	ibdev->modify_port = siw_modify_port;
-	ibdev->query_pkey = siw_query_pkey;
-	ibdev->query_gid = siw_query_gid;
-	ibdev->alloc_ucontext = siw_alloc_ucontext;
-	ibdev->dealloc_ucontext = siw_dealloc_ucontext;
-	ibdev->mmap = siw_mmap;
-	ibdev->alloc_pd = siw_alloc_pd;
-	ibdev->dealloc_pd = siw_dealloc_pd;
-	ibdev->create_ah = siw_create_ah;
-	ibdev->destroy_ah = siw_destroy_ah;
-	ibdev->create_qp = siw_create_qp;
-	ibdev->modify_qp = siw_ofed_modify_qp;
-	ibdev->destroy_qp = siw_destroy_qp;
-	ibdev->create_cq = siw_create_cq;
-	ibdev->destroy_cq = siw_destroy_cq;
-	ibdev->resize_cq = NULL;
-	ibdev->poll_cq = siw_poll_cq;
-	ibdev->get_dma_mr = siw_get_dma_mr;
-	ibdev->reg_phys_mr = NULL;
-	ibdev->rereg_phys_mr = NULL;
-	ibdev->reg_user_mr = siw_reg_user_mr;
-	ibdev->dereg_mr = siw_dereg_mr;
-	ibdev->alloc_mw = NULL;
-	ibdev->bind_mw = NULL;
-	ibdev->dealloc_mw = NULL;
+	ofa_dev->dma_device = netdev->dev.parent;
+	ofa_dev->query_device = siw_query_device;
+	ofa_dev->query_port = siw_query_port;
+	ofa_dev->query_qp = siw_query_qp;
+	ofa_dev->modify_port = siw_modify_port;
+	ofa_dev->query_pkey = siw_query_pkey;
+	ofa_dev->query_gid = siw_query_gid;
+	ofa_dev->alloc_ucontext = siw_alloc_ucontext;
+	ofa_dev->dealloc_ucontext = siw_dealloc_ucontext;
+	ofa_dev->mmap = siw_mmap;
+	ofa_dev->alloc_pd = siw_alloc_pd;
+	ofa_dev->dealloc_pd = siw_dealloc_pd;
+	ofa_dev->create_ah = siw_create_ah;
+	ofa_dev->destroy_ah = siw_destroy_ah;
+	ofa_dev->create_qp = siw_create_qp;
+	ofa_dev->modify_qp = siw_ofed_modify_qp;
+	ofa_dev->destroy_qp = siw_destroy_qp;
+	ofa_dev->create_cq = siw_create_cq;
+	ofa_dev->destroy_cq = siw_destroy_cq;
+	ofa_dev->resize_cq = NULL;
+	ofa_dev->poll_cq = siw_poll_cq;
+	ofa_dev->get_dma_mr = siw_get_dma_mr;
+	ofa_dev->reg_phys_mr = NULL;
+	ofa_dev->rereg_phys_mr = NULL;
+	ofa_dev->reg_user_mr = siw_reg_user_mr;
+	ofa_dev->dereg_mr = siw_dereg_mr;
+	ofa_dev->alloc_mw = NULL;
+	ofa_dev->bind_mw = NULL;
+	ofa_dev->dealloc_mw = NULL;
 
-	ibdev->create_srq = siw_create_srq;
-	ibdev->modify_srq = siw_modify_srq;
-	ibdev->query_srq = siw_query_srq;
-	ibdev->destroy_srq = siw_destroy_srq;
-	ibdev->post_srq_recv = siw_post_srq_recv;
+	ofa_dev->create_srq = siw_create_srq;
+	ofa_dev->modify_srq = siw_modify_srq;
+	ofa_dev->query_srq = siw_query_srq;
+	ofa_dev->destroy_srq = siw_destroy_srq;
+	ofa_dev->post_srq_recv = siw_post_srq_recv;
 
-	ibdev->attach_mcast = NULL;
-	ibdev->detach_mcast = NULL;
-	ibdev->process_mad = siw_no_mad;
+	ofa_dev->attach_mcast = NULL;
+	ofa_dev->detach_mcast = NULL;
+	ofa_dev->process_mad = siw_no_mad;
 
-	ibdev->req_notify_cq = siw_req_notify_cq;
-	ibdev->post_send = siw_post_send;
-	ibdev->post_recv = siw_post_receive;
+	ofa_dev->req_notify_cq = siw_req_notify_cq;
+	ofa_dev->post_send = siw_post_send;
+	ofa_dev->post_recv = siw_post_receive;
 
-	ibdev->dma_ops = &siw_dma_mapping_ops;
+	ofa_dev->dma_ops = &siw_dma_mapping_ops;
 
-	ibdev->iwcm->connect = siw_connect;
-	ibdev->iwcm->accept = siw_accept;
-	ibdev->iwcm->reject = siw_reject;
-	ibdev->iwcm->create_listen = siw_create_listen;
-	ibdev->iwcm->destroy_listen = siw_destroy_listen;
-	ibdev->iwcm->add_ref = siw_qp_get_ref;
-	ibdev->iwcm->rem_ref = siw_qp_put_ref;
-	ibdev->iwcm->get_qp = siw_get_ofaqp;
+	ofa_dev->iwcm->connect = siw_connect;
+	ofa_dev->iwcm->accept = siw_accept;
+	ofa_dev->iwcm->reject = siw_reject;
+	ofa_dev->iwcm->create_listen = siw_create_listen;
+	ofa_dev->iwcm->destroy_listen = siw_destroy_listen;
+	ofa_dev->iwcm->add_ref = siw_qp_get_ref;
+	ofa_dev->iwcm->rem_ref = siw_qp_put_ref;
+	ofa_dev->iwcm->get_qp = siw_get_ofaqp;
 	/*
 	 * set and register sw version + user if type
 	 */
@@ -415,7 +412,7 @@ static struct siw_dev *siw_device_create(struct net_device *dev)
 	sdev->is_registered = 0;
 out:
 	if (sdev)
-		dev_hold(dev);
+		dev_hold(netdev);
 
 	return sdev;
 }
@@ -425,20 +422,20 @@ out:
 static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 			    void *arg)
 {
-	struct net_device	*dev = arg;
+	struct net_device	*netdev = arg;
 	struct in_device	*in_dev;
 	struct siw_dev		*sdev;
 
-	dprint(DBG_DM, " (dev=%s): Event %lu\n", dev->name, event);
+	dprint(DBG_DM, " (dev=%s): Event %lu\n", netdev->name, event);
 
-	if (dev_net(dev) != &init_net)
+	if (dev_net(netdev) != &init_net)
 		goto done;
 
 	if (!spin_trylock(&siw_dev_lock))
 		/* The module is being removed */
 		goto done;
 
-	sdev = siw_dev_from_netdev(dev);
+	sdev = siw_dev_from_netdev(netdev);
 
 	switch (event) {
 
@@ -446,16 +443,15 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 		if (!sdev)
 			break;
 
-
 		if (sdev->is_registered) {
 			sdev->state = IB_PORT_ACTIVE;
 			siw_port_event(sdev, 1, IB_EVENT_PORT_ACTIVE);
 			break;
 		}
 
-		in_dev = in_dev_get(dev);
+		in_dev = in_dev_get(netdev);
 		if (!in_dev) {
-			dprint(DBG_DM, ": %s: no in_dev\n", dev->name);
+			dprint(DBG_DM, ": %s: no in_dev\n", netdev->name);
 			sdev->state = IB_PORT_INIT;
 			break;
 		}
@@ -464,7 +460,7 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 			sdev->state = IB_PORT_ACTIVE;
 			siw_device_register(sdev);
 		} else {
-			dprint(DBG_DM, ": %s: no ifa\n", dev->name);
+			dprint(DBG_DM, ": %s: no ifa\n", netdev->name);
 			sdev->state = IB_PORT_INIT;
 		}
 		in_dev_put(in_dev);
@@ -481,14 +477,14 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 
 	case NETDEV_REGISTER:
 		if (!sdev) {
-			if (!siw_dev_qualified(dev))
+			if (!siw_dev_qualified(netdev))
 				break;
 
-			sdev = siw_device_create(dev);
+			sdev = siw_device_create(netdev);
 			if (sdev) {
 				sdev->state = IB_PORT_INIT;
 				dprint(DBG_DM, ": new siw device for %s\n",
-					dev->name);
+					netdev->name);
 			}
 		}
 		break;

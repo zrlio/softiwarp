@@ -119,7 +119,7 @@ int siw_dealloc_ucontext(struct ib_ucontext *ctx)
 
 int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr)
 {
-	struct siw_dev *dev = siw_dev_ofa2siw(ofa_dev);
+	struct siw_dev *sdev = siw_dev_ofa2siw(ofa_dev);
 	/*
 	 * A process context is needed to report avail memory resources.
 	 */
@@ -129,33 +129,33 @@ int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr)
 	memset(attr, 0, sizeof *attr);
 
 	attr->max_mr_size = rlimit(RLIMIT_MEMLOCK); /* per process */
-	attr->vendor_id = dev->attrs.vendor_id;
-	attr->vendor_part_id = dev->attrs.vendor_part_id;
-	attr->max_qp = dev->attrs.max_qp;
-	attr->max_qp_wr = dev->attrs.max_qp_wr;
+	attr->vendor_id = sdev->attrs.vendor_id;
+	attr->vendor_part_id = sdev->attrs.vendor_part_id;
+	attr->max_qp = sdev->attrs.max_qp;
+	attr->max_qp_wr = sdev->attrs.max_qp_wr;
 
 	/*
 	 * RDMA Read parameters:
 	 * Max. ORD (Outbound Read queue Depth), a.k.a. max_initiator_depth
 	 * Max. IRD (Inbound Read queue Depth), a.k.a. max_responder_resources
 	 */
-	attr->max_qp_rd_atom = dev->attrs.max_ord;
-	attr->max_qp_init_rd_atom = dev->attrs.max_ird;
-	attr->max_res_rd_atom = dev->attrs.max_qp * dev->attrs.max_ird;
-	attr->device_cap_flags = dev->attrs.cap_flags;
-	attr->max_sge = dev->attrs.max_sge;
-	attr->max_sge_rd = dev->attrs.max_sge_rd;
-	attr->max_cq = dev->attrs.max_cq;
-	attr->max_cqe = dev->attrs.max_cqe;
-	attr->max_mr = dev->attrs.max_mr;
-	attr->max_pd = dev->attrs.max_pd;
-	attr->max_mw = dev->attrs.max_mw;
-	attr->max_fmr = dev->attrs.max_fmr;
-	attr->max_srq = dev->attrs.max_srq;
-	attr->max_srq_wr = dev->attrs.max_srq_wr;
-	attr->max_srq_sge = dev->attrs.max_srq_sge;
+	attr->max_qp_rd_atom = sdev->attrs.max_ord;
+	attr->max_qp_init_rd_atom = sdev->attrs.max_ird;
+	attr->max_res_rd_atom = sdev->attrs.max_qp * sdev->attrs.max_ird;
+	attr->device_cap_flags = sdev->attrs.cap_flags;
+	attr->max_sge = sdev->attrs.max_sge;
+	attr->max_sge_rd = sdev->attrs.max_sge_rd;
+	attr->max_cq = sdev->attrs.max_cq;
+	attr->max_cqe = sdev->attrs.max_cqe;
+	attr->max_mr = sdev->attrs.max_mr;
+	attr->max_pd = sdev->attrs.max_pd;
+	attr->max_mw = sdev->attrs.max_mw;
+	attr->max_fmr = sdev->attrs.max_fmr;
+	attr->max_srq = sdev->attrs.max_srq;
+	attr->max_srq_wr = sdev->attrs.max_srq_wr;
+	attr->max_srq_sge = sdev->attrs.max_srq_sge;
 
-	memcpy(&attr->sys_image_guid, dev->netdev->dev_addr, 6);
+	memcpy(&attr->sys_image_guid, sdev->netdev->dev_addr, 6);
 
 	/*
 	 * TODO: understand what of the following should
@@ -246,11 +246,11 @@ int siw_query_pkey(struct ib_device *ofa_dev, u8 port, u16 idx, u16 *pkey)
 int siw_query_gid(struct ib_device *ofa_dev, u8 port, int idx,
 		   union ib_gid *gid)
 {
-	struct siw_dev *dev = siw_dev_ofa2siw(ofa_dev);
+	struct siw_dev *sdev = siw_dev_ofa2siw(ofa_dev);
 
 	/* subnet_prefix == interface_id == 0; */
 	memset(gid, 0, sizeof *gid);
-	memcpy(&gid->raw[0], dev->netdev->dev_addr, 6);
+	memcpy(&gid->raw[0], sdev->netdev->dev_addr, 6);
 
 	return 0;
 }
@@ -259,10 +259,10 @@ struct ib_pd *siw_alloc_pd(struct ib_device *ofa_dev,
 			   struct ib_ucontext *context, struct ib_udata *udata)
 {
 	struct siw_pd	*pd = NULL;
-	struct siw_dev	*dev   = siw_dev_ofa2siw(ofa_dev);
+	struct siw_dev	*sdev  = siw_dev_ofa2siw(ofa_dev);
 	int rv;
 
-	if (atomic_inc_return(&dev->num_pd) > SIW_MAX_PD) {
+	if (atomic_inc_return(&sdev->num_pd) > SIW_MAX_PD) {
 		dprint(DBG_ON, ": Out of PD's\n");
 		rv = -ENOMEM;
 		goto err_out;
@@ -273,7 +273,7 @@ struct ib_pd *siw_alloc_pd(struct ib_device *ofa_dev,
 		rv = -ENOMEM;
 		goto err_out;
 	}
-	rv = siw_pd_add(dev, pd);
+	rv = siw_pd_add(sdev, pd);
 	if (rv) {
 		dprint(DBG_ON, ": siw_pd_add\n");
 		rv = -ENOMEM;
@@ -288,10 +288,10 @@ struct ib_pd *siw_alloc_pd(struct ib_device *ofa_dev,
 	return &pd->ofa_pd;
 
 err_out_idr:
-	siw_remove_obj(&dev->idr_lock, &dev->pd_idr, &pd->hdr);
+	siw_remove_obj(&sdev->idr_lock, &sdev->pd_idr, &pd->hdr);
 err_out:
 	kfree(pd);
-	atomic_dec(&dev->num_pd);
+	atomic_dec(&sdev->num_pd);
 
 	return ERR_PTR(rv);
 }
@@ -299,9 +299,9 @@ err_out:
 int siw_dealloc_pd(struct ib_pd *ofa_pd)
 {
 	struct siw_pd	*pd = siw_pd_ofa2siw(ofa_pd);
-	struct siw_dev	*dev = siw_dev_ofa2siw(ofa_pd->device);
+	struct siw_dev	*sdev = siw_dev_ofa2siw(ofa_pd->device);
 
-	siw_remove_obj(&dev->idr_lock, &dev->pd_idr, &pd->hdr);
+	siw_remove_obj(&sdev->idr_lock, &sdev->pd_idr, &pd->hdr);
 	siw_pd_put(pd);
 
 	return 0;
@@ -360,7 +360,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 	struct siw_qp			*qp = NULL;
 	struct siw_pd			*pd = siw_pd_ofa2siw(ofa_pd);
 	struct ib_device		*ofa_dev = ofa_pd->device;
-	struct siw_dev			*dev = siw_dev_ofa2siw(ofa_dev);
+	struct siw_dev			*sdev = siw_dev_ofa2siw(ofa_dev);
 	struct siw_cq			*scq = NULL, *rcq = NULL;
 	struct siw_iwarp_tx		*c_tx;
 	struct siw_iwarp_rx		*c_rx;
@@ -373,7 +373,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 	dprint(DBG_OBJ|DBG_CM, ": new QP on device %s\n",
 		ofa_dev->name);
 
-	if (atomic_inc_return(&dev->num_qp) > SIW_MAX_QP) {
+	if (atomic_inc_return(&sdev->num_qp) > SIW_MAX_QP) {
 		dprint(DBG_ON, ": Out of QP's\n");
 		rv = -ENOMEM;
 		goto err_out;
@@ -406,8 +406,8 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 		goto err_out;
 	}
 
-	scq = siw_cq_id2obj(dev, ((struct siw_cq *)attrs->send_cq)->hdr.id);
-	rcq = siw_cq_id2obj(dev, ((struct siw_cq *)attrs->recv_cq)->hdr.id);
+	scq = siw_cq_id2obj(sdev, ((struct siw_cq *)attrs->send_cq)->hdr.id);
+	rcq = siw_cq_id2obj(sdev, ((struct siw_cq *)attrs->recv_cq)->hdr.id);
 
 	if (!scq || !rcq) {
 		dprint(DBG_OBJ, ": Fail: SCQ: 0x%p, RCQ: 0x%p\n",
@@ -436,7 +436,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 
 	init_waitqueue_head(&qp->tx_ctx.waitq);
 
-	rv = siw_qp_add(dev, qp);
+	rv = siw_qp_add(sdev, qp);
 	if (rv)
 		goto err_out;
 
@@ -504,14 +504,14 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 	siw_pd_get(pd);
 
 	INIT_LIST_HEAD(&qp->devq);
-	spin_lock_irqsave(&dev->idr_lock, flags);
-	list_add_tail(&qp->devq, &dev->qp_list);
-	spin_unlock_irqrestore(&dev->idr_lock, flags);
+	spin_lock_irqsave(&sdev->idr_lock, flags);
+	list_add_tail(&qp->devq, &sdev->qp_list);
+	spin_unlock_irqrestore(&sdev->idr_lock, flags);
 
 	return &qp->ofa_qp;
 
 err_out_idr:
-	siw_remove_obj(&dev->idr_lock, &dev->qp_idr, &qp->hdr);
+	siw_remove_obj(&sdev->idr_lock, &sdev->qp_idr, &qp->hdr);
 err_out:
 	if (scq)
 		siw_cq_put(scq);
@@ -522,7 +522,7 @@ err_out:
 		siw_drain_wq(&qp->freeq);
 
 	kfree(qp);
-	atomic_dec(&dev->num_qp);
+	atomic_dec(&sdev->num_qp);
 
 	return ERR_PTR(rv);
 }
@@ -536,11 +536,11 @@ int siw_query_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *qp_attr,
 		 int qp_attr_mask, struct ib_qp_init_attr *qp_init_attr)
 {
 	struct siw_qp *qp;
-	struct siw_dev *dev;
+	struct siw_dev *sdev;
 
 	if (ofa_qp && qp_attr && qp_init_attr) {
 		qp = siw_qp_ofa2siw(ofa_qp);
-		dev = siw_dev_ofa2siw(ofa_qp->device);
+		sdev = siw_dev_ofa2siw(ofa_qp->device);
 	} else
 		return -EINVAL;
 
@@ -552,7 +552,7 @@ int siw_query_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *qp_attr,
 	qp_attr->cap.max_send_sge = qp->attrs.sq_max_sges;
 	qp_attr->cap.max_recv_sge = qp->attrs.rq_max_sges;
 
-	qp_attr->path_mtu = siw_mtu_net2ofa(dev->netdev->mtu);
+	qp_attr->path_mtu = siw_mtu_net2ofa(sdev->netdev->mtu);
 	qp_attr->max_rd_atomic = qp->attrs.ird;
 	qp_attr->max_dest_rd_atomic = qp->attrs.ord;
 
@@ -1076,11 +1076,11 @@ int siw_destroy_cq(struct ib_cq *ofa_cq)
 {
 	struct siw_cq		*cq  = siw_cq_ofa2siw(ofa_cq);
 	struct ib_device	*ofa_dev = ofa_cq->device;
-	struct siw_dev		*dev = siw_dev_ofa2siw(ofa_dev);
+	struct siw_dev		*sdev = siw_dev_ofa2siw(ofa_dev);
 
 	siw_cq_flush(cq);
 
-	siw_remove_obj(&dev->idr_lock, &dev->cq_idr, &cq->hdr);
+	siw_remove_obj(&sdev->idr_lock, &sdev->cq_idr, &cq->hdr);
 	siw_cq_put(cq);
 
 	return 0;
@@ -1103,11 +1103,11 @@ struct ib_cq *siw_create_cq(struct ib_device *ofa_dev, int size,
 			    struct ib_udata *udata)
 {
 	struct siw_cq			*cq = NULL;
-	struct siw_dev			*dev = siw_dev_ofa2siw(ofa_dev);
+	struct siw_dev			*sdev = siw_dev_ofa2siw(ofa_dev);
 	struct siw_uresp_create_cq	uresp;
 	int rv;
 
-	if (atomic_inc_return(&dev->num_cq) > SIW_MAX_CQ) {
+	if (atomic_inc_return(&sdev->num_cq) > SIW_MAX_CQ) {
 		dprint(DBG_ON, ": Out of CQ's\n");
 		rv = -ENOMEM;
 		goto err_out;
@@ -1125,7 +1125,7 @@ struct ib_cq *siw_create_cq(struct ib_device *ofa_dev, int size,
 	}
 	cq->ofa_cq.cqe = size - 1;
 
-	rv = siw_cq_add(dev, cq);
+	rv = siw_cq_add(sdev, cq);
 	if (rv)
 		goto err_out_idr;
 
@@ -1143,12 +1143,12 @@ struct ib_cq *siw_create_cq(struct ib_device *ofa_dev, int size,
 	return &cq->ofa_cq;
 
 err_out_idr:
-	siw_remove_obj(&dev->idr_lock, &dev->cq_idr, &cq->hdr);
+	siw_remove_obj(&sdev->idr_lock, &sdev->cq_idr, &cq->hdr);
 err_out:
 	dprint(DBG_OBJ, ": CQ creation failed\n");
 
 	kfree(cq);
-	atomic_dec(&dev->num_cq);
+	atomic_dec(&sdev->num_cq);
 
 	return ERR_PTR(rv);
 }
@@ -1226,7 +1226,7 @@ int siw_req_notify_cq(struct ib_cq *ofa_cq, enum ib_cq_notify_flags flags)
 int siw_dereg_mr(struct ib_mr *ofa_mr)
 {
 	struct siw_mr	*mr;
-	struct siw_dev	*dev = siw_dev_ofa2siw(ofa_mr->device);
+	struct siw_dev	*sdev = siw_dev_ofa2siw(ofa_mr->device);
 
 	mr = siw_mr_ofa2siw(ofa_mr);
 
@@ -1237,13 +1237,13 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 	mr->mem.stag_state = STAG_INVALID;
 
 	siw_pd_put(mr->pd);
-	siw_remove_obj(&dev->idr_lock, &dev->mem_idr, &mr->mem.hdr);
+	siw_remove_obj(&sdev->idr_lock, &sdev->mem_idr, &mr->mem.hdr);
 	siw_mem_put(&mr->mem);
 
 	return 0;
 }
 
-static struct siw_mr *siw_alloc_mr(struct siw_dev *dev, struct ib_umem *umem,
+static struct siw_mr *siw_alloc_mr(struct siw_dev *sdev, struct ib_umem *umem,
 				   u64 start, u64 len, int rights)
 {
 	struct siw_mr *mr = kzalloc(sizeof *mr, GFP_KERNEL);
@@ -1252,7 +1252,7 @@ static struct siw_mr *siw_alloc_mr(struct siw_dev *dev, struct ib_umem *umem,
 
 	mr->mem.stag_state = STAG_INVALID;
 
-	if (siw_mem_add(dev, &mr->mem) < 0) {
+	if (siw_mem_add(sdev, &mr->mem) < 0) {
 		dprint(DBG_ON, ": siw_mem_add\n");
 		kfree(mr);
 		return NULL;
@@ -1296,7 +1296,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 	struct ib_umem		*umem = NULL;
 	struct siw_ureq_reg_mr	ureq;
 	struct siw_uresp_reg_mr	uresp;
-	struct siw_dev		*dev = pd->hdr.dev;
+	struct siw_dev		*sdev = pd->hdr.dev;
 
 	unsigned long mem_limit = rlimit(RLIMIT_MEMLOCK);
 	int rv;
@@ -1307,9 +1307,9 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		(unsigned long long)rnic_va,
 		(unsigned long long)len,
 		ofa_pd->uobject->context);
-	if (atomic_inc_return(&dev->num_mem) > SIW_MAX_MR) {
+	if (atomic_inc_return(&sdev->num_mem) > SIW_MAX_MR) {
 		dprint(DBG_ON, ": Out of MRs: %d\n",
-			atomic_read(&dev->num_mem));
+			atomic_read(&sdev->num_mem));
 		rv = -ENOMEM;
 		goto err_out;
 	}
@@ -1340,7 +1340,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		umem = NULL;
 		goto err_out;
 	}
-	mr = siw_alloc_mr(dev, umem, start, len, rights);
+	mr = siw_alloc_mr(sdev, umem, start, len, rights);
 	if (!mr) {
 		rv = -ENOMEM;
 		goto err_out;
@@ -1367,14 +1367,14 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 	return &mr->ofa_mr;
 
 err_out_mr:
-	siw_remove_obj(&dev->idr_lock, &dev->mem_idr, &mr->mem.hdr);
+	siw_remove_obj(&sdev->idr_lock, &sdev->mem_idr, &mr->mem.hdr);
 	kfree(mr);
 
 err_out:
 	if (umem)
 		ib_umem_release(umem);
 
-	atomic_dec(&dev->num_mem);
+	atomic_dec(&sdev->num_mem);
 
 	return ERR_PTR(rv);
 }
@@ -1392,16 +1392,16 @@ struct ib_mr *siw_get_dma_mr(struct ib_pd *ofa_pd, int rights)
 {
 	struct siw_mr	*mr;
 	struct siw_pd	*pd = siw_pd_ofa2siw(ofa_pd);
-	struct siw_dev	*dev = pd->hdr.dev;
+	struct siw_dev	*sdev = pd->hdr.dev;
 	int rv;
 
-	if (atomic_inc_return(&dev->num_mem) > SIW_MAX_MR) {
+	if (atomic_inc_return(&sdev->num_mem) > SIW_MAX_MR) {
 		dprint(DBG_ON, ": Out of MRs: %d\n",
-			atomic_read(&dev->num_mem));
+			atomic_read(&sdev->num_mem));
 		rv = -ENOMEM;
 		goto err_out;
 	}
-	mr = siw_alloc_mr(dev, NULL, 0, ULONG_MAX, rights);
+	mr = siw_alloc_mr(sdev, NULL, 0, ULONG_MAX, rights);
 	if (!mr) {
 		rv = -ENOMEM;
 		goto err_out;
@@ -1414,7 +1414,7 @@ struct ib_mr *siw_get_dma_mr(struct ib_pd *ofa_pd, int rights)
 	return &mr->ofa_mr;
 
 err_out:
-	atomic_dec(&dev->num_mem);
+	atomic_dec(&sdev->num_mem);
 
 	return ERR_PTR(rv);
 }
@@ -1437,13 +1437,13 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 	struct siw_srq		*srq = NULL;
 	struct ib_srq_attr	*attrs = &init_attrs->attr;
 	struct siw_pd		*pd = siw_pd_ofa2siw(ofa_pd);
-	struct siw_dev		*dev = pd->hdr.dev;
+	struct siw_dev		*sdev = pd->hdr.dev;
 	struct siw_wqe		*wqe;
 
 	int kernel_verbs = ofa_pd->uobject ? 0 : 1;
 	int rv;
 
-	if (atomic_inc_return(&dev->num_srq) > SIW_MAX_SRQ) {
+	if (atomic_inc_return(&sdev->num_srq) > SIW_MAX_SRQ) {
 		dprint(DBG_ON, " Out of SRQ's\n");
 		rv = -ENOMEM;
 		goto err_out;
@@ -1496,7 +1496,7 @@ err_out:
 		siw_drain_wq(&srq->freeq);
 
 	kfree(srq);
-	atomic_dec(&dev->num_srq);
+	atomic_dec(&sdev->num_srq);
 
 	return ERR_PTR(rv);
 }
@@ -1587,7 +1587,7 @@ int siw_query_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs)
 int siw_destroy_srq(struct ib_srq *ofa_srq)
 {
 	struct siw_srq		*srq = siw_srq_ofa2siw(ofa_srq);
-	struct siw_dev		*dev = srq->pd->hdr.dev;
+	struct siw_dev		*sdev = srq->pd->hdr.dev;
 
 	siw_drain_wq(&srq->rq);
 	siw_drain_wq(&srq->freeq);
@@ -1595,7 +1595,7 @@ int siw_destroy_srq(struct ib_srq *ofa_srq)
 	siw_pd_put(srq->pd);
 
 	kfree(srq);
-	atomic_dec(&dev->num_srq);
+	atomic_dec(&sdev->num_srq);
 
 	return 0;
 }

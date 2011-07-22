@@ -49,22 +49,22 @@ void siw_objhdr_init(struct siw_objhdr *hdr)
 	kref_init(&hdr->ref);
 }
 
-void siw_idr_init(struct siw_dev *dev)
+void siw_idr_init(struct siw_dev *sdev)
 {
-	spin_lock_init(&dev->idr_lock);
+	spin_lock_init(&sdev->idr_lock);
 
-	idr_init(&dev->qp_idr);
-	idr_init(&dev->cq_idr);
-	idr_init(&dev->pd_idr);
-	idr_init(&dev->mem_idr);
+	idr_init(&sdev->qp_idr);
+	idr_init(&sdev->cq_idr);
+	idr_init(&sdev->pd_idr);
+	idr_init(&sdev->mem_idr);
 }
 
-void siw_idr_release(struct siw_dev *dev)
+void siw_idr_release(struct siw_dev *sdev)
 {
-	idr_destroy(&dev->qp_idr);
-	idr_destroy(&dev->cq_idr);
-	idr_destroy(&dev->pd_idr);
-	idr_destroy(&dev->mem_idr);
+	idr_destroy(&sdev->qp_idr);
+	idr_destroy(&sdev->cq_idr);
+	idr_destroy(&sdev->pd_idr);
+	idr_destroy(&sdev->mem_idr);
 }
 
 static inline int siw_add_obj(spinlock_t *lock, struct idr *idr,
@@ -111,18 +111,18 @@ static inline struct siw_objhdr *siw_get_obj(struct idr *idr, int id)
 	return obj;
 }
 
-struct siw_cq *siw_cq_id2obj(struct siw_dev *dev, int id)
+struct siw_cq *siw_cq_id2obj(struct siw_dev *sdev, int id)
 {
-	struct siw_objhdr *obj = siw_get_obj(&dev->cq_idr, id);
+	struct siw_objhdr *obj = siw_get_obj(&sdev->cq_idr, id);
 	if (obj)
 		return container_of(obj, struct siw_cq, hdr);
 
 	return NULL;
 }
 
-struct siw_qp *siw_qp_id2obj(struct siw_dev *dev, int id)
+struct siw_qp *siw_qp_id2obj(struct siw_dev *sdev, int id)
 {
-	struct siw_objhdr *obj = siw_get_obj(&dev->qp_idr, id);
+	struct siw_objhdr *obj = siw_get_obj(&sdev->qp_idr, id);
 	if (obj)
 		return container_of(obj, struct siw_qp, hdr);
 
@@ -136,14 +136,14 @@ struct siw_qp *siw_qp_id2obj(struct siw_dev *dev, int id)
  * o process context before sending out of sgl
  * o or in softirq when resolving target memory
  */
-struct siw_mem *siw_mem_id2obj(struct siw_dev *dev, int id)
+struct siw_mem *siw_mem_id2obj(struct siw_dev *sdev, int id)
 {
 	struct siw_objhdr *obj;
 	unsigned long flags;
 
-	spin_lock_irqsave(&dev->idr_lock, flags);
-	obj = siw_get_obj(&dev->mem_idr, id);
-	spin_unlock_irqrestore(&dev->idr_lock, flags);
+	spin_lock_irqsave(&sdev->idr_lock, flags);
+	obj = siw_get_obj(&sdev->mem_idr, id);
+	spin_unlock_irqrestore(&sdev->idr_lock, flags);
 
 	if (obj) {
 		dprint(DBG_MM|DBG_OBJ, "(MEM%d): New refcount: %d\n",
@@ -156,32 +156,32 @@ struct siw_mem *siw_mem_id2obj(struct siw_dev *dev, int id)
 	return NULL;
 }
 
-int siw_qp_add(struct siw_dev *dev, struct siw_qp *qp)
+int siw_qp_add(struct siw_dev *sdev, struct siw_qp *qp)
 {
-	int rv = siw_add_obj(&dev->idr_lock, &dev->qp_idr, &qp->hdr);
+	int rv = siw_add_obj(&sdev->idr_lock, &sdev->qp_idr, &qp->hdr);
 	if (!rv) {
 		dprint(DBG_OBJ, "(QP%d): New Object\n", QP_ID(qp));
-		qp->hdr.dev = dev;
+		qp->hdr.dev = sdev;
 	}
 	return rv;
 }
 
-int siw_cq_add(struct siw_dev *dev, struct siw_cq *cq)
+int siw_cq_add(struct siw_dev *sdev, struct siw_cq *cq)
 {
-	int rv = siw_add_obj(&dev->idr_lock, &dev->cq_idr, &cq->hdr);
+	int rv = siw_add_obj(&sdev->idr_lock, &sdev->cq_idr, &cq->hdr);
 	if (!rv) {
 		dprint(DBG_OBJ, "(CQ%d): New Object\n", cq->hdr.id);
-		cq->hdr.dev = dev;
+		cq->hdr.dev = sdev;
 	}
 	return rv;
 }
 
-int siw_pd_add(struct siw_dev *dev, struct siw_pd *pd)
+int siw_pd_add(struct siw_dev *sdev, struct siw_pd *pd)
 {
-	int rv = siw_add_obj(&dev->idr_lock, &dev->pd_idr, &pd->hdr);
+	int rv = siw_add_obj(&sdev->idr_lock, &sdev->pd_idr, &pd->hdr);
 	if (!rv) {
 		dprint(DBG_OBJ, "(PD%d): New Object\n", pd->hdr.id);
-		pd->hdr.dev = dev;
+		pd->hdr.dev = sdev;
 	}
 	return rv;
 }
@@ -194,7 +194,7 @@ int siw_pd_add(struct siw_dev *dev, struct siw_pd *pd)
  * The code avoids special Stag of zero and tries to randomize
  * STag values.
  */
-int siw_mem_add(struct siw_dev *dev, struct siw_mem *m)
+int siw_mem_add(struct siw_dev *sdev, struct siw_mem *m)
 {
 	u32		id, pre_id;
 	unsigned long	flags;
@@ -206,20 +206,20 @@ int siw_mem_add(struct siw_dev *dev, struct siw_mem *m)
 	} while (pre_id == 0);
 again:
 	do {
-		if (!(idr_pre_get(&dev->mem_idr, GFP_KERNEL)))
+		if (!(idr_pre_get(&sdev->mem_idr, GFP_KERNEL)))
 			return -ENOMEM;
 
-		spin_lock_irqsave(&dev->idr_lock, flags);
-		rv = idr_get_new_above(&dev->mem_idr, m, pre_id, &id);
-		spin_unlock_irqrestore(&dev->idr_lock, flags);
+		spin_lock_irqsave(&sdev->idr_lock, flags);
+		rv = idr_get_new_above(&sdev->mem_idr, m, pre_id, &id);
+		spin_unlock_irqrestore(&sdev->idr_lock, flags);
 
 	} while (rv == -EAGAIN);
 
 	if (rv == -ENOSPC || (rv == 0 && id > SIW_STAG_MAX)) {
 		if (rv == 0) {
-			spin_lock_irqsave(&dev->idr_lock, flags);
-			idr_remove(&dev->mem_idr, id);
-			spin_unlock_irqrestore(&dev->idr_lock, flags);
+			spin_lock_irqsave(&sdev->idr_lock, flags);
+			idr_remove(&sdev->mem_idr, id);
+			spin_unlock_irqrestore(&sdev->idr_lock, flags);
 		}
 		if (pre_id == 1) {
 			dprint(DBG_OBJ|DBG_MM|DBG_ON,
@@ -235,7 +235,7 @@ again:
 	}
 	siw_objhdr_init(&m->hdr);
 	m->hdr.id = id;
-	m->hdr.dev = dev;
+	m->hdr.dev = sdev;
 	dprint(DBG_OBJ|DBG_MM, "(IDR%d): New Object\n", id);
 
 	return 0;
@@ -273,7 +273,7 @@ static void siw_free_qp(struct kref *ref)
 	struct siw_qp	*qp =
 		container_of(container_of(ref, struct siw_objhdr, ref),
 			     struct siw_qp, hdr);
-	struct siw_dev	*dev = qp->hdr.dev;
+	struct siw_dev	*sdev = qp->hdr.dev;
 	unsigned long flags;
 
 	dprint(DBG_OBJ|DBG_CM, "(QP%d): Free Object\n", QP_ID(qp));
@@ -283,13 +283,13 @@ static void siw_free_qp(struct kref *ref)
 
 	siw_drain_wq(&qp->freeq);
 
-	siw_remove_obj(&dev->idr_lock, &dev->qp_idr, &qp->hdr);
+	siw_remove_obj(&sdev->idr_lock, &sdev->qp_idr, &qp->hdr);
 
-	spin_lock_irqsave(&dev->idr_lock, flags);
+	spin_lock_irqsave(&sdev->idr_lock, flags);
 	list_del(&qp->devq);
-	spin_unlock_irqrestore(&dev->idr_lock, flags);
+	spin_unlock_irqrestore(&sdev->idr_lock, flags);
 
-	atomic_dec(&dev->num_qp);
+	atomic_dec(&sdev->num_qp);
 	kfree(qp);
 }
 

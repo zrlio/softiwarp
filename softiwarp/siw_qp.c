@@ -636,12 +636,12 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 	return rv;
 }
 
-struct ib_qp *siw_get_ofaqp(struct ib_device *dev, int id)
+struct ib_qp *siw_get_ofaqp(struct ib_device *ofa_dev, int id)
 {
-	struct siw_qp *qp =  siw_qp_id2obj(siw_dev_ofa2siw(dev), id);
+	struct siw_qp *qp =  siw_qp_id2obj(siw_dev_ofa2siw(ofa_dev), id);
 
 	dprint(DBG_OBJ, ": dev_name: %s, OFA QPID: %d, QP: %p\n",
-		dev->name, id, qp);
+		ofa_dev->name, id, qp);
 	if (qp) {
 		/*
 		 * siw_qp_id2obj() increments object reference count
@@ -730,7 +730,7 @@ int
 siw_check_sge(struct siw_pd *pd, struct siw_sge *sge,
 	      enum siw_access_flags perms, u32 off, int len)
 {
-	struct siw_dev	*dev = pd->hdr.dev;
+	struct siw_dev	*sdev = pd->hdr.dev;
 	struct siw_mem	*mem;
 	int		new_ref = 0, rv = 0;
 
@@ -739,7 +739,7 @@ siw_check_sge(struct siw_pd *pd, struct siw_sge *sge,
 		goto fail;
 	}
 	if (sge->mem.obj == NULL) {
-		mem = siw_mem_id2obj(dev, sge->lkey >> 8);
+		mem = siw_mem_id2obj(sdev, sge->lkey >> 8);
 		if (!mem) {
 			rv = -EINVAL;
 			goto fail;
