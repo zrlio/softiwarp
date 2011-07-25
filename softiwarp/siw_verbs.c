@@ -1008,8 +1008,10 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 	dprint(DBG_WR|DBG_TX, "(QP%d): state=%d\n", QP_ID(qp),
 		qp->attrs.state);
 
-	if (qp->srq)
+	if (qp->srq) {
+		*bad_wr = wr;
 		return -EOPNOTSUPP; /* what else from errno.h? */
+	}
 	/*
 	 * Try to acquire QP state lock. Must be non-blocking
 	 * to accommodate kernel clients needs.
@@ -1023,6 +1025,7 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 		up_read(&qp->state_lock);
 		dprint(DBG_ON, " (QP%d): state=%d\n", QP_ID(qp),
 			qp->attrs.state);
+		*bad_wr = wr;
 		return -EINVAL;
 	}
 	while (wr) {
@@ -1690,9 +1693,16 @@ int siw_post_srq_recv(struct ib_srq *ofa_srq, struct ib_recv_wr *wr,
 		dprint(DBG_WR|DBG_ON, "(SRQ %p): error=%d\n",
 			srq, rv);
 
-		if (wqe)
-			siw_add_wqe(wqe, &srq->freeq, &srq->freeq_lock);
-
+		if (wqe) {
+			if (srq->kernel_verbs)
+				siw_add_wqe(wqe, &srq->freeq,
+					    &srq->freeq_lock);
+			else {
+				kfree(wqe);
+				SIW_DEC_STAT_WQE;
+			}
+			atomic_inc(&srq->space);
+		}
 		*bad_wr = wr;
 	}
 	dprint(DBG_WR|DBG_RX, "(SRQ%p): space=%d\n",
