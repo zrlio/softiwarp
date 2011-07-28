@@ -58,7 +58,7 @@ struct mpa_rr_params {
 };
 
 /*
- * MPA request/response hdr bits & fields
+ * MPA request/response Hdr bits & fields
  */
 enum {
 	MPA_RR_FLAG_MARKERS	= __cpu_to_be16(0x8000),
@@ -85,7 +85,8 @@ static inline void __mpa_rr_set_revision(u16 *bits, u8 rev)
 
 static inline u8 __mpa_rr_revision(u16 mpa_rr_bits)
 {
-	return (u8)(be16_to_cpu(mpa_rr_bits & MPA_RR_MASK_REVISION));
+	u16 rev = mpa_rr_bits & MPA_RR_MASK_REVISION;
+	return (u8)be16_to_cpu(rev);
 }
 
 
@@ -129,6 +130,9 @@ struct iwarp_ctrl {
 	__be16	ddp_rdmap_ctrl;
 };
 
+/*
+ * DDP/RDMAP Hdr bits & fields
+ */
 enum {
 	DDP_FLAG_TAGGED		= __cpu_to_be16(0x8000),
 	DDP_FLAG_LAST		= __cpu_to_be16(0x4000),
@@ -152,8 +156,8 @@ static inline void __ddp_set_version(struct iwarp_ctrl *ctrl, u8 version)
 
 static inline u8 __rdmap_version(struct iwarp_ctrl *ctrl)
 {
-	return (u8)(be16_to_cpu(ctrl->ddp_rdmap_ctrl & RDMAP_MASK_VERSION)
-			>> 6);
+	u16 ver = ctrl->ddp_rdmap_ctrl & RDMAP_MASK_VERSION;
+	return (u8)(be16_to_cpu(ver) >> 6);
 };
 
 static inline void __rdmap_set_version(struct iwarp_ctrl *ctrl, u8 version)
@@ -224,6 +228,9 @@ struct iwarp_terminate {
 	__be32			term_ctrl;
 };
 
+/*
+ * Terminate Hdr bits & fields
+ */
 enum {
 	RDMAP_TERM_MASK_LAYER	= __cpu_to_be32(0xf0000000),
 	RDMAP_TERM_MASK_ETYPE	= __cpu_to_be32(0x0f000000),

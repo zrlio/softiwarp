@@ -80,7 +80,6 @@ enum siw_if_type {
 #define SIW_MAX_SRQ_WR		(SIW_MAX_QP_WR * 10)
 
 #define SENDPAGE_THRESH		256	/* min bytes for using sendpage() */
-#define SOCKBUFSIZE		(PAGE_SIZE * 40)
 #define SQ_USER_MAXBURST	10
 
 #define	SIW_NODE_DESC		"Software iWARP stack"

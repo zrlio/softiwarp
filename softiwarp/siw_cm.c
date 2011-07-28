@@ -1263,7 +1263,7 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	struct sockaddr	*laddr, *raddr;
 
 	u16		pd_len = params->private_data_len;
-	int		rv, size;
+	int		rv;
 
 	if (pd_len > MPA_MAX_PRIVDATA)
 		return -EINVAL;
@@ -1284,17 +1284,6 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	raddr = (struct sockaddr *)&id->remote_addr;
 
 	rv = sock_create(AF_INET, SOCK_STREAM, IPPROTO_TCP, &s);
-	if (rv < 0)
-		goto error;
-
-	size = SOCKBUFSIZE;
-	rv = kernel_setsockopt(s, SOL_SOCKET, SO_SNDBUF, (char *)&size,
-			       sizeof size);
-	if (rv < 0)
-		goto error;
-
-	rv = kernel_setsockopt(s, SOL_SOCKET, SO_RCVBUF, (char *)&size,
-			       sizeof size);
 	if (rv < 0)
 		goto error;
 
@@ -1627,17 +1616,6 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 			"sock_create(): rv=%d\n", id, rv);
 		return rv;
 	}
-
-	s_val = SOCKBUFSIZE;
-	rv = kernel_setsockopt(s, SOL_SOCKET, SO_SNDBUF, (char *)&s_val,
-			       sizeof s_val);
-	if (rv)
-		goto error;
-
-	rv = kernel_setsockopt(s, SOL_SOCKET, SO_RCVBUF, (char *)&s_val,
-			       sizeof s_val);
-	if (rv)
-		goto error;
 
 	/*
 	 * Probably to be removed later. Allows binding
