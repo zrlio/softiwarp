@@ -468,7 +468,7 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 		break;
 
 	case NETDEV_DOWN:
-		if (sdev->is_registered) {
+		if (sdev && sdev->is_registered) {
 			sdev->state = IB_PORT_DOWN;
 			siw_port_event(sdev, 1, IB_EVENT_PORT_ERR);
 			break;
