@@ -225,7 +225,7 @@ struct ibv_srq *siw_create_srq(struct ibv_pd *pd,
 
 	if (ibv_cmd_create_srq(pd, &srq->ofa_srq, attr, &cmd.ofa_cmd,
 			       sizeof cmd, &resp.ofa_resp, sizeof resp)) {
-		free(pd);
+		free(srq);
 		return NULL;
 	}
 	pthread_spin_init(&srq->lock, PTHREAD_PROCESS_PRIVATE);
