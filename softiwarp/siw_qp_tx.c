@@ -1009,10 +1009,16 @@ int siw_qp_sq_process(struct siw_qp *qp, int user_ctx)
 	else
 		max_burst = max(qp->attrs.sq_size, qp->attrs.ird);
 
-	atomic_inc(&qp->tx_ctx.in_use);
+	wait_event(qp->tx_ctx.waitq, !atomic_read(&qp->tx_ctx.in_use));
 
-	wait_event(qp->tx_ctx.waitq, atomic_read(&qp->tx_ctx.in_use) == 1);
-
+	if (atomic_inc_return(&qp->tx_ctx.in_use) > 1) {
+		/*
+		 * at least two waiters: that should never happen!
+		 */
+		WARN_ON(1);
+		atomic_dec(&qp->tx_ctx.in_use);
+		return 0;
+	}
 	wqe = tx_wqe(qp);
 	BUG_ON(wqe == NULL);
 

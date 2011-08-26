@@ -1197,7 +1197,7 @@ static void siw_rreq_complete(struct siw_wqe *wqe, int error)
 				break;
 			flags |= wr_flags(wqe);
 			num_wc++;
-			dprint(DBG_WR|DBG_ON,
+			dprint(DBG_WR,
 				"(QP%d): Resume completion, wr_type %d\n",
 				QP_ID(qp), wr_type(wqe));
 			list_move_tail(pos, &c_list);
@@ -1211,17 +1211,20 @@ static void siw_rreq_complete(struct siw_wqe *wqe, int error)
 	/*
 	 * Check if SQ processing was stalled due to ORD limit
 	 */
+	lock_sq(qp);
+
 	if (ORD_SUSPEND_SQ(qp)) {
-		lock_sq(qp);
 
 		wqe = siw_next_tx_wqe(qp);
 
 		if (wqe && !tx_wqe(qp)) {
-			WARN_ON(wr_type(wqe) != SIW_WR_RDMA_READ_REQ);
 			list_del_init(&wqe->list);
 			tx_wqe(qp) = wqe;
 
-			list_add_tail(&wqe->list, &qp->orq);
+			if (wr_type(wqe) == SIW_WR_RDMA_READ_REQ)
+				list_add_tail(&wqe->list, &qp->orq);
+			else
+				atomic_inc(&qp->orq_space);
 
 			unlock_sq(qp);
 
@@ -1234,8 +1237,10 @@ static void siw_rreq_complete(struct siw_wqe *wqe, int error)
 			atomic_inc(&qp->orq_space);
 			unlock_sq(qp);
 		}
-	} else
+	} else {
+		unlock_sq(qp);
 		atomic_inc(&qp->orq_space);
+	}
 }
 
 /*

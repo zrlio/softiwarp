@@ -236,6 +236,14 @@ void siw_qp_llp_close(struct siw_qp *qp)
 	siw_sq_flush(qp);
 	siw_rq_flush(qp);
 
+	/*
+	 * dereference closing CEP
+	 */
+	if (qp->cep) {
+		siw_cep_put(qp->cep);
+		qp->cep = NULL;
+	}
+
 	up_write(&qp->state_lock);
 
 	dprint(DBG_CM, "(QP%d): Exit: SIW QP state = %s\n",
@@ -921,7 +929,7 @@ void siw_sq_flush(struct siw_qp *qp)
 				siw_wqe_put(wqe);
 			}
 		}
-	if (!list_empty(&qp->sq))
+	if (!list_empty(&qp->sq)) {
 		async_event = 1;
 		list_for_each_safe(pos, n, &qp->sq) {
 			wqe = list_entry_wqe(pos);
@@ -941,7 +949,7 @@ void siw_sq_flush(struct siw_qp *qp)
 				siw_wqe_put(wqe);
 			}
 		}
-	atomic_set(&qp->sq_space, qp->attrs.sq_size);
+	}
 
 	if (wqe != NULL && cq != NULL && cq->ofa_cq.comp_handler != NULL)
 		(*cq->ofa_cq.comp_handler)(&cq->ofa_cq, cq->ofa_cq.cq_context);
@@ -995,13 +1003,8 @@ void siw_rq_flush(struct siw_qp *qp)
 			unlock_cq(cq);
 		} else
 			siw_wqe_put(wqe);
-
-		if (!qp->srq)
-			atomic_inc(&qp->rq_space);
-		else
-			atomic_inc(&qp->srq->space);
-
 	}
+
 	if (cq != NULL && cq->ofa_cq.comp_handler != NULL)
 		(*cq->ofa_cq.comp_handler)(&cq->ofa_cq, cq->ofa_cq.cq_context);
 }

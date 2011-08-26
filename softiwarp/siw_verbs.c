@@ -784,9 +784,10 @@ out:
 		wqe->processed = 0;
 		siw_qp_get(qp);
 		wqe->qp = qp;
-	} else
+	} else {
 		atomic_inc(q_space);
-
+		dprint(DBG_WR, " Failed, type:%d\n", op);
+	}
 	return wqe;
 }
 
@@ -1176,7 +1177,7 @@ int siw_poll_cq(struct ib_cq *ofa_cq, int num_cqe, struct ib_wc *wc)
 			break;
 		wc++;
 	}
-	dprint(DBG_WR, " CQ%d: reap %d completions (%d left)\n",
+	dprint(DBG_CQ, " CQ%d: reap %d completions (%d left)\n",
 		OBJ_ID(cq), i, atomic_read(&cq->qlen));
 
 	return i;

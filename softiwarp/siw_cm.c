@@ -278,6 +278,7 @@ static void siw_cm_release(struct siw_cep *cep)
 	if (cep->qp) {
 		struct siw_qp *qp = cep->qp;
 		cep->qp = NULL;
+		siw_qp_llp_close(qp);
 		siw_qp_put(qp);
 	}
 	if (cep->cm_id) {
