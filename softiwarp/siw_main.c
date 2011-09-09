@@ -66,7 +66,7 @@ static char *iface_list[SIW_MAX_IF];
 module_param_array(iface_list, charp, NULL, 0444);
 MODULE_PARM_DESC(iface_list, "Interface list siw attaches to if present");
 
-static bool loopback_enabled;
+static bool loopback_enabled = 1;
 module_param(loopback_enabled, bool, 0644);
 MODULE_PARM_DESC(loopback_enabled, "enable_loopback");
 
@@ -218,28 +218,21 @@ static struct siw_dev *siw_dev_from_netdev(struct net_device *dev)
 	return NULL;
 }
 
-static int siw_dev_qualified(struct net_device *dev)
+static int siw_dev_qualified(struct net_device *netdev)
 {
-	if (!siw_match_iflist(dev)) {
+	if (!siw_match_iflist(netdev)) {
 		dprint(DBG_DM|DBG_ON, ": %s (not selected)\n",
-			dev->name);
+			netdev->name);
 		return 0;
 	}
-#ifdef CHECK_DMA_CAPABILITIES
-	if (!dev->dev.parent || !get_dma_ops(dev->dev.parent)) {
-		dprint(DBG_DM|DBG_ON, ": No DMA ops: %s (skipped)\n",
-			dev->name);
-		return 0;
-	}
-#endif
 	/*
 	 * Additional hardware support can be added here
 	 * (e.g. ARPHRD_FDDI, ARPHRD_ATM, ...) - see
 	 * <linux/if_arp.h> for type identifiers.
 	 */
-	if (dev->type == ARPHRD_ETHER ||
-	    dev->type == ARPHRD_IEEE802 ||
-	    (dev->type == ARPHRD_LOOPBACK && loopback_enabled))
+	if (netdev->type == ARPHRD_ETHER ||
+	    netdev->type == ARPHRD_IEEE802 ||
+	    (netdev->type == ARPHRD_LOOPBACK && loopback_enabled))
 		return 1;
 
 	return 0;
@@ -270,8 +263,16 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 		IB_DEVICE_NAME_MAX - strlen("siw_"));
 
 	memset(&ofa_dev->node_guid, 0, sizeof(ofa_dev->node_guid));
-	memcpy(&ofa_dev->node_guid, netdev->dev_addr, 6);
-
+	if (netdev->type != ARPHRD_LOOPBACK)
+		memcpy(&ofa_dev->node_guid, netdev->dev_addr, 6);
+	else {
+		/*
+		 * The loopback device does not have a HW address,
+		 * but connection mangagement lib expects gid != 0
+		 */
+		size_t gidlen = min(strlen(ofa_dev->name), (size_t)6);
+		memcpy(&ofa_dev->node_guid, ofa_dev->name, gidlen);
+	}
 	ofa_dev->owner = THIS_MODULE;
 
 	ofa_dev->uverbs_cmd_mask =
@@ -317,7 +318,7 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	 * (for siw case useless) translation of memory to DMA
 	 * adresses for that device.
 	 */
-	ofa_dev->dma_device = netdev->dev.parent;
+	ofa_dev->dma_device = &siw_generic_dma_device;
 	ofa_dev->query_device = siw_query_device;
 	ofa_dev->query_port = siw_query_port;
 	ofa_dev->query_qp = siw_query_qp;
@@ -531,24 +532,38 @@ static struct notifier_block siw_netdev_nb = {
  */
 static __init int siw_init_module(void)
 {
-	int rv = siw_cm_init();
+	int rv;
+
+	rv = device_register(&siw_generic_dma_device);
 	if (rv)
 		goto out;
 
+	rv = siw_cm_init();
+	if (rv)
+		goto out_unregister;
+
 	rv = siw_sq_worker_init();
 	if (rv)
-		goto out;
+		goto out_unregister;
 
 	siw_debug_init();
 
 	rv = register_netdevice_notifier(&siw_netdev_nb);
-out:
 	if (rv) {
-		pr_info("SoftIWARP attach failed. Error: %d\n", rv);
-		siw_sq_worker_exit();
-		siw_cm_exit();
-	} else
-		pr_info("SoftIWARP attached\n");
+		siw_debugfs_delete();
+		goto out_unregister;
+	}
+	pr_info("SoftIWARP attached\n");
+
+	return 0;
+
+out_unregister:
+	device_unregister(&siw_generic_dma_device);
+
+out:
+	pr_info("SoftIWARP attach failed. Error: %d\n", rv);
+	siw_sq_worker_exit();
+	siw_cm_exit();
 
 	return rv;
 }
@@ -574,6 +589,8 @@ static void __exit siw_exit_module(void)
 		siw_device_destroy(sdev);
 	}
 	siw_debugfs_delete();
+
+	device_unregister(&siw_generic_dma_device);
 
 	pr_info("SoftIWARP detached\n");
 }

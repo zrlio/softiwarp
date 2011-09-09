@@ -640,12 +640,12 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 	qp_attrs.state = SIW_QP_STATE_ERROR;
 	(void)siw_qp_modify(qp, &qp_attrs, SIW_QP_ATTR_STATE);
 
-	up_write(&qp->state_lock);
-
 	if (qp->cep) {
 		siw_cep_put(qp->cep);
 		qp->cep = NULL;
 	}
+
+	up_write(&qp->state_lock);
 
 	if (qp->rx_ctx.crc_enabled)
 		crypto_free_hash(qp->rx_ctx.mpa_crc_hd.tfm);

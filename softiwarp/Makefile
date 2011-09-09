@@ -1,7 +1,5 @@
 LINUX_SRC_PATH = /lib/modules/$(shell uname -r)/build
 
-EXTRA_CFLAGS += -DCHECK_DMA_CAPABILITIES
-
 obj-m += siw.o
 
 siw-objs :=  siw_main.o siw_cm.o siw_verbs.o siw_obj.o \

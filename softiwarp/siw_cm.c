@@ -76,8 +76,7 @@ static int siw_sock_nodelay(struct socket *sock)
 	mm_segment_t oldfs;
 	int rv, val = 1;
 
-	if (!tcp_nodelay)
-		return 0;
+	val = tcp_nodelay ? 1 : 0;
 
 	oldfs = get_fs();
 
@@ -262,33 +261,6 @@ static void siw_cep_set_free(struct siw_cep *cep)
 	wake_up(&cep->waitq);
 }
 
-static void siw_cm_release(struct siw_cep *cep)
-{
-	dprint(DBG_CM, " (CEP 0x%p): mpa_timer=%s, sock=0x%p, QP%d, id=0x%p\n",
-		cep, cep->mpa_timer ? "y" : "n", cep->llp.sock,
-		cep->qp ? QP_ID(cep->qp) : -1, cep->cm_id);
-
-	siw_cancel_mpatimer(cep);
-
-	if (cep->llp.sock) {
-		siw_socket_disassoc(cep->llp.sock);
-		sock_release(cep->llp.sock);
-		cep->llp.sock = NULL;
-	}
-	if (cep->qp) {
-		struct siw_qp *qp = cep->qp;
-		cep->qp = NULL;
-		siw_qp_llp_close(qp);
-		siw_qp_put(qp);
-	}
-	if (cep->cm_id) {
-		cep->cm_id->rem_ref(cep->cm_id);
-		cep->cm_id = NULL;
-		siw_cep_put(cep);
-	}
-	cep->state = SIW_EPSTATE_CLOSED;
-}
-
 
 static void __siw_cep_dealloc(struct kref *ref)
 {
@@ -415,6 +387,11 @@ void siw_qp_cm_drop(struct siw_qp *qp, int schedule)
 		siw_cm_queue_work(cep, SIW_CM_WORK_CLOSE_LLP);
 	else {
 		siw_cep_set_inuse(cep);
+
+		if (cep->state == SIW_EPSTATE_CLOSED) {
+			dprint(DBG_CM, "(): cep=0x%p, already closed\n", cep);
+			goto out;
+		}
 		/*
 		 * Immediately close socket
 		 */
@@ -458,9 +435,11 @@ void siw_qp_cm_drop(struct siw_qp *qp, int schedule)
 			cep->llp.sock = NULL;
 		}
 		if (cep->qp) {
+			BUG_ON(qp != cep->qp);
 			cep->qp = NULL;
 			siw_qp_put(qp);
 		}
+out:
 		siw_cep_set_free(cep);
 	}
 }
@@ -905,7 +884,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 {
 	struct siw_cm_work	*work;
 	struct siw_cep		*cep;
-	int rv = 0;
+	int release_cep = 0, rv = 0;
 
 	work = container_of(w, struct siw_cm_work, work.work);
 	cep = work->cep;
@@ -963,7 +942,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 				"handshake state: %d\n", cep->state);
 		}
 		if (rv && rv != EAGAIN)
-			siw_cm_release(cep);
+			release_cep = 1;
 
 		break;
 
@@ -977,7 +956,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 		if (cep->cm_id)
 			siw_cm_upcall(cep, IW_CM_EVENT_CLOSE, 0);
 
-		siw_cm_release(cep);
+		release_cep = 1;
 
 		break;
 
@@ -1042,7 +1021,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 				break;
 			}
 		}
-		siw_cm_release(cep);
+		release_cep = 1;
 
 		break;
 
@@ -1061,7 +1040,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 			if (cep->cm_id)
 				siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
 					      -ETIMEDOUT);
-			siw_cm_release(cep);
+			release_cep = 1;
 
 		} else if (cep->state == SIW_EPSTATE_AWAIT_MPAREQ) {
 			/*
@@ -1069,12 +1048,51 @@ static void siw_cm_work_handler(struct work_struct *w)
 			 */
 			siw_cep_put(cep->listen_cep);
 			cep->listen_cep = NULL;
-			siw_cm_release(cep);
+			release_cep = 1;
 		}
 		break;
 
 	default:
 		BUG();
+	}
+
+	if (release_cep) {
+
+		dprint(DBG_CM, " (CEP 0x%p): Release: "
+			"mpa_timer=%s, sock=0x%p, QP%d, id=0x%p\n",
+			cep, cep->mpa_timer ? "y" : "n", cep->llp.sock,
+			cep->qp ? QP_ID(cep->qp) : -1, cep->cm_id);
+
+		siw_cancel_mpatimer(cep);
+
+		cep->state = SIW_EPSTATE_CLOSED;
+
+		if (cep->qp) {
+			struct siw_qp *qp = cep->qp;
+			/*
+			 * Serialize a potential race with application
+			 * closing the QP and calling siw_qp_cm_drop()
+			 */
+			siw_qp_get(qp);
+			siw_cep_set_free(cep);
+
+			siw_qp_llp_close(qp);
+			siw_qp_put(qp);
+
+			siw_cep_set_inuse(cep);
+			cep->qp = NULL;
+			siw_qp_put(qp);
+		}
+		if (cep->llp.sock) {
+			siw_socket_disassoc(cep->llp.sock);
+			sock_release(cep->llp.sock);
+			cep->llp.sock = NULL;
+		}
+		if (cep->cm_id) {
+			cep->cm_id->rem_ref(cep->cm_id);
+			cep->cm_id = NULL;
+			siw_cep_put(cep);
+		}
 	}
 
 	siw_cep_set_free(cep);
@@ -1715,6 +1733,8 @@ error:
 	dprint(DBG_CM, " Failed: %d\n", rv);
 
 	if (cep) {
+		siw_cep_set_inuse(cep);
+
 		if (cep->cm_id) {
 			cep->cm_id->rem_ref(cep->cm_id);
 			cep->cm_id = NULL;
@@ -1722,6 +1742,8 @@ error:
 		cep->llp.sock = NULL;
 		siw_socket_disassoc(s);
 		cep->state = SIW_EPSTATE_CLOSED;
+
+		siw_cep_set_free(cep);
 		siw_cep_put(cep);
 	}
 	sock_release(s);

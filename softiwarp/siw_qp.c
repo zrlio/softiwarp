@@ -245,9 +245,6 @@ void siw_qp_llp_close(struct siw_qp *qp)
 	}
 
 	up_write(&qp->state_lock);
-
-	dprint(DBG_CM, "(QP%d): Exit: SIW QP state = %s\n",
-		QP_ID(qp), siw_qp_state_to_string[qp->attrs.state]);
 }
 
 

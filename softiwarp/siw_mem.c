@@ -39,6 +39,7 @@
 #include <linux/scatterlist.h>
 #include <linux/gfp.h>
 #include <rdma/ib_verbs.h>
+#include <linux/dma-mapping.h>
 
 #include "siw.h"
 #include "siw_verbs.h"
@@ -91,8 +92,8 @@ static void siw_dma_unmap_page(struct ib_device *dev,
 	/* NOP */
 }
 
-static int siw_map_sg(struct ib_device *dev, struct scatterlist *sgl,
-		      int n_sge, enum dma_data_direction dir)
+static int siw_dma_map_sg(struct ib_device *dev, struct scatterlist *sgl,
+			  int n_sge, enum dma_data_direction dir)
 {
 	struct scatterlist *sg;
 	int i;
@@ -107,8 +108,8 @@ static int siw_map_sg(struct ib_device *dev, struct scatterlist *sgl,
 	return n_sge;
 }
 
-static void siw_unmap_sg(struct ib_device *dev, struct scatterlist *sgl,
-			 int n_sge, enum dma_data_direction dir)
+static void siw_dma_unmap_sg(struct ib_device *dev, struct scatterlist *sgl,
+			     int n_sge, enum dma_data_direction dir)
 {
 	/* NOP */
 }
@@ -169,12 +170,141 @@ struct ib_dma_mapping_ops siw_dma_mapping_ops = {
 	.unmap_single		= siw_dma_unmap_single,
 	.map_page		= siw_dma_map_page,
 	.unmap_page		= siw_dma_unmap_page,
-	.map_sg			= siw_map_sg,
-	.unmap_sg		= siw_unmap_sg,
+	.map_sg			= siw_dma_map_sg,
+	.unmap_sg		= siw_dma_unmap_sg,
 	.dma_address		= siw_dma_address,
 	.dma_len		= siw_dma_len,
 	.sync_single_for_cpu	= siw_sync_single_for_cpu,
 	.sync_single_for_device	= siw_sync_single_for_device,
 	.alloc_coherent		= siw_dma_alloc_coherent,
 	.free_coherent		= siw_dma_free_coherent
+};
+
+static void *siw_dma_generic_alloc_coherent(struct device *dev, size_t size,
+					    dma_addr_t *dma_handle, gfp_t gfp)
+{
+	return siw_dma_alloc_coherent(NULL, size, dma_handle, gfp);
+}
+
+static void siw_dma_generic_free_coherent(struct device *dev, size_t size,
+					  void *vaddr, dma_addr_t dma_handle)
+{
+	siw_dma_free_coherent(NULL, size, vaddr, dma_handle);
+}
+
+static dma_addr_t siw_dma_generic_map_page(struct device *dev,
+					   struct page *page,
+					   unsigned long offset,
+					   size_t size,
+					   enum dma_data_direction dir,
+					   struct dma_attrs *attrs)
+{
+	return siw_dma_map_page(NULL, page, offset, size, dir);
+}
+
+static void siw_dma_generic_unmap_page(struct device *dev,
+				       dma_addr_t handle,
+				       size_t size,
+				       enum dma_data_direction dir,
+				       struct dma_attrs *attrs)
+{
+	siw_dma_unmap_page(NULL, handle, size, dir);
+}
+
+static int siw_dma_generic_map_sg(struct device *dev, struct scatterlist *sg,
+				  int nents, enum dma_data_direction dir,
+				  struct dma_attrs *attrs)
+{
+	return siw_dma_map_sg(NULL, sg, nents, dir);
+}
+
+static void siw_dma_generic_unmap_sg(struct device *dev,
+				    struct scatterlist *sg,
+				    int nents,
+				    enum dma_data_direction dir,
+				    struct dma_attrs *attrs)
+{
+	siw_dma_unmap_sg(NULL, sg, nents, dir);
+}
+
+static void siw_generic_sync_single_for_cpu(struct device *dev,
+					    dma_addr_t dma_handle,
+					    size_t size,
+					    enum dma_data_direction dir)
+{
+	siw_sync_single_for_cpu(NULL, dma_handle, size, dir);
+}
+
+
+static void siw_generic_sync_single_for_device(struct device *dev,
+					       dma_addr_t dma_handle,
+					       size_t size,
+					       enum dma_data_direction dir)
+{
+	siw_sync_single_for_device(NULL, dma_handle, size, dir);
+}
+
+static void siw_generic_sync_sg_for_cpu(struct device *dev,
+					struct scatterlist *sg,
+					int nents,
+					enum dma_data_direction dir)
+{
+	/* NOP */
+}
+
+static void siw_generic_sync_sg_for_device(struct device *dev,
+					   struct scatterlist *sg,
+					   int nents,
+					   enum dma_data_direction dir)
+{
+	/* NOP */
+}
+
+static int siw_dma_generic_mapping_error(struct device *dev,
+					 dma_addr_t dma_addr)
+{
+	return siw_mapping_error(NULL, dma_addr);
+}
+
+static int siw_dma_generic_supported(struct device *dev, u64 mask)
+{
+	return 1;
+}
+
+static int siw_dma_generic_set_mask(struct device *dev, u64 mask)
+{
+	if (!dev->dma_mask || !dma_supported(dev, mask))
+		return -EIO;
+
+	*dev->dma_mask = mask;
+
+	return 0;
+}
+
+struct dma_map_ops siw_dma_generic_ops = {
+	.alloc_coherent		= siw_dma_generic_alloc_coherent,
+	.free_coherent		= siw_dma_generic_free_coherent,
+	.map_page		= siw_dma_generic_map_page,
+	.unmap_page		= siw_dma_generic_unmap_page,
+	.map_sg			= siw_dma_generic_map_sg,
+	.unmap_sg		= siw_dma_generic_unmap_sg,
+	.sync_single_for_cpu	= siw_generic_sync_single_for_cpu,
+	.sync_single_for_device	= siw_generic_sync_single_for_device,
+	.sync_sg_for_cpu	= siw_generic_sync_sg_for_cpu,
+	.sync_sg_for_device	= siw_generic_sync_sg_for_device,
+	.mapping_error		= siw_dma_generic_mapping_error,
+	.dma_supported		= siw_dma_generic_supported,
+	.set_dma_mask		= siw_dma_generic_set_mask,
+	.is_phys		= 1
+};
+
+static void siw_device_release(struct device *dev)
+{
+	pr_info("%s device released\n", dev_name(dev));
+}
+
+struct device siw_generic_dma_device = {
+	.archdata.dma_ops	= &siw_dma_generic_ops,
+	.init_name		= "software-rdma",
+	.release		= siw_device_release
 };
