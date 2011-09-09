@@ -1898,7 +1898,7 @@ int siw_destroy_listen(struct iw_cm_id *id)
 	return 0;
 }
 
-int __init siw_cm_init(void)
+int siw_cm_init(void)
 {
 	/*
 	 * create_single_workqueue for strict ordering
@@ -1910,7 +1910,7 @@ int __init siw_cm_init(void)
 	return 0;
 }
 
-void __exit siw_cm_exit(void)
+void siw_cm_exit(void)
 {
 	if (siw_cm_wq) {
 		flush_workqueue(siw_cm_wq);
