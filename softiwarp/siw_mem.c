@@ -297,14 +297,3 @@ struct dma_map_ops siw_dma_generic_ops = {
 	.set_dma_mask		= siw_dma_generic_set_mask,
 	.is_phys		= 1
 };
-
-static void siw_device_release(struct device *dev)
-{
-	pr_info("%s device released\n", dev_name(dev));
-}
-
-struct device siw_generic_dma_device = {
-	.archdata.dma_ops	= &siw_dma_generic_ops,
-	.init_name		= "software-rdma",
-	.release		= siw_device_release
-};

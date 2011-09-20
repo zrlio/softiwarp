@@ -47,7 +47,6 @@
 #include <rdma/ib_user_verbs.h>
 
 #include "siw.h"
-#include "siw_verbs.h"
 #include "siw_cm.h"
 
 extern int siw_query_device(struct ib_device *, struct ib_device_attr *);
@@ -94,6 +93,7 @@ extern int siw_post_srq_recv(struct ib_srq *, struct ib_recv_wr *,
 			     struct ib_recv_wr **);
 extern int siw_mmap(struct ib_ucontext *, struct vm_area_struct *);
 
+extern struct dma_map_ops siw_dma_generic_ops;
 extern struct ib_dma_mapping_ops siw_dma_mapping_ops;
 extern struct device	siw_generic_dma_device;
 

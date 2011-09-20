@@ -568,6 +568,18 @@ out:
 	return rv;
 }
 
+
+static void siw_device_release(struct device *dev)
+{
+	pr_info("%s device released\n", dev_name(dev));
+}
+
+struct device siw_generic_dma_device = {
+	.archdata.dma_ops	= &siw_dma_generic_ops,
+	.init_name		= "software-rdma",
+	.release		= siw_device_release
+};
+
 static void __exit siw_exit_module(void)
 {
 	spin_lock(&siw_dev_lock);
