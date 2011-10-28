@@ -1245,7 +1245,7 @@ int __init siw_sq_worker_init(void)
 }
 
 
-void __exit siw_sq_worker_exit(void)
+void siw_sq_worker_exit(void)
 {
 	dprint(DBG_TX|DBG_OBJ, " Destroy WQ\n");
 	if (siw_sq_wq) {

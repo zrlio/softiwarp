@@ -159,9 +159,12 @@ static void siw_device_deregister(struct siw_dev *sdev)
 
 		ib_unregister_device(&sdev->ofa_dev);
 	}
-	WARN_ON(atomic_read(&sdev->num_srq) || atomic_read(&sdev->num_qp) ||
-		atomic_read(&sdev->num_cq) || atomic_read(&sdev->num_mem) ||
-		atomic_read(&sdev->num_pd) || atomic_read(&sdev->num_cep));
+	WARN_ON(atomic_read(&sdev->num_srq));
+	WARN_ON(atomic_read(&sdev->num_qp));
+	WARN_ON(atomic_read(&sdev->num_cq));
+	WARN_ON(atomic_read(&sdev->num_mem));
+	WARN_ON(atomic_read(&sdev->num_pd));
+	WARN_ON(atomic_read(&sdev->num_cep));
 
 	i = 0;
 

@@ -362,8 +362,6 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 	struct ib_device		*ofa_dev = ofa_pd->device;
 	struct siw_dev			*sdev = siw_dev_ofa2siw(ofa_dev);
 	struct siw_cq			*scq = NULL, *rcq = NULL;
-	struct siw_iwarp_tx		*c_tx;
-	struct siw_iwarp_rx		*c_rx;
 	struct siw_uresp_create_qp	uresp;
 
 	unsigned long flags;
@@ -494,8 +492,6 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 		if (rv)
 			goto err_out_idr;
 	}
-	c_tx = &qp->tx_ctx;
-	c_rx = &qp->rx_ctx;
 
 	atomic_set(&qp->tx_ctx.in_use, 0);
 
