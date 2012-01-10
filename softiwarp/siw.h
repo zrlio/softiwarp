@@ -48,6 +48,7 @@
 #include <linux/netdevice.h>
 #include <linux/crypto.h>
 #include <linux/resource.h>	/* MLOCK_LIMIT */
+#include <linux/module.h>
 
 #include <rdma/ib_umem.h>	/* struct ib_umem_chunk */
 
@@ -78,6 +79,7 @@ enum siw_if_type {
 #define SIW_MAX_FMR		0
 #define SIW_MAX_SRQ		SIW_MAX_QP
 #define SIW_MAX_SRQ_WR		(SIW_MAX_QP_WR * 10)
+#define SIW_MAX_CONTEXT		(SIW_MAX_PD * 10)
 
 #define SENDPAGE_THRESH		256	/* min bytes for using sendpage() */
 #define SQ_USER_MAXBURST	10
@@ -143,6 +145,7 @@ struct siw_dev {
 	atomic_t		num_mem;
 	atomic_t		num_srq;
 	atomic_t		num_cep;
+	atomic_t		num_ctx;
 
 	struct dentry		*debugfs;
 };
@@ -156,6 +159,7 @@ struct siw_objhdr {
 
 struct siw_ucontext {
 	struct ib_ucontext	ib_ucontext;
+	struct siw_dev		*sdev;
 };
 
 struct siw_pd {

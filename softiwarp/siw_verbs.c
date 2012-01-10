@@ -94,26 +94,39 @@ static inline struct siw_srq *siw_srq_ofa2siw(struct ib_srq *ofa_srq)
 struct ib_ucontext *siw_alloc_ucontext(struct ib_device *ofa_dev,
 				       struct ib_udata *udata)
 {
-	struct siw_ucontext *ctx;
+	struct siw_ucontext *ctx = NULL;
+	struct siw_dev *sdev = siw_dev_ofa2siw(ofa_dev);
+	int rv;
 
 	dprint(DBG_CM, "(device=%s)\n", ofa_dev->name);
 
+	if (atomic_inc_return(&sdev->num_ctx) > SIW_MAX_CONTEXT) {
+		dprint(DBG_ON, ": Out of CONTEXT's\n");
+		rv = -ENOMEM;
+		goto err_out;
+	}
 	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx) {
-		dprint(DBG_ON, " kzalloc\n");
-		return ERR_PTR(-ENOMEM);
+		rv = -ENOMEM;
+		goto err_out;
 	}
+	ctx->sdev = sdev;
 	return &ctx->ib_ucontext;
+
+err_out:
+	if (ctx)
+		kfree(ctx);
+
+	atomic_dec(&sdev->num_ctx);
+	return ERR_PTR(rv);
 }
 
-int siw_dealloc_ucontext(struct ib_ucontext *ctx)
+int siw_dealloc_ucontext(struct ib_ucontext *ofa_ctx)
 {
-	struct siw_ucontext *ucontext;
+	struct siw_ucontext *ctx = siw_ctx_ofa2siw(ofa_ctx);
 
-	ucontext = siw_ctx_ofa2siw(ctx);
-
-	kfree(ucontext);
-
+	atomic_dec(&ctx->sdev->num_ctx);
+	kfree(ctx);
 	return 0;
 }
 
@@ -778,6 +791,7 @@ out:
 	if (wqe) {
 		INIT_LIST_HEAD(&wqe->list);
 		wqe->processed = 0;
+		wqe->wr.sgl.num_sge = 0;
 		siw_qp_get(qp);
 		wqe->qp = qp;
 	} else {
@@ -834,6 +848,10 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			rv = -ENOMEM;
 			break;
 		}
+		wr_type(wqe) = opcode_ofa2siw(wr->opcode);
+		wr_flags(wqe) = wr->send_flags;
+		wr_id(wqe) = wr->wr_id;
+
 		if (wr->num_sge > qp->attrs.sq_max_sges) {
 			/*
 			 * NOTE: we allow for zero length wr's here.
@@ -843,9 +861,6 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			rv = -EINVAL;
 			break;
 		}
-		wr_type(wqe) = opcode_ofa2siw(wr->opcode);
-		wr_flags(wqe) = wr->send_flags;
-		wr_id(wqe) = wr->wr_id;
 
 		switch (wr->opcode) {
 

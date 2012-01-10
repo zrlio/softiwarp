@@ -212,21 +212,22 @@ static ssize_t siw_show_stats(struct file *f, char __user *buf, size_t space,
 
 	len =  snprintf(kbuf, space, "Allocated SIW Objects:\n"
 #if DPRINT_MASK > 0
-			"Global     :\t%s: %d\n"
+		"Global     :\t%s: %d\n"
 #endif
-			"Device %s (%s):\t"
-			"%s: %d, %s: %d, %s: %d, %s: %d, %s: %d, %s: %d\n",
+		"Device %s (%s):\t"
+		"%s: %d, %s %d, %s: %d, %s: %d, %s: %d, %s: %d, %s: %d\n",
 #if DPRINT_MASK > 0
-			"WQEs", atomic_read(&siw_num_wqe),
+		"WQEs", atomic_read(&siw_num_wqe),
 #endif
-			sdev->ofa_dev.name,
-			sdev->netdev->flags & IFF_UP ? "IFF_UP" : "IFF_DOWN",
-			"PDs", atomic_read(&sdev->num_pd),
-			"QPs", atomic_read(&sdev->num_qp),
-			"CQs", atomic_read(&sdev->num_cq),
-			"SRQs", atomic_read(&sdev->num_srq),
-			"MRs", atomic_read(&sdev->num_mem),
-			"CEPs", atomic_read(&sdev->num_cep));
+		sdev->ofa_dev.name,
+		sdev->netdev->flags & IFF_UP ? "IFF_UP" : "IFF_DOWN",
+		"CXs", atomic_read(&sdev->num_ctx),
+		"PDs", atomic_read(&sdev->num_pd),
+		"QPs", atomic_read(&sdev->num_qp),
+		"CQs", atomic_read(&sdev->num_cq),
+		"SRQs", atomic_read(&sdev->num_srq),
+		"MRs", atomic_read(&sdev->num_mem),
+		"CEPs", atomic_read(&sdev->num_cep));
 	if (len > space)
 		len = space;
 out:

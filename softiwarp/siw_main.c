@@ -36,7 +36,6 @@
  * SOFTWARE.
  */
 
-#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/netdevice.h>
@@ -159,6 +158,7 @@ static void siw_device_deregister(struct siw_dev *sdev)
 
 		ib_unregister_device(&sdev->ofa_dev);
 	}
+	WARN_ON(atomic_read(&sdev->num_ctx));
 	WARN_ON(atomic_read(&sdev->num_srq));
 	WARN_ON(atomic_read(&sdev->num_qp));
 	WARN_ON(atomic_read(&sdev->num_cq));
@@ -406,6 +406,7 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	INIT_LIST_HEAD(&sdev->cep_list);
 	INIT_LIST_HEAD(&sdev->qp_list);
 
+	atomic_set(&sdev->num_ctx, 0);
 	atomic_set(&sdev->num_srq, 0);
 	atomic_set(&sdev->num_qp, 0);
 	atomic_set(&sdev->num_cq, 0);

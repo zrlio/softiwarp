@@ -37,7 +37,6 @@
  * SOFTWARE.
  */
 
-#include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/net.h>
@@ -353,6 +352,8 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 		event.remote_addr = cep->llp.raddr;
 	}
 	if (reason == IW_CM_EVENT_CONNECT_REQUEST) {
+		event.ird = cep->sdev->attrs.max_ird;
+		event.ord = cep->sdev->attrs.max_ord;
 		event.provider_data = cep;
 		cm_id = cep->listen_cep->cm_id;
 	} else
@@ -507,7 +508,7 @@ static int siw_send_mpareqrep(struct siw_cep *cep, const void *pdata,
 }
 
 /*
- * Receive MPA Request/Reply heder.
+ * Receive MPA Request/Reply header.
  *
  * Returns 0 if complete MPA Request/Reply haeder including
  * eventual private data was received. Returns -EAGAIN if
