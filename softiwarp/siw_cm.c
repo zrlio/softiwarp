@@ -352,8 +352,10 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 		event.remote_addr = cep->llp.raddr;
 	}
 	if (reason == IW_CM_EVENT_CONNECT_REQUEST) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
 		event.ird = cep->sdev->attrs.max_ird;
 		event.ord = cep->sdev->attrs.max_ord;
+#endif
 		event.provider_data = cep;
 		cm_id = cep->listen_cep->cm_id;
 	} else
