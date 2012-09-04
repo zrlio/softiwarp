@@ -109,7 +109,11 @@ static void siw_device_register(struct siw_dev *sdev)
 	struct ib_device *ofa_dev = &sdev->ofa_dev;
 	int rv, i;
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 34) 
 	rv = ib_register_device(ofa_dev, NULL);
+#else
+	rv = ib_register_device(ofa_dev);
+#endif
 	if (rv) {
 		dprint(DBG_DM|DBG_ON, "(dev=%s): "
 		       "ib_register_device failed: rv=%d\n", ofa_dev->name, rv);

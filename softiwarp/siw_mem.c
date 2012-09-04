@@ -36,6 +36,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+#include <linux/version.h>
 #include <linux/scatterlist.h>
 #include <linux/gfp.h>
 #include <rdma/ib_verbs.h>
@@ -100,11 +101,15 @@ static int siw_dma_map_sg(struct ib_device *dev, struct scatterlist *sgl,
 
 	BUG_ON(!valid_dma_direction(dir));
 
-	/* This is just a validity check */
-	for_each_sg(sgl, sg, n_sge, i)
-		if (page_address(sg_page(sg)) == NULL)
-			return 0;
-
+	for_each_sg(sgl, sg, n_sge, i) {
+		/* This is just a validity check */
+		if (unlikely(page_address(sg_page(sg)) == NULL)) {
+			n_sge = 0;
+			break;
+		}
+		sg->dma_address = (dma_addr_t) page_address(sg_page(sg));
+		sg_dma_len(sg) = sg->length;
+	}
 	return n_sge;
 }
 
@@ -180,6 +185,7 @@ struct ib_dma_mapping_ops siw_dma_mapping_ops = {
 	.free_coherent		= siw_dma_free_coherent
 };
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 4, 0)
 static void *siw_dma_generic_alloc_coherent(struct device *dev, size_t size,
 					    dma_addr_t *dma_handle, gfp_t gfp)
 {
@@ -191,6 +197,21 @@ static void siw_dma_generic_free_coherent(struct device *dev, size_t size,
 {
 	siw_dma_free_coherent(NULL, size, vaddr, dma_handle);
 }
+#else
+static void *siw_dma_generic_alloc(struct device *dev, size_t size,
+				   dma_addr_t *dma_handle, gfp_t gfp,
+				   struct dma_attrs *attrs)
+{
+	return siw_dma_alloc_coherent(NULL, size, dma_handle, gfp);
+}
+
+static void siw_dma_generic_free(struct device *dev, size_t size,
+				 void *vaddr, dma_addr_t dma_handle,
+				 struct dma_attrs *attrs)
+{
+	siw_dma_free_coherent(NULL, size, vaddr, dma_handle);
+}
+#endif
 
 static dma_addr_t siw_dma_generic_map_page(struct device *dev,
 					   struct page *page,
@@ -282,8 +303,13 @@ static int siw_dma_generic_set_mask(struct device *dev, u64 mask)
 }
 
 struct dma_map_ops siw_dma_generic_ops = {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 4, 0)
 	.alloc_coherent		= siw_dma_generic_alloc_coherent,
 	.free_coherent		= siw_dma_generic_free_coherent,
+#else
+	.alloc			= siw_dma_generic_alloc,
+	.free			= siw_dma_generic_free,
+#endif
 	.map_page		= siw_dma_generic_map_page,
 	.unmap_page		= siw_dma_generic_unmap_page,
 	.map_sg			= siw_dma_generic_map_sg,
