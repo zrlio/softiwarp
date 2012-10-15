@@ -191,7 +191,11 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 		bytes  = min(len, (int)PAGE_SIZE - pg_off);
 		p_list = &chunk->page_list[rctx->pg_idx];
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
 		dest = kmap_atomic(sg_page(p_list), KM_SOFTIRQ0);
+#else
+		dest = kmap_atomic(sg_page(p_list));
+#endif
 
 		rv = skb_copy_bits(rctx->skb, rctx->skb_offset, dest + pg_off,
 				   bytes);
@@ -211,7 +215,11 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 			pg_off += bytes;
 		}
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
 		kunmap_atomic(dest, KM_SOFTIRQ0);
+#else
+		kunmap_atomic(dest);
+#endif
 
 		if (unlikely(rv)) {
 			rctx->skb_copied += copied;
