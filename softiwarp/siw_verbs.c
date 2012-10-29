@@ -408,14 +408,6 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 		rv = -EINVAL;
 		goto err_out;
 	}
-	if (attrs->sq_sig_type != IB_SIGNAL_REQ_WR) {
-		if (attrs->sq_sig_type == IB_SIGNAL_ALL_WR)
-			qp->attrs.flags |= SIW_SIGNAL_ALL_WR;
-		else {
-			rv = -EINVAL;
-			goto err_out;
-		}
-	}
 	/*
 	 * NOTE: we allow for zero element SQ and RQ WQE's SGL's
 	 * but not for a QP unable to hold any WQE (SQ + RQ)
@@ -472,6 +464,14 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 			list_add(&wqe->list, &qp->freeq);
 		}
 		qp->attrs.flags |= SIW_KERNEL_VERBS;
+	}
+	if (attrs->sq_sig_type != IB_SIGNAL_REQ_WR) {
+		if (attrs->sq_sig_type == IB_SIGNAL_ALL_WR)
+			qp->attrs.flags |= SIW_SIGNAL_ALL_WR;
+		else {
+			rv = -EINVAL;
+			goto err_out;
+		}
 	}
 	qp->pd  = pd;
 	qp->scq = scq;
