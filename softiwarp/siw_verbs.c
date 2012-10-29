@@ -408,6 +408,14 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 		rv = -EINVAL;
 		goto err_out;
 	}
+	if (attrs->sq_sig_type |= IB_SIGNAL_REQ_WR) {
+		if (attrs->sq_sig_type == IB_SIGNAL_ALL_WR)
+			qp->attrs.flags |= SIW_SIGNAL_ALL_WR;
+		else {
+			rv = -EINVAL;
+			goto err_out;
+		}
+	}
 	/*
 	 * NOTE: we allow for zero element SQ and RQ WQE's SGL's
 	 * but not for a QP unable to hold any WQE (SQ + RQ)
@@ -849,8 +857,11 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			break;
 		}
 		wr_type(wqe) = opcode_ofa2siw(wr->opcode);
-		wr_flags(wqe) = wr->send_flags;
 		wr_id(wqe) = wr->wr_id;
+
+		wr_flags(wqe) = wr->send_flags;
+		if (qp->attrs.flags & SIW_SIGNAL_ALL_WR)
+			wr_flags(wqe) |= IB_SEND_SIGNALED;
 
 		if (wr->num_sge > qp->attrs.sq_max_sges) {
 			/*

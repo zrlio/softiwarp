@@ -405,6 +405,7 @@ enum siw_qp_flags {
 	SIW_RDMA_WRITE_ENABLED	= (1 << 1),
 	SIW_RDMA_READ_ENABLED	= (1 << 2),
 	SIW_KERNEL_VERBS	= (1 << 3),
+	SIW_SIGNAL_ALL_WR	= (1 << 4),
 	/*
 	 * QP currently being destroyed
 	 */
