@@ -534,6 +534,10 @@ static struct notifier_block siw_netdev_nb = {
 	.notifier_call = siw_netdev_event,
 };
 
+static struct bus_type siw_bus = {
+	.name		= "siw",
+};
+
 /*
  * siw_init_module - Initialize Softiwarp module and register with netdev
  *                   subsystem to create Softiwarp devices per net_device
@@ -541,6 +545,12 @@ static struct notifier_block siw_netdev_nb = {
 static __init int siw_init_module(void)
 {
 	int rv;
+
+	rv = bus_register(&siw_bus);
+	if (rv)
+		return rv;
+
+	siw_generic_dma_device.bus = &siw_bus;
 
 	rv = device_register(&siw_generic_dma_device);
 	if (rv)
@@ -567,8 +577,8 @@ static __init int siw_init_module(void)
 
 out_unregister:
 	device_unregister(&siw_generic_dma_device);
-
 out:
+	bus_unregister(&siw_bus);
 	pr_info("SoftIWARP attach failed. Error: %d\n", rv);
 	siw_sq_worker_exit();
 	siw_cm_exit();
@@ -611,6 +621,7 @@ static void __exit siw_exit_module(void)
 	siw_debugfs_delete();
 
 	device_unregister(&siw_generic_dma_device);
+	bus_unregister(&siw_bus);
 
 	pr_info("SoftIWARP detached\n");
 }
