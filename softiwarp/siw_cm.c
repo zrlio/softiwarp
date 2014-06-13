@@ -321,6 +321,12 @@ static int siw_cm_alloc_work(struct siw_cep *cep, int num)
 }
 
 /*
+ * With kernel 3.12, OFA ddressing changed from sockaddr_in to
+ * sockaddr_storage
+ */
+#define to_sockaddr_in(a) (*(struct sockaddr_in *)(&(a)))
+
+/*
  * siw_cm_upcall()
  *
  * Upcall to IWCM to inform about async connection events
@@ -348,8 +354,8 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 	}
 	if (reason == IW_CM_EVENT_CONNECT_REQUEST ||
 	    reason == IW_CM_EVENT_CONNECT_REPLY) {
-		event.local_addr = cep->llp.laddr;
-		event.remote_addr = cep->llp.raddr;
+		to_sockaddr_in(event.local_addr) = cep->llp.laddr;
+		to_sockaddr_in(event.remote_addr) = cep->llp.raddr;
 	}
 	if (reason == IW_CM_EVENT_CONNECT_REQUEST) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
@@ -1813,14 +1819,14 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 	 * o For IPv4, use sdev->netdev->ip_ptr
 	 * o For IPv6, use sdev->netdev->ipv6_ptr
 	 */
-	if (id->local_addr.sin_family == AF_INET) {
+	if (to_sockaddr_in(id->local_addr).sin_family == AF_INET) {
 		/* IPv4 */
-		struct sockaddr_in	laddr = id->local_addr;
+		struct sockaddr_in	laddr = to_sockaddr_in(id->local_addr);
 		u8			*l_ip, *r_ip;
 		struct in_device	*in_dev;
 
-		l_ip = (u8 *) &id->local_addr.sin_addr.s_addr;
-		r_ip = (u8 *) &id->remote_addr.sin_addr.s_addr;
+		l_ip = (u8 *) &to_sockaddr_in(id->local_addr).sin_addr.s_addr;
+		r_ip = (u8 *) &to_sockaddr_in(id->remote_addr).sin_addr.s_addr;
 		dprint(DBG_CM, "(id=0x%p): "
 			"laddr(id)  : ipv4=%d.%d.%d.%d, port=%d; "
 			"raddr(id)  : ipv4=%d.%d.%d.%d, port=%d\n",
@@ -1843,9 +1849,10 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 			 * contains the wildcard IP address OR
 			 * the IP address of the interface.
 			 */
-			if (ipv4_is_zeronet(id->local_addr.sin_addr.s_addr) ||
-					id->local_addr.sin_addr.s_addr ==
-					ifa->ifa_address) {
+			if (ipv4_is_zeronet(
+			    to_sockaddr_in(id->local_addr).sin_addr.s_addr) ||
+			    to_sockaddr_in(id->local_addr).sin_addr.s_addr ==
+			    ifa->ifa_address) {
 				laddr.sin_addr.s_addr = ifa->ifa_address;
 
 				l_ip = (u8 *) &laddr.sin_addr.s_addr;

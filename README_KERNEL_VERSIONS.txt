@@ -18,3 +18,8 @@ contains code which compiles and runs on older kernels, but may
 soon break on newer kernels. code maintenance is sloppy and
 it is recommended to use the newer softiwarp/ code base if 
 possible.
+
+
+06/13/2014
+
+softiwarp_old/ has been removed.

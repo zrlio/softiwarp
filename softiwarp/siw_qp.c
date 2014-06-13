@@ -468,6 +468,9 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			if (rv)
 				break;
 
+			if (!attrs->ord)
+				attrs->ord = 1;
+
 			atomic_set(&qp->orq_space, attrs->ord);
 
 			qp->attrs.ord = attrs->ord;
