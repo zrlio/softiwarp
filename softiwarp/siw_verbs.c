@@ -105,7 +105,7 @@ struct ib_ucontext *siw_alloc_ucontext(struct ib_device *ofa_dev,
 		rv = -ENOMEM;
 		goto err_out;
 	}
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	ctx = kzalloc(sizeof *ctx, GFP_KERNEL);
 	if (!ctx) {
 		rv = -ENOMEM;
 		goto err_out;
@@ -233,6 +233,8 @@ int siw_query_port(struct ib_device *ofa_dev, u8 port,
 	attr->pkey_tbl_len = 1;
 	attr->active_width = 2;
 	attr->active_speed = 2;
+	attr->phys_state = sdev->state == IB_PORT_ACTIVE ? 5 : 3;
+
 	/*
 	 * All zero
 	 *
@@ -245,7 +247,6 @@ int siw_query_port(struct ib_device *ofa_dev, u8 port,
 	 * attr->sm_sl = 0;
 	 * attr->subnet_timeout = 0;
 	 * attr->init_type_repy = 0;
-	 * attr->phys_state = 0;
 	 */
 	return 0;
 }
