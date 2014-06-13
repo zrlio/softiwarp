@@ -253,7 +253,8 @@ int siw_query_port(struct ib_device *ofa_dev, u8 port,
 
 int siw_query_pkey(struct ib_device *ofa_dev, u8 port, u16 idx, u16 *pkey)
 {
-	*pkey = 0;
+	/* Report the default pkey */
+	*pkey = 0xffff;
 	return 0;
 }
 
