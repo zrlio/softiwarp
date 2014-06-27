@@ -1303,10 +1303,10 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		id, QP_ID(qp), sdev->ofa_dev.name, sdev->netdev->name);
 	dprint(DBG_CM, "(id=0x%p, QP%d): laddr=(0x%x,%d), raddr=(0x%x,%d)\n",
 		id, QP_ID(qp),
-		ntohl(id->local_addr.sin_addr.s_addr),
-		ntohs(id->local_addr.sin_port),
-		ntohl(id->remote_addr.sin_addr.s_addr),
-		ntohs(id->remote_addr.sin_port));
+		ntohl(to_sockaddr_in(id->local_addr).sin_addr.s_addr),
+		ntohs(to_sockaddr_in(id->local_addr).sin_port),
+		ntohl(to_sockaddr_in(id->remote_addr).sin_addr.s_addr),
+		ntohs(to_sockaddr_in(id->remote_addr).sin_port));
 
 	laddr = (struct sockaddr *)&id->local_addr;
 	raddr = (struct sockaddr *)&id->remote_addr;
@@ -1832,9 +1832,9 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 			"raddr(id)  : ipv4=%d.%d.%d.%d, port=%d\n",
 			id,
 			l_ip[0], l_ip[1], l_ip[2], l_ip[3],
-			ntohs(id->local_addr.sin_port),
+			ntohs(to_sockaddr_in(id->local_addr).sin_port),
 			r_ip[0], r_ip[1], r_ip[2], r_ip[3],
-			ntohs(id->remote_addr.sin_port));
+			ntohs(to_sockaddr_in(id->remote_addr).sin_port));
 
 		in_dev = in_dev_get(sdev->netdev);
 		if (!in_dev) {
