@@ -336,24 +336,22 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 {
 	struct iw_cm_event	event;
 	struct iw_cm_id		*cm_id;
-	u16			pd_len;
 
 	memset(&event, 0, sizeof event);
 	event.status = status;
 	event.event = reason;
 
-	pd_len = be16_to_cpu(cep->mpa.hdr.params.pd_len);
-	if (pd_len) {
-		/*
-		 * hand over MPA private data
-		 */
-		event.private_data_len = pd_len;
-		event.private_data = cep->mpa.pdata;
-
-		cep->mpa.hdr.params.pd_len = 0;
-	}
 	if (reason == IW_CM_EVENT_CONNECT_REQUEST ||
 	    reason == IW_CM_EVENT_CONNECT_REPLY) {
+		u16 pd_len = be16_to_cpu(cep->mpa.hdr.params.pd_len);
+
+		if (pd_len) {
+			/*
+			 * hand over MPA private data
+			 */
+			event.private_data_len = pd_len;
+			event.private_data = cep->mpa.pdata;
+		}
 		to_sockaddr_in(event.local_addr) = cep->llp.laddr;
 		to_sockaddr_in(event.remote_addr) = cep->llp.raddr;
 	}
@@ -368,9 +366,10 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 		cm_id = cep->cm_id;
 
 	dprint(DBG_CM, " (QP%d): cep=0x%p, id=0x%p, dev(id)=%s, "
-		"reason=%d, status=%d\n",
+		"reason=%d, status=%d pdlen %d pdata %p\n",
 		cep->qp ? QP_ID(cep->qp) : -1, cep, cm_id,
-		cm_id->device->name, reason, status);
+		cm_id->device->name, reason, status,
+		event.private_data_len, event.private_data);
 
 	return cm_id->event_handler(cm_id, &event);
 }
