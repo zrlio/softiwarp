@@ -871,6 +871,7 @@ void siw_sq_flush(struct siw_qp *qp)
 	struct siw_wqe		*wqe = tx_wqe(qp);
 	struct siw_cq		*cq = qp->scq;
 	int			async_event = 0;
+	unsigned long		flags;
 
 	dprint(DBG_OBJ|DBG_CM|DBG_WR, "(QP%d): Enter\n", QP_ID(qp));
 
@@ -919,11 +920,11 @@ void siw_sq_flush(struct siw_qp *qp)
 				wqe->wr_status = SR_WR_DONE;
 			}
 			if (cq) {
-				lock_cq(cq);
+				lock_cq_rxsave(cq, flags);
 				list_move_tail(&wqe->list, &cq->queue);
 				/* TODO: enforce CQ limits */
 				atomic_inc(&cq->qlen);
-				unlock_cq(cq);
+				unlock_cq_rxsave(cq, flags);
 			} else {
 				list_del(&wqe->list);
 				siw_wqe_put(wqe);
@@ -939,11 +940,11 @@ void siw_sq_flush(struct siw_qp *qp)
 			if (cq) {
 				wqe->wc_status = IB_WC_WR_FLUSH_ERR;
 				wqe->wr_status = SR_WR_DONE;
-				lock_cq(cq);
+				lock_cq_rxsave(cq, flags);
 				list_move_tail(&wqe->list, &cq->queue);
 				/* TODO: enforce CQ limits */
 				atomic_inc(&cq->qlen);
-				unlock_cq(cq);
+				unlock_cq_rxsave(cq, flags);
 			} else  {
 				list_del(&wqe->list);
 				siw_wqe_put(wqe);
@@ -972,6 +973,7 @@ void siw_rq_flush(struct siw_qp *qp)
 	struct list_head	*pos, *n;
 	struct siw_wqe		*wqe;
 	struct siw_cq		*cq;
+	unsigned long		flags;
 
 	dprint(DBG_OBJ|DBG_CM|DBG_WR, "(QP%d): Enter\n", QP_ID(qp));
 
@@ -996,11 +998,11 @@ void siw_rq_flush(struct siw_qp *qp)
 		list_del_init(&wqe->list);
 		if (cq) {
 			wqe->wc_status = IB_WC_WR_FLUSH_ERR;
-			lock_cq(cq);
+			lock_cq_rxsave(cq, flags);
 			list_add_tail(&wqe->list, &cq->queue);
 			/* TODO: enforce CQ limits */
 			atomic_inc(&cq->qlen);
-			unlock_cq(cq);
+			unlock_cq_rxsave(cq, flags);
 		} else
 			siw_wqe_put(wqe);
 	}
