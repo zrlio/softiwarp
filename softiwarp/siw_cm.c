@@ -1459,6 +1459,11 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	siw_cep_set_inuse(cep);
 	siw_cep_put(cep);
 
+	if (cep->mpa.hdr.params.pd_len) {
+		cep->mpa.hdr.params.pd_len = 0;
+		kfree(cep->mpa.pdata);
+		cep->mpa.pdata = NULL;
+	}
 	if (cep->state != SIW_EPSTATE_RECVD_MPAREQ) {
 		if (cep->state == SIW_EPSTATE_CLOSED) {
 
