@@ -62,7 +62,7 @@ enum siw_if_type {
 
 #define DEVICE_ID_SOFTIWARP	0x0815
 #define VERSION_ID_SOFTIWARP	0x0001
-#define SIW_VENDOR_ID		0
+#define SIW_VENDOR_ID		0x626d74 /* ascii 'bmt' for now */
 #define SIW_VENDORT_PART_ID	0
 #define SIW_SW_VERSION		1
 #define SIW_MAX_QP		(1024 * 100)
