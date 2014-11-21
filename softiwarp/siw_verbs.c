@@ -886,7 +886,7 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			} else
 				rv = siw_copy_inline_sgl(wr, wqe);
 
-			if (rv <= 0) {
+			if (rv < 0) {
 				rv = -EINVAL;
 				break;
 			}
