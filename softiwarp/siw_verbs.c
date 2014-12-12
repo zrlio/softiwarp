@@ -168,6 +168,16 @@ int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr)
 	attr->max_srq_wr = sdev->attrs.max_srq_wr;
 	attr->max_srq_sge = sdev->attrs.max_srq_sge;
 
+	attr->max_ah = 0;
+	attr->max_mcast_grp = 0;
+	attr->max_mcast_qp_attach = 0;
+	attr->max_total_mcast_qp_attach = 0;
+	attr->max_ee = 0;
+	attr->max_rdd = 0;
+	attr->max_ee_rd_atom = 0;
+	attr->max_ee_init_rd_atom = 0;
+	attr->atomic_cap = IB_ATOMIC_NONE;
+
 	memcpy(&attr->sys_image_guid, sdev->netdev->dev_addr, 6);
 
 	/*
@@ -175,19 +185,10 @@ int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr)
 	 * get useful information
 	 *
 	 * attr->fw_ver;
-	 * attr->max_ah
 	 * attr->max_map_per_fmr
-	 * attr->max_ee
-	 * attr->max_rdd
-	 * attr->max_ee_rd_atom;
-	 * attr->max_ee_init_rd_atom;
 	 * attr->max_raw_ipv6_qp
 	 * attr->max_raw_ethy_qp
-	 * attr->max_mcast_grp
-	 * attr->max_mcast_qp_attach
-	 * attr->max_total_mcast_qp_attach
 	 * attr->max_pkeys
-	 * attr->atomic_cap;
 	 * attr->page_size_cap;
 	 * attr->hw_ver;
 	 * attr->local_ca_ack_delay;
@@ -386,39 +387,34 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 	dprint(DBG_OBJ|DBG_CM, ": new QP on device %s\n",
 		ofa_dev->name);
 
-	if (atomic_inc_return(&sdev->num_qp) > SIW_MAX_QP) {
-		dprint(DBG_ON, ": Out of QP's\n");
-		rv = -ENOMEM;
-		goto err_out;
-	}
 	if (attrs->qp_type != IB_QPT_RC) {
 		dprint(DBG_ON, ": Only RC QP's supported\n");
-		rv = -EINVAL;
-		goto err_out;
+		return ERR_PTR(-ENOSYS);
 	}
 	if ((attrs->cap.max_send_wr > SIW_MAX_QP_WR) ||
 	    (attrs->cap.max_recv_wr > SIW_MAX_QP_WR) ||
 	    (attrs->cap.max_send_sge > SIW_MAX_SGE)  ||
 	    (attrs->cap.max_recv_sge > SIW_MAX_SGE)) {
 		dprint(DBG_ON, ": QP Size!\n");
-		rv = -EINVAL;
-		goto err_out;
+		return ERR_PTR(-EINVAL);
 	}
 	if (attrs->cap.max_inline_data > SIW_MAX_INLINE) {
 		dprint(DBG_ON, ": Max Inline Send %d > %d!\n",
 		       attrs->cap.max_inline_data, (int)SIW_MAX_INLINE);
-		rv = -EINVAL;
-		goto err_out;
+		return ERR_PTR(-EINVAL);
 	}
 	/*
 	 * NOTE: we allow for zero element SQ and RQ WQE's SGL's
 	 * but not for a QP unable to hold any WQE (SQ + RQ)
 	 */
-	if (attrs->cap.max_send_wr + attrs->cap.max_recv_wr == 0) {
-		rv = -EINVAL;
+	if (attrs->cap.max_send_wr + attrs->cap.max_recv_wr == 0)
+		return ERR_PTR(-EINVAL);
+
+	if (atomic_inc_return(&sdev->num_qp) > SIW_MAX_QP) {
+		dprint(DBG_ON, ": Out of QP's\n");
+		rv = -ENOMEM;
 		goto err_out;
 	}
-
 	scq = siw_cq_id2obj(sdev, ((struct siw_cq *)attrs->send_cq)->hdr.id);
 	rcq = siw_cq_id2obj(sdev, ((struct siw_cq *)attrs->recv_cq)->hdr.id);
 
@@ -941,7 +937,7 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 				"(QP%d): Opcode %d not yet implemented\n",
 				QP_ID(qp), wr->opcode);
 			wqe->wr.sgl.num_sge = 0;
-			rv = -EINVAL;
+			rv = -ENOSYS;
 			break;
 		}
 		dprint(DBG_WR|DBG_TX, "(QP%d): opcode %d, bytes %d, "
@@ -1471,14 +1467,13 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 	int kernel_verbs = ofa_pd->uobject ? 0 : 1;
 	int rv;
 
+	if (attrs->max_wr > SIW_MAX_SRQ_WR || attrs->max_sge > SIW_MAX_SGE ||
+	    attrs->srq_limit > attrs->max_wr)
+		 return ERR_PTR(-EINVAL);
+
 	if (atomic_inc_return(&sdev->num_srq) > SIW_MAX_SRQ) {
 		dprint(DBG_ON, " Out of SRQ's\n");
 		rv = -ENOMEM;
-		goto err_out;
-	}
-	if (attrs->max_wr > SIW_MAX_SRQ_WR || attrs->max_sge > SIW_MAX_SGE ||
-	    attrs->srq_limit > attrs->max_wr) {
-		rv = -EINVAL;
 		goto err_out;
 	}
 

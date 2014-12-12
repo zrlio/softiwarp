@@ -658,7 +658,7 @@ struct ib_qp *siw_get_ofaqp(struct ib_device *ofa_dev, int id)
 		dprint(DBG_OBJ, " QPID: %d\n", QP_ID(qp));
 		return &qp->ofa_qp;
 	}
-	return (struct ib_qp *)NULL;
+	return NULL;
 }
 
 /*
