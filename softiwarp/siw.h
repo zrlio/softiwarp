@@ -49,7 +49,6 @@
 #include <linux/crypto.h>
 #include <linux/resource.h>	/* MLOCK_LIMIT */
 #include <linux/module.h>
-#include <linux/version.h>
 
 #include "siw_user.h"
 #include "iwarp.h"
@@ -180,7 +179,7 @@ enum siw_access_flags {
 
 #define STAG_VALID	1
 #define STAG_INVALID	0
-#define SIW_STAG_MAX	0xffffff
+#define SIW_STAG_MAX	0xffffffff
 
 struct siw_mr;
 
@@ -785,7 +784,6 @@ void siw_sq_complete(struct list_head *, struct siw_qp *, int,
 #define CHUNK_MASK	(~(PAGES_PER_CHUNK - 1))
 #define PAGE_CHUNK_SIZE	(PAGES_PER_CHUNK * sizeof(struct page *))
 
-#define PAGE_COOKIE_INVALID	PAGES_PER_CHUNK
 /*
  * siw_get_upage()
  *

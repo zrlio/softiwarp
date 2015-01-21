@@ -185,7 +185,7 @@ out:
 	return copied;
 }
 
-static inline int siw_rx_kva(struct siw_iwarp_rx *rctx, int len, void *kva)
+static inline int siw_rx_kva(struct siw_iwarp_rx *rctx, void *kva, int len)
 {
 	int rv = skb_copy_bits(rctx->skb, rctx->skb_offset, kva, len);
 
@@ -472,7 +472,6 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	while (data_bytes) {
 		struct siw_pd	*pd;
 		u32	sge_bytes;	/* data bytes avail for SGE */
-		u64	dest_addr;
 
 		sge = &wqe->wr.sgl.sge[rctx->sge_idx];
 
@@ -496,11 +495,13 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			break;
 		}
 		mr = siw_mem2mr(sge->mem.obj);
-		dest_addr = sge->addr + rctx->sge_off;
 		if (mr->umem)
-			rv = siw_rx_umem(rctx, mr->umem, dest_addr, sge_bytes);
+			rv = siw_rx_umem(rctx, mr->umem,
+					 sge->addr + rctx->sge_off, sge_bytes);
 		else
-			rv = siw_rx_kva(rctx, sge_bytes, (void *)dest_addr);
+			rv = siw_rx_kva(rctx,
+					(void *)(sge->addr + rctx->sge_off),
+					sge_bytes);
 
 		if (rv != sge_bytes) {
 			wqe->processed += rcvd_bytes;
@@ -596,9 +597,9 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rv = siw_rx_umem(rctx, mr->umem,
 				 rctx->ddp_to + rctx->fpdu_part_rcvd, bytes);
 	else
-		rv = siw_rx_kva(rctx, bytes,
-			       (void *)(rctx->ddp_to +
-					rctx->fpdu_part_rcvd));
+		rv = siw_rx_kva(rctx,
+				(void *)(rctx->ddp_to + rctx->fpdu_part_rcvd),
+				bytes);
 
 	if (rv != bytes)
 		return -EINVAL;
@@ -801,8 +802,8 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rv = siw_rx_umem(rctx, mr->umem, sge->addr + wqe->processed,
 				 bytes);
 	else
-		rv = siw_rx_kva(rctx,  bytes,
-				(void *)(sge->addr + wqe->processed));
+		rv = siw_rx_kva(rctx, (void *)(sge->addr + wqe->processed),
+				bytes);
 	if (rv != bytes) {
 		wqe->wc_status = IB_WC_GENERAL_ERR;
 		rv = -EINVAL;

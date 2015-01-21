@@ -41,6 +41,7 @@
 
 #include <net/sock.h>
 #include <linux/tcp.h>
+#include <linux/version.h>
 
 #include <rdma/iw_cm.h>
 
