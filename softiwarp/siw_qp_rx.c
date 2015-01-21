@@ -4,7 +4,7 @@
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *          Fredy Neeser <nfd@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2015, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -50,7 +50,6 @@
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
-#include <rdma/ib_umem.h>
 
 #include "siw.h"
 #include "siw_obj.h"
@@ -110,60 +109,6 @@ static inline int siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
 			     ctx->fpdu_part_rcvd);
 }
 
-
-/*
- * siw_rx_umem_init()
- *
- * Given memory region @mr and tagged offset @t_off within @mr,
- * resolve corresponding ib_umem_chunk memory chunk pointer
- * and update receive context variables to point at receive position.
- * returns 0 on sucess and failure otherwise.
- *
- * NOTE: This function expects virtual addresses.
- * TODO: Function needs generalization to support relative adressing
- *       aka "ZBVA".
- *
- * @rctx:	Receive Context to be updated
- * @mr:		Memory Region
- * @t_off:	Offset within Memory Region
- *
- */
-static int siw_rx_umem_init(struct siw_iwarp_rx *rctx, struct siw_mr *mr,
-			    u64 t_off)
-{
-	struct ib_umem_chunk	*chunk;
-	u64			off_mr;   /* offset into MR */
-	int			psge_idx; /* Index of PSGE */
-
-	off_mr = t_off - (mr->mem.va & PAGE_MASK);
-	/*
-	 * Equivalent to
-	 * off_mr = t_off - mr->mem.va;
-	 * off_mr += mr->umem->offset;
-	 */
-
-	/* Skip pages not referenced by t_off */
-	psge_idx = off_mr >> PAGE_SHIFT;
-
-	list_for_each_entry(chunk, &mr->umem->chunk_list, list) {
-		if (psge_idx < chunk->nents)
-			break;
-		psge_idx -= chunk->nents;
-	}
-	if (psge_idx >= chunk->nents) {
-		dprint(DBG_MM|DBG_ON, "(QP%d): Short chunk list\n",
-			RX_QPID(rctx));
-		return -EINVAL;
-	}
-	rctx->pg_idx = psge_idx;
-	rctx->pg_off = off_mr & ~PAGE_MASK;
-	rctx->umem_chunk = chunk;
-
-	dprint(DBG_MM, "(QP%d): New chunk, idx %d\n", RX_QPID(rctx), psge_idx);
-	return 0;
-}
-
-
 /*
  * siw_rx_umem()
  *
@@ -177,42 +122,41 @@ static int siw_rx_umem_init(struct siw_iwarp_rx *rctx, struct siw_mr *mr,
  * @len:	Number of bytes to place
  * @umen_ends:	1, if rctx chunk pointer should not be updated after len.
  */
-static int siw_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
+static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
+		       u64 dest_addr, int len)
 {
-	struct scatterlist	*p_list;
-	void			*dest;
-	struct ib_umem_chunk    *chunk = rctx->umem_chunk;
-	int			pg_off = rctx->pg_off,
-				copied = 0,
-				bytes,
-				rv;
-
+	void	*dest;
+	int	pg_off = dest_addr & ~PAGE_MASK,
+		copied = 0,
+		bytes,
+		rv;
 	while (len) {
+		struct page *p = siw_get_upage(umem, dest_addr);
+
 		bytes  = min(len, (int)PAGE_SIZE - pg_off);
-		p_list = &chunk->page_list[rctx->pg_idx];
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
-		dest = kmap_atomic(sg_page(p_list), KM_SOFTIRQ0);
+		dest = kmap_atomic(p, KM_SOFTIRQ0);
 #else
-		dest = kmap_atomic(sg_page(p_list));
+		dest = kmap_atomic(p);
 #endif
-
 		rv = skb_copy_bits(rctx->skb, rctx->skb_offset, dest + pg_off,
 				   bytes);
 
-		dprint(DBG_RX, "(QP%d): Page #%d, "
+		dprint(DBG_RX, "(QP%d): Page %p, "
 			"bytes=%u, rv=%d returned by skb_copy_bits()\n",
-			RX_QPID(rctx), rctx->pg_idx, bytes, rv);
+			RX_QPID(rctx), p, bytes, rv);
 
 		if (likely(!rv)) {
 			if (rctx->crc_enabled)
-				rv = siw_crc_sg(&rctx->mpa_crc_hd, p_list,
-						pg_off, bytes);
+				rv = siw_crc_page(&rctx->mpa_crc_hd, p, pg_off,
+						  bytes);
 
 			rctx->skb_offset += bytes;
 			copied += bytes;
 			len -= bytes;
-			pg_off += bytes;
+			dest_addr += bytes;
+			pg_off = 0;
 		}
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
@@ -231,33 +175,10 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, int len, int umem_ends)
 
 			goto out;
 		}
-		if (pg_off == PAGE_SIZE) {
-			/*
-			 * end of page
-			 */
-			pg_off = 0;
-			/*
-			 * reference next page chunk if
-			 * - all pages in chunk used AND
-			 * - current loop fills more into this umem
-			 *   OR the next receive will go into this umem
-			 *   starting at the position where we are leaving
-			 *   the routine.
-			 */
-			if (++rctx->pg_idx == chunk->nents &&
-				(len > 0 || !umem_ends)) {
-
-				rctx->pg_idx = 0;
-				chunk = mem_chunk_next(chunk);
-			}
-		}
 	}
 	/*
 	 * store chunk position for resume
 	 */
-	rctx->umem_chunk = chunk;
-	rctx->pg_off = pg_off;
-
 	rctx->skb_copied += copied;
 	rctx->skb_new -= copied;
 out:
@@ -551,6 +472,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	while (data_bytes) {
 		struct siw_pd	*pd;
 		u32	sge_bytes;	/* data bytes avail for SGE */
+		u64	dest_addr;
 
 		sge = &wqe->wr.sgl.sge[rctx->sge_idx];
 
@@ -574,39 +496,12 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			break;
 		}
 		mr = siw_mem2mr(sge->mem.obj);
+		dest_addr = sge->addr + rctx->sge_off;
+		if (mr->umem)
+			rv = siw_rx_umem(rctx, mr->umem, dest_addr, sge_bytes);
+		else
+			rv = siw_rx_kva(rctx, sge_bytes, (void *)dest_addr);
 
-		if (mr->umem) {
-			/*
-			 * Are we going to finish placing
-			 * - the last fragment of the current SGE or
-			 * - the last DDP segment (L=1) of the current
-			 *   RDMAP message?
-			 *
-			 * siw_rx_umem() must advance umem page_chunk position
-			 * after sucessful receive only, if receive into
-			 * current umem does not end.
-			 * umem ends, if:
-			 *   - current SGE gets completely filled, OR
-			 *   - current MPA FPDU is last AND gets consumed now
-			 */
-			int umem_ends =
-				((sge_bytes + rctx->sge_off == sge->len) ||
-				  (!rctx->more_ddp_segs &&
-				   rctx->fpdu_part_rcvd + sge_bytes ==
-				   rctx->fpdu_part_rem)) ? 1 : 0;
-
-			if (rctx->sge_off == 0) {
-				/*
-				 * started a new sge: update receive pointers
-				 */
-				rv = siw_rx_umem_init(rctx, mr, sge->addr);
-				if (rv)
-					break;
-			}
-			rv = siw_rx_umem(rctx, sge_bytes, umem_ends);
-		} else
-			rv = siw_rx_kva(rctx, sge_bytes,
-					(void *)(sge->addr + rctx->sge_off));
 		if (rv != sge_bytes) {
 			wqe->processed += rcvd_bytes;
 			return -EINVAL;
@@ -697,26 +592,10 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	}
 	mr = siw_mem2mr(mem);
 
-	if (mr->umem) {
-		/*
-		 * Are we going to place the last piece of the last
-		 * DDP segment of the current RDMAP message?
-		 *
-		 * It is last if:
-		 * - rctx->fpdu_part_rem <= rctx->skb_new AND
-		 * - payload_rem (of current DDP segment) <= rctx->skb_new
-		 */
-		int last_write = ((rctx->fpdu_part_rem <= rctx->skb_new) &&
-				   !rctx->more_ddp_segs) ? 1 : 0;
-
-		if (rctx->first_ddp_seg) {
-			rv = siw_rx_umem_init(rctx, mr, rctx->ddp_to);
-			if (rv)
-				return -EINVAL;
-
-		}
-		rv = siw_rx_umem(rctx, bytes, last_write);
-	} else
+	if (mr->umem)
+		rv = siw_rx_umem(rctx, mr->umem,
+				 rctx->ddp_to + rctx->fpdu_part_rcvd, bytes);
+	else
 		rv = siw_rx_kva(rctx, bytes,
 			       (void *)(rctx->ddp_to +
 					rctx->fpdu_part_rcvd));
@@ -918,26 +797,10 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	}
 	mr = siw_mem2mr(sge->mem.obj);
 
-	if (mr->umem) {
-		/*
-		 * Are we going to finish placing the last DDP segment (L=1)
-		 * of the current RDMAP message?
-		 *
-		 * NOTE: siw_rresp_check_ntoh() guarantees that the
-		 * last inbound RDMAP Read Response message exactly matches
-		 * with the RREQ WR.
-		 */
-		int is_last = (bytes + wqe->processed == wqe->bytes) ? 1 : 0;
-
-		if (rctx->first_ddp_seg) {
-			rv = siw_rx_umem_init(rctx, mr, sge->addr);
-			if (rv) {
-				wqe->wc_status = IB_WC_LOC_PROT_ERR;
-				goto done;
-			}
-		}
-		rv = siw_rx_umem(rctx,  bytes, is_last);
-	} else
+	if (mr->umem)
+		rv = siw_rx_umem(rctx, mr->umem, sge->addr + wqe->processed,
+				 bytes);
+	else
 		rv = siw_rx_kva(rctx,  bytes,
 				(void *)(sge->addr + wqe->processed));
 	if (rv != bytes) {
@@ -1322,7 +1185,6 @@ static inline int siw_rdmap_complete(struct siw_qp *qp,
 		break;
 
 	}
-	rctx->umem_chunk = NULL; /* DEBUG aid, tentatively */
 	rx_wqe(qp) = NULL;	/* also clears MEM object for WRITE */
 
 	return rv;
@@ -1410,7 +1272,6 @@ siw_rdmap_error(struct siw_qp *qp, struct siw_iwarp_rx *rctx, int status)
 	default:
 		break;
 	}
-	rctx->umem_chunk = NULL; /* DEBUG aid, tentatively */
 	rx_wqe(qp) = NULL;	/* also clears MEM object for WRITE */
 }
 

@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2015, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -49,8 +49,7 @@
 #include <linux/crypto.h>
 #include <linux/resource.h>	/* MLOCK_LIMIT */
 #include <linux/module.h>
-
-#include <rdma/ib_umem.h>	/* struct ib_umem_chunk */
+#include <linux/version.h>
 
 #include "siw_user.h"
 #include "iwarp.h"
@@ -181,9 +180,28 @@ enum siw_access_flags {
 
 #define STAG_VALID	1
 #define STAG_INVALID	0
-#define SIW_STAG_MAX	0xffffffff
+#define SIW_STAG_MAX	0xffffff
 
 struct siw_mr;
+
+/*
+ * siw presentation of user memory registered as source
+ * or target of RDMA operations.
+ */
+
+struct siw_page_chunk {
+	struct page **p;
+};
+
+struct siw_umem {
+	struct siw_ucontext	*context;
+	struct siw_page_chunk	*page_chunk;
+	int			num_pages;
+	u64			fpa;	/* First page base address */
+	struct pid		*pid;
+	struct mm_struct	*mm_s;
+	struct work_struct	work;
+};
 
 /*
  * generic memory representation for registered siw memory.
@@ -194,7 +212,9 @@ struct siw_mr;
 struct siw_mem {
 	struct siw_objhdr	hdr;
 
-	struct siw_mr	*mr;		/* assoc. MR if MW, NULL if MR */
+	struct siw_mr	*mr;	/* assoc. MR if MW, NULL if MR */
+	u64	va;		/* VA of memory */
+	u64	len;		/* amount of memory bytes */
 
 	u32	stag_state:1,		/* VALID or INVALID */
 		is_zbva:1,		/* zero based virt. addr. */
@@ -204,10 +224,6 @@ struct siw_mem {
 		rsvd:27;
 
 	enum siw_access_flags	perms;	/* local/remote READ & WRITE */
-
-	u64	va;		/* VA of memory */
-	u64	len;		/* amount of memory bytes */
-	u32	fbo;		/* first byte offset */
 };
 
 #define SIW_MEM_IS_MW(m)	((m)->mr != NULL)
@@ -221,7 +237,7 @@ struct siw_mem {
 struct siw_mr {
 	struct ib_mr	ofa_mr;
 	struct siw_mem	mem;
-	struct ib_umem	*umem;
+	struct siw_umem	*umem;
 	struct siw_pd	*pd;
 };
 
@@ -531,9 +547,6 @@ struct siw_iwarp_rx {
 
 	int			sge_idx;	/* current sge in rx */
 	unsigned int		sge_off;	/* already rcvd in curr. sge */
-	struct ib_umem_chunk	*umem_chunk;	/* chunk used by sge and off */
-	int			pg_idx;		/* page used in chunk */
-	unsigned int		pg_off;		/* offset within that page */
 
 	enum siw_rx_state	state;
 
@@ -627,8 +640,6 @@ struct siw_iwarp_tx {
 
 	int			sge_idx;	/* current sge in tx */
 	u32			sge_off;	/* already sent in curr. sge */
-	struct ib_umem_chunk	*umem_chunk;	/* chunk used by sge and off */
-	int			pg_idx;		/* page used in mem chunk */
 };
 
 struct siw_qp {
@@ -767,6 +778,34 @@ void siw_sq_complete(struct list_head *, struct siw_qp *, int,
 		     enum ib_send_flags);
 
 
+/* SIW user memory management */
+
+#define CHUNK_SHIFT	9	/* sets number of pages per chunk */
+#define PAGES_PER_CHUNK	(_AC(1, UL) << CHUNK_SHIFT)
+#define CHUNK_MASK	(~(PAGES_PER_CHUNK - 1))
+#define PAGE_CHUNK_SIZE	(PAGES_PER_CHUNK * sizeof(struct page *))
+
+#define PAGE_COOKIE_INVALID	PAGES_PER_CHUNK
+/*
+ * siw_get_upage()
+ *
+ * Get page pointer for address on given umem.
+ *
+ * @umem: two dimensional list of page pointers
+ * @addr: user virtual address
+ */
+static inline struct page *siw_get_upage(struct siw_umem *umem, u64 addr)
+{
+	int	page_idx	= (addr - umem->fpa) >> PAGE_SHIFT,
+		chunk_idx	= page_idx >> CHUNK_SHIFT,
+		page_in_chunk	= page_idx & ~CHUNK_MASK;
+
+	return umem->page_chunk[chunk_idx].p[page_in_chunk];
+}
+
+struct siw_umem *siw_umem_get(struct siw_ucontext *, u64, u64);
+void siw_umem_release(struct siw_umem *);
+
 /* QP TX path functions */
 int siw_qp_sq_process(struct siw_qp *, int);
 int siw_sq_worker_init(void);
@@ -787,7 +826,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 
 /* MPA utilities */
 int siw_crc_array(struct hash_desc *, u8 *, size_t);
-int siw_crc_sg(struct hash_desc *, struct scatterlist *, int, int);
+int siw_crc_page(struct hash_desc *, struct page *, int, int);
 
 
 /* Varia */
@@ -824,13 +863,6 @@ siw_rreq_queue(struct siw_wqe *wqe, struct siw_qp *qp)
 	list_move_tail(&wqe->list, &qp->orq);
 	atomic_dec(&qp->orq_space);
 	unlock_orq_rxsave(qp, flags);
-}
-
-
-static inline struct ib_umem_chunk *
-mem_chunk_next(struct ib_umem_chunk *chunk)
-{
-	return list_entry(chunk->list.next, struct ib_umem_chunk, list);
 }
 
 

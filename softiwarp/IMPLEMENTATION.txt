@@ -75,12 +75,11 @@ to have bugs and is under change.
 
 Memory Management:
 ==================
-siw currently uses OFA's ib_umem_get() function to pin memory for later
-use in data transfer operations. Transmit and receive memory is checked
+siw abandoned using OFA core user page management. It uses private functions
+to pin and maintain memory for later use in data transfer operations.
+Transmit and receive memory is checked
 against correct access permissions only in the moment of access by the
 network input path or before pushing it to the socket for transmission.
-ib_umem_get() provides DMA mappings for the requested address space which
-is not used by siw.
 
 
 Performance:

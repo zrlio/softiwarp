@@ -4,7 +4,7 @@
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *          Fredy Neeser <nfd@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2015, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -45,7 +45,6 @@
 
 #include <rdma/iw_cm.h>
 #include <rdma/ib_verbs.h>
-#include <rdma/ib_umem.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
 
@@ -433,10 +432,8 @@ void siw_print_rctx(struct siw_iwarp_rx *rctx)
 	pr_info("FPDU State:\trx_state:%d,\n\t\trcvd:%d, rem:%d, "
 		"pad:%d\n", rctx->state, rctx->fpdu_part_rcvd,
 		rctx->fpdu_part_rem, rctx->pad);
-	pr_info("Rx Mem:\t\tp:0x%p, chunk:0x%p,\n\t\tp_ix:%d, "
-		"p_off:%d, stag:0x%08x, mem_id:%d\n",
-		rctx->dest.wqe, rctx->umem_chunk, rctx->pg_idx, rctx->pg_off,
-		rctx->ddp_stag, rctx->ddp_stag >> 8);
+	pr_info("Rx Mem:\t\tp:0x%p, stag:0x%08x, mem_id:%d\n",
+		rctx->dest.wqe, rctx->ddp_stag, rctx->ddp_stag >> 8);
 	pr_info("DDP State:\tprev_op:%d, first_seg:%d, "
 		"more_segs:%d\n", rctx->prev_rdmap_opcode, rctx->first_ddp_seg,
 		rctx->more_ddp_segs);

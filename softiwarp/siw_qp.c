@@ -4,7 +4,7 @@
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *          Fredy Neeser <nfd@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2015, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -51,7 +51,6 @@
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
-#include <rdma/ib_umem.h>
 
 #include "siw.h"
 #include "siw_obj.h"
@@ -150,7 +149,11 @@ struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 } };
 
 
-static void siw_qp_llp_data_ready(struct sock *sk, int flags)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
+static void siw_qp_llp_data_ready(struct sock *sk, int bytes)
+#else
+static void siw_qp_llp_data_ready(struct sock *sk)
+#endif
 {
 	struct siw_qp		*qp;
 
@@ -165,9 +168,15 @@ static void siw_qp_llp_data_ready(struct sock *sk, int flags)
 	if (down_read_trylock(&qp->state_lock)) {
 		read_descriptor_t	rd_desc = {.arg.data = qp, .count = 1};
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 		dprint(DBG_SK|DBG_RX, "(QP%d): "
-			"state (before tcp_read_sock)=%d, flags=%x\n",
-			QP_ID(qp), qp->attrs.state, flags);
+			"state (before tcp_read_sock)=%d, bytes=%x\n",
+			QP_ID(qp), qp->attrs.state, bytes);
+#else
+		dprint(DBG_SK|DBG_RX, "(QP%d): "
+			"state (before tcp_read_sock)=%d\n",
+			QP_ID(qp), qp->attrs.state);
+#endif
 
 		if (likely(qp->attrs.state == SIW_QP_STATE_RTS))
 			/*
@@ -178,9 +187,15 @@ static void siw_qp_llp_data_ready(struct sock *sk, int flags)
 			 */
 			tcp_read_sock(sk, &rd_desc, siw_tcp_rx_data);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 		dprint(DBG_SK|DBG_RX, "(QP%d): "
-			"state (after tcp_read_sock)=%d, flags=%x\n",
-			QP_ID(qp), qp->attrs.state, flags);
+			"state (after tcp_read_sock)=%d, bytes=%x\n",
+			QP_ID(qp), qp->attrs.state, bytes);
+#else
+		dprint(DBG_SK|DBG_RX, "(QP%d): "
+			"state (after tcp_read_sock)=%d\n",
+			QP_ID(qp), qp->attrs.state);
+#endif
 
 		up_read(&qp->state_lock);
 	} else {
@@ -832,20 +847,15 @@ int siw_crc_array(struct hash_desc *desc, u8 *start, size_t len)
 	return crypto_hash_update(desc, &sg, len);
 }
 
-int siw_crc_sg(struct hash_desc *desc, struct scatterlist *sg,
-	       int off, int len)
+int siw_crc_page(struct hash_desc *desc, struct page *p, int off, int len)
 {
 	int rv;
+	struct scatterlist t_sg;
 
-	if (off == 0)
-		rv = crypto_hash_update(desc, sg, len);
-	else {
-		struct scatterlist t_sg;
+	sg_init_table(&t_sg, 1);
+	sg_set_page(&t_sg, p, len, off);
+	rv = crypto_hash_update(desc, &t_sg, len);
 
-		sg_init_table(&t_sg, 1);
-		sg_set_page(&t_sg, sg_page(sg), len, off);
-		rv = crypto_hash_update(desc, &t_sg, len);
-	}
 	return rv;
 }
 

@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2015, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -49,7 +49,6 @@
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
-#include <rdma/ib_umem.h>
 
 #include "siw.h"
 #include "siw_obj.h"
@@ -172,8 +171,6 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 	c_tx->ctrl_sent = 0;
 	c_tx->sge_idx = 0;
 	c_tx->sge_off = 0;
-	c_tx->pg_idx = 0;
-	c_tx->umem_chunk = NULL;
 
 	/*
 	 * Do complete CRC if enabled and short packet
@@ -347,85 +344,6 @@ static int siw_0copy_tx(struct socket *s, struct page **page,
 	return sent;
 }
 
-/*
- * siw_tx_umem_init()
- *
- * Resolve memory chunk and update page index pointer
- *
- * @chunk:	Umem Chunk to be updated
- * @p_idx	Page Index to be updated
- * @mr:		Memory Region
- * @va:		Virtual Address within MR
- *
- */
-static void siw_tx_umem_init(struct ib_umem_chunk **chunk, int *page_index,
-			     struct siw_mr *mr, u64 va)
-{
-	struct ib_umem_chunk *cp;
-	int p_ix;
-
-	BUG_ON(va < mr->mem.va);
-	va -= mr->mem.va & PAGE_MASK;
-	/*
-	 * equivalent to
-	 * va += mr->umem->offset;
-	 * va = va >> PAGE_SHIFT;
-	 */
-
-	p_ix = va >> PAGE_SHIFT;
-
-	list_for_each_entry(cp, &mr->umem->chunk_list, list) {
-		if (p_ix < cp->nents)
-			break;
-		p_ix -= cp->nents;
-	}
-	BUG_ON(p_ix >= cp->nents);
-
-	dprint(DBG_MM, "(): New chunk 0x%p: Page idx %d, nents %d\n",
-		cp, p_ix, cp->nents);
-
-	*chunk = cp;
-	*page_index = p_ix;
-
-	return;
-}
-
-/*
- * update memory chunk and page index from given starting point
- * before current transmit described by: c_tx->sge_off,
- * sge->addr, c_tx->pg_idx, and c_tx->umem_chunk
- */
-static inline void
-siw_umem_chunk_update(struct siw_iwarp_tx *c_tx, struct siw_mr *mr,
-		      struct siw_sge *sge, unsigned int off)
-{
-	struct ib_umem_chunk *chunk = c_tx->umem_chunk;
-	u64 va_start = sge->addr + c_tx->sge_off;
-
-	off += (unsigned int)(va_start & ~PAGE_MASK); /* + first page offset */
-	off >>= PAGE_SHIFT;	/* bytes offset becomes pages offset */
-
-	list_for_each_entry_from(chunk, &mr->umem->chunk_list, list) {
-		if (c_tx->pg_idx + off < chunk->nents)
-			break;
-		off -= chunk->nents - c_tx->pg_idx;
-		c_tx->pg_idx = 0;
-	}
-	c_tx->pg_idx += off;
-
-	c_tx->umem_chunk = chunk;
-}
-
-static inline void
-siw_save_txstate(struct siw_iwarp_tx *c_tx, struct ib_umem_chunk *chunk,
-		 unsigned int pg_idx, unsigned int sge_idx,
-		 unsigned int sge_off)
-{
-	c_tx->umem_chunk = chunk;
-	c_tx->pg_idx = pg_idx;
-	c_tx->sge_idx = sge_idx;
-	c_tx->sge_off = sge_off;
-}
 
 #define MAX_TRAILER (MPA_CRC_SIZE + 4)
 
@@ -450,7 +368,6 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 	struct siw_sge		*sge = &wqe->wr.sgl.sge[c_tx->sge_idx],
 				*first_sge = sge;
 	struct siw_mr		*mr = NULL;
-	struct ib_umem_chunk	*chunk = c_tx->umem_chunk;
 
 	struct kvec		iov[MAX_ARRAY];
 	struct page		*page_array[MAX_ARRAY];
@@ -461,8 +378,7 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 				hdr_len = 0,
 				trl_len = 0,
 				sge_off = c_tx->sge_off,
-				sge_idx = c_tx->sge_idx,
-				pg_idx = c_tx->pg_idx;
+				sge_idx = c_tx->sge_idx;
 
 
 	if (c_tx->state == SIW_SEND_HDR) {
@@ -495,15 +411,6 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 			mr = siw_mem2mr(sge->mem.obj);
 			if (!mr->umem)
 				is_kva = 1;
-			else if (!chunk) {
-				siw_tx_umem_init(&chunk, &pg_idx, mr,
-						 sge->addr + sge_off);
-
-				if (!c_tx->umem_chunk)
-					/* Starting first tx for this WQE */
-					siw_save_txstate(c_tx, chunk, pg_idx,
-							 sge_idx, sge_off);
-			}
 		} else
 			is_kva = 1;
 
@@ -525,21 +432,22 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 		}
 
 		while (sge_len) {
-			struct scatterlist *sl;
-			size_t plen = min((int)PAGE_SIZE - fp_off, sge_len);
+			int plen = min((int)PAGE_SIZE - fp_off, sge_len);
 
 			BUG_ON(plen <= 0);
 			if (!is_kva) {
-				sl = &chunk->page_list[pg_idx];
-				page_array[seg] = sg_page(sl);
+				struct page *p =
+					siw_get_upage(mr->umem,
+						      sge->addr + sge_off);
+				page_array[seg] = p;
+
 				if (!c_tx->use_sendpage) {
-					iov[seg].iov_base = kmap(sg_page(sl))
-							    + fp_off;
+					iov[seg].iov_base = kmap(p) + fp_off;
 					iov[seg].iov_len = plen;
 				}
 				if (do_crc)
-					siw_crc_sg(&c_tx->mpa_crc_hd, sl,
-						   fp_off, plen);
+					siw_crc_page(&c_tx->mpa_crc_hd, p,
+						     fp_off, plen);
 			} else {
 				u64 pa = ((sge->addr + sge_off) & PAGE_MASK);
 				page_array[seg] = virt_to_page(pa);
@@ -552,17 +460,12 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 			sge_len -= plen;
 			sge_off += plen;
 			data_len -= plen;
-
-			if (!is_kva && plen + fp_off == PAGE_SIZE &&
-			    sge_off < sge->len && ++pg_idx == chunk->nents) {
-				chunk = mem_chunk_next(chunk);
-				pg_idx = 0;
-			}
 			fp_off = 0;
+
 			if (++seg > (int)MAX_ARRAY) {
 				dprint(DBG_ON, "(QP%d): Too many fragments\n",
 				       TX_QPID(c_tx));
-				if (!is_kva) {
+				if (!is_kva && !c_tx->use_sendpage) {
 					int i = (hdr_len > 0) ? 1 : 0;
 					seg--;
 					while (i < seg)
@@ -580,7 +483,6 @@ sge_done:
 			sge_idx++;
 			sge++;
 			sge_off = 0;
-			chunk = NULL;
 		}
 	}
 	/* trailer */
@@ -646,11 +548,11 @@ sge_done:
 
 	if (rv >= (int)data_len) {
 		/* all user data pushed to TCP or no data to push */
-		if (data_len > 0 && wqe->processed < wqe->bytes)
+		if (data_len > 0 && wqe->processed < wqe->bytes) {
 			/* Save the current state for next tx */
-			siw_save_txstate(c_tx, chunk, pg_idx, sge_idx,
-					 sge_off);
-
+			c_tx->sge_idx = sge_idx;
+			c_tx->sge_off = sge_off;
+		}
 		rv -= data_len;
 
 		if (rv == trl_len) /* all pushed */
@@ -673,23 +575,18 @@ sge_done:
 			 * Some bytes out. Recompute tx state based
 			 * on old state and bytes pushed
 			 */
+			unsigned int sge_unsent;
+
 			c_tx->bytes_unsent -= rv;
 			sge = &wqe->wr.sgl.sge[c_tx->sge_idx];
+			sge_unsent = sge->len - c_tx->sge_off;
 
-			if (!is_kva && c_tx->sge_idx == sge_idx &&
-			    c_tx->umem_chunk)
-				/*
-				 * same SGE as starting SGE for this FPDU
-				 */
-				siw_umem_chunk_update(c_tx, mr, sge, rv);
-			else {
-				while (sge->len <= c_tx->sge_off + rv) {
-					rv -= sge->len - c_tx->sge_off;
-					c_tx->sge_idx++;
-					c_tx->sge_off = 0;
-					sge = &wqe->wr.sgl.sge[c_tx->sge_idx];
-				}
-				c_tx->umem_chunk = NULL;
+			while (sge_unsent <= rv) {
+				rv -= sge_unsent;
+				c_tx->sge_idx++;
+				c_tx->sge_off = 0;
+				sge++;
+				sge_unsent = sge->len;
 			}
 			c_tx->sge_off += rv;
 			BUG_ON(c_tx->sge_off >= sge->len);

@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2015, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -318,13 +318,6 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->phys_port_cnt = 1;
 
 	ofa_dev->num_comp_vectors = 1;
-	/*
-	 * While DMA adresses are not used a device must be provided
-	 * as long as the code relies on OFA's ib_umem_get() function for
-	 * memory pinning. calling ib_umem_get() includes a
-	 * (for siw case useless) translation of memory to DMA
-	 * adresses for that device.
-	 */
 	ofa_dev->dma_device = &siw_generic_dma_device;
 	ofa_dev->query_device = siw_query_device;
 	ofa_dev->query_port = siw_query_port;

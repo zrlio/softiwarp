@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2015, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -44,7 +44,6 @@
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
-#include <rdma/ib_umem.h>
 
 #include "siw.h"
 #include "siw_verbs.h"
@@ -1267,7 +1266,7 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 	return 0;
 }
 
-static struct siw_mr *siw_alloc_mr(struct siw_dev *sdev, struct ib_umem *umem,
+static struct siw_mr *siw_alloc_mr(struct siw_dev *sdev, struct siw_umem *umem,
 				   u64 start, u64 len, int rights)
 {
 	struct siw_mr *mr = kzalloc(sizeof *mr, GFP_KERNEL);
@@ -1288,7 +1287,6 @@ static struct siw_mr *siw_alloc_mr(struct siw_dev *sdev, struct ib_umem *umem,
 
 	mr->mem.va  = start;
 	mr->mem.len = len;
-	mr->mem.fbo = 0 ;
 	mr->mem.mr  = NULL;
 	mr->mem.perms = SR_MEM_LREAD | /* not selectable in OFA */
 			(rights & IB_ACCESS_REMOTE_READ  ? SR_MEM_RREAD  : 0) |
@@ -1317,7 +1315,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 {
 	struct siw_mr		*mr = NULL;
 	struct siw_pd		*pd = siw_pd_ofa2siw(ofa_pd);
-	struct ib_umem		*umem = NULL;
+	struct siw_umem		*umem = NULL;
 	struct siw_ureq_reg_mr	ureq;
 	struct siw_uresp_reg_mr	uresp;
 	struct siw_dev		*sdev = pd->hdr.sdev;
@@ -1354,9 +1352,11 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 			goto err_out;
 		}
 	}
-	umem = ib_umem_get(ofa_pd->uobject->context, start, len, rights, 0);
+
+	umem = siw_umem_get(siw_ctx_ofa2siw(ofa_pd->uobject->context),
+			    start, len);
 	if (IS_ERR(umem)) {
-		dprint(DBG_MM, " ib_umem_get:%ld LOCKED:%lu, LIMIT:%lu\n",
+		dprint(DBG_MM, " siw_umem_get:%ld LOCKED:%lu, LIMIT:%lu\n",
 			PTR_ERR(umem), current->mm->locked_vm,
 			current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur >>
 			PAGE_SHIFT);
@@ -1396,7 +1396,7 @@ err_out_mr:
 
 err_out:
 	if (umem)
-		ib_umem_release(umem);
+		siw_umem_release(umem);
 
 	atomic_dec(&sdev->num_mem);
 

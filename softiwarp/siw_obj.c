@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2015, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -67,6 +67,7 @@ void siw_idr_release(struct siw_dev *sdev)
 	idr_destroy(&sdev->mem_idr);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 static inline int siw_add_obj(spinlock_t *lock, struct idr *idr,
 			      struct siw_objhdr *obj)
 {
@@ -99,6 +100,36 @@ again:
 	}
 	return rv;
 }
+#else
+static inline int siw_add_obj(spinlock_t *lock, struct idr *idr,
+			      struct siw_objhdr *obj)
+{
+	unsigned long flags;
+	int id, pre_id;
+
+	do {
+		get_random_bytes(&pre_id, sizeof pre_id);
+		pre_id &= 0xffffff;
+	} while (pre_id == 0);
+again:
+	spin_lock_irqsave(lock, flags);
+	id = idr_alloc(idr, obj, pre_id, 0xffffff - 1, GFP_KERNEL);
+	spin_unlock_irqrestore(lock, flags);
+
+	if (id > 0) {
+		siw_objhdr_init(obj);
+		obj->id = id;
+		dprint(DBG_OBJ, "(OBJ%d): IDR New Object\n", id);
+	} else if (id == -ENOSPC && pre_id != 1) {
+		pre_id = 1;
+		goto again;
+	} else {
+		BUG_ON(id == 0);
+		dprint(DBG_OBJ|DBG_ON, "(OBJ??): IDR New Object failed!\n");
+	}
+	return id > 0 ? 0 : id;
+}
+#endif
 
 static inline struct siw_objhdr *siw_get_obj(struct idr *idr, int id)
 {
@@ -186,6 +217,7 @@ int siw_pd_add(struct siw_dev *sdev, struct siw_pd *pd)
 	return rv;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 /*
  * Stag lookup is based on its index part only (24 bits)
  * It is assumed that the idr_get_new_above(,,1,) function will
@@ -240,6 +272,43 @@ again:
 
 	return 0;
 }
+#else
+/*
+ * Stag lookup is based on its index part only (24 bits).
+ * The code avoids special Stag of zero and tries to randomize
+ * STag values between 1 and SIW_STAG_MAX.
+ */
+int siw_mem_add(struct siw_dev *sdev, struct siw_mem *m)
+{
+	unsigned long flags;
+	int id, pre_id;
+
+	do {
+		get_random_bytes(&pre_id, sizeof pre_id);
+		pre_id &= 0xffffff;
+	} while (pre_id == 0);
+again:
+	spin_lock_irqsave(&sdev->idr_lock, flags);
+	id = idr_alloc(&sdev->mem_idr, m, pre_id, SIW_STAG_MAX, GFP_KERNEL);
+	spin_unlock_irqrestore(&sdev->idr_lock, flags);
+
+	if (id == -ENOSPC || id > SIW_STAG_MAX) {
+		if (pre_id == 1) {
+			dprint(DBG_OBJ|DBG_MM|DBG_ON,
+				"(IDR): New Object failed: %d\n", pre_id);
+			return -ENOSPC;
+		}
+		pre_id = 1;
+		goto again;
+	} 
+	siw_objhdr_init(&m->hdr);
+	m->hdr.id = id;
+	m->hdr.sdev = sdev;
+	dprint(DBG_OBJ|DBG_MM, "(IDR%d): New Object\n", id);
+
+	return 0;
+}
+#endif
 
 void siw_remove_obj(spinlock_t *lock, struct idr *idr,
 		      struct siw_objhdr *hdr)
@@ -323,7 +392,7 @@ static void siw_free_mem(struct kref *ref)
 		struct siw_mr *mr = container_of(m, struct siw_mr, mem);
 		dprint(DBG_MM|DBG_OBJ, "(MEM%d): Release UMem\n", OBJ_ID(m));
 		if (mr->umem)
-			ib_umem_release(mr->umem);
+			siw_umem_release(mr->umem);
 		kfree(mr);
 	}
 }

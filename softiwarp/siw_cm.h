@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2015, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -98,7 +98,11 @@ struct siw_cep {
 
 	/* Saved upcalls of socket llp.sock */
 	void    (*sk_state_change)(struct sock *sk);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 	void    (*sk_data_ready)(struct sock *sk, int bytes);
+#else
+	void    (*sk_data_ready)(struct sock *sk);
+#endif
 	void    (*sk_write_space)(struct sock *sk);
 	void    (*sk_error_report)(struct sock *sk);
 };

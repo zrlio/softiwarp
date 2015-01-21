@@ -4,7 +4,7 @@
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *          Fredy Neeser <nfd@zurich.ibm.com>
  *
- * Copyright (c) 2008-2011, IBM Corporation
+ * Copyright (c) 2008-2015, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -88,7 +88,11 @@ static int siw_sock_nodelay(struct socket *sock)
 }
 
 static void siw_cm_llp_state_change(struct sock *);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 static void siw_cm_llp_data_ready(struct sock *, int);
+#else
+static void siw_cm_llp_data_ready(struct sock *);
+#endif
 static void siw_cm_llp_write_space(struct sock *);
 static void siw_cm_llp_error_report(struct sock *);
 
@@ -122,7 +126,6 @@ static void siw_sk_restore_upcalls(struct sock *sk, struct siw_cep *cep)
 	sk->sk_write_space	= cep->sk_write_space;
 	sk->sk_error_report	= cep->sk_error_report;
 	sk->sk_user_data	= NULL;
-	sk->sk_no_check		= 0;
 }
 
 static void siw_socket_disassoc(struct socket *s)
@@ -1145,7 +1148,11 @@ int siw_cm_queue_work(struct siw_cep *cep, enum siw_work_type type)
 }
 
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 static void siw_cm_llp_data_ready(struct sock *sk, int flags)
+#else
+static void siw_cm_llp_data_ready(struct sock *sk)
+#endif
 {
 	struct siw_cep	*cep;
 
@@ -1157,9 +1164,12 @@ static void siw_cm_llp_data_ready(struct sock *sk, int flags)
 		goto out;
 	}
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 	dprint(DBG_CM, "(): cep 0x%p, state: %d, flags %x\n", cep,
 		cep->state, flags);
-
+#else
+	dprint(DBG_CM, "(): cep 0x%p, state: %d\n", cep, cep->state);
+#endif
 	switch (cep->state) {
 
 	case SIW_EPSTATE_RDMA_MODE:

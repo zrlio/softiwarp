@@ -23,3 +23,13 @@ possible.
 06/13/2014
 
 softiwarp_old/ has been removed.
+
+
+01/20/2015
+
+With kernel version 3.15 the OFA core changed the way it maintains
+registered user communication buffers. The new code would result
+in inefficient initialization of RDMA data source or sink location for
+a software RDMA stack. Therefore, siw abandons using OFA core
+user page management (ib_umem_get() etc.) and implememnts its
+own simple, but better suited management of pinned user pages.
