@@ -76,7 +76,7 @@ static inline int siw_add_obj(spinlock_t *lock, struct idr *idr,
 	int		rv;
 
 	get_random_bytes(&pre_id, sizeof pre_id);
-	pre_id &= 0xffff;
+	pre_id &= 0xffffff;
 again:
 	do {
 		if (!(idr_pre_get(idr, GFP_KERNEL)))

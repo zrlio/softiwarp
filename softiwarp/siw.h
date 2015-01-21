@@ -179,7 +179,7 @@ enum siw_access_flags {
 
 #define STAG_VALID	1
 #define STAG_INVALID	0
-#define SIW_STAG_MAX	0xffffffff
+#define SIW_STAG_MAX	0xffffff
 
 struct siw_mr;
 
