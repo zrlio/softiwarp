@@ -439,6 +439,7 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 				struct page *p =
 					siw_get_upage(mr->umem,
 						      sge->addr + sge_off);
+				BUG_ON(!p);
 				page_array[seg] = p;
 
 				if (!c_tx->use_sendpage) {

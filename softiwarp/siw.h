@@ -193,10 +193,9 @@ struct siw_page_chunk {
 };
 
 struct siw_umem {
-	struct siw_ucontext	*context;
 	struct siw_page_chunk	*page_chunk;
 	int			num_pages;
-	u64			fpa;	/* First page base address */
+	u64			fp_addr;	/* First page base address */
 	struct pid		*pid;
 	struct mm_struct	*mm_s;
 	struct work_struct	work;
@@ -794,14 +793,18 @@ void siw_sq_complete(struct list_head *, struct siw_qp *, int,
  */
 static inline struct page *siw_get_upage(struct siw_umem *umem, u64 addr)
 {
-	int	page_idx	= (addr - umem->fpa) >> PAGE_SHIFT,
-		chunk_idx	= page_idx >> CHUNK_SHIFT,
-		page_in_chunk	= page_idx & ~CHUNK_MASK;
+	unsigned int	page_idx	= (addr - umem->fp_addr) >> PAGE_SHIFT,
+			chunk_idx	= page_idx >> CHUNK_SHIFT,
+			page_in_chunk	= page_idx & ~CHUNK_MASK;
 
+	if (unlikely(page_idx >= umem->num_pages)) {
+		WARN_ON(1);
+		return NULL;
+	}
 	return umem->page_chunk[chunk_idx].p[page_in_chunk];
 }
 
-struct siw_umem *siw_umem_get(struct siw_ucontext *, u64, u64);
+struct siw_umem *siw_umem_get(u64, u64);
 void siw_umem_release(struct siw_umem *);
 
 /* QP TX path functions */

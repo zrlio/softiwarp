@@ -130,8 +130,18 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 		copied = 0,
 		bytes,
 		rv;
+
 	while (len) {
 		struct page *p = siw_get_upage(umem, dest_addr);
+
+		if (unlikely(!p)) {
+			/* siw internal error */
+			rctx->skb_copied += copied;
+			rctx->skb_new -= copied;
+			copied = -EFAULT;
+
+			goto out;
+		}
 
 		bytes  = min(len, (int)PAGE_SIZE - pg_off);
 
@@ -322,12 +332,12 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 	u32 ddp_mo  = be32_to_cpu(send->ddp_mo);
 	u32 ddp_qn  = be32_to_cpu(send->ddp_qn);
 
-	if (ddp_qn != RDMAP_UNTAGGED_QN_SEND) {
+	if (unlikely(ddp_qn != RDMAP_UNTAGGED_QN_SEND)) {
 		dprint(DBG_RX|DBG_ON, " Invalid DDP QN %d for SEND\n",
 			ddp_qn);
 		return -EINVAL;
 	}
-	if (ddp_msn != rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]) {
+	if (unlikely(ddp_msn != rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND])) {
 		dprint(DBG_RX|DBG_ON, " received MSN=%d, expected MSN=%d\n",
 			rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND], ddp_msn);
 		/*
@@ -337,7 +347,7 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		 */
 		return -EINVAL;
 	}
-	if (ddp_mo != wqe->processed) {
+	if (unlikely(ddp_mo != wqe->processed)) {
 		dprint(DBG_RX|DBG_ON, " Received MO=%u, expected MO=%u\n",
 			ddp_mo, wqe->processed);
 		/*
@@ -350,7 +360,7 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		rctx->sge_idx = 0;
 		rctx->sge_off = 0;
 	}
-	if (wqe->bytes < wqe->processed + rctx->fpdu_part_rem) {
+	if (unlikely(wqe->bytes < wqe->processed + rctx->fpdu_part_rem)) {
 		dprint(DBG_RX|DBG_ON, " Receive space short: %d < %d\n",
 			wqe->bytes - wqe->processed, rctx->fpdu_part_rem);
 		wqe->wc_status = IB_WC_LOC_LEN_ERR;
@@ -432,7 +442,6 @@ static inline struct siw_wqe *siw_get_rqe(struct siw_qp *qp)
 int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
 	struct siw_wqe	*wqe;
-	struct siw_sge	*sge;
 	struct siw_mr	*mr;
 	u32		data_bytes,	/* all data bytes available */
 			rcvd_bytes;	/* sum of data bytes rcvd */
@@ -442,14 +451,14 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		WARN_ON(rx_wqe(qp) != NULL);
 
 		wqe = siw_get_rqe(qp);
-		if (!wqe)
+		if (unlikely(!wqe))
 			return -ENOENT;
 
 		rx_wqe(qp) = wqe;
 		wqe->wr_status = SR_WR_INPROGRESS;
 	} else  {
 		wqe = rx_wqe(qp);
-		if (!wqe) {
+		if (unlikely(!wqe)) {
 			/*
 			 * this is a siw bug!
 			 */
@@ -459,18 +468,18 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	}
 	if (rctx->state == SIW_GET_DATA_START) {
 		rv = siw_send_check_ntoh(rctx);
-		if (rv) {
+		if (unlikely(rv)) {
 			siw_qp_event(qp, IB_EVENT_QP_FATAL);
 			return rv;
 		}
-		if (!rctx->fpdu_part_rem) /* zero length SEND */
-			return 0;
 	}
 	data_bytes = min(rctx->fpdu_part_rem, rctx->skb_new);
 	rcvd_bytes = 0;
 
+	/* A zero length SEND will skip below loop */
 	while (data_bytes) {
 		struct siw_pd	*pd;
+		struct siw_sge	*sge;
 		u32	sge_bytes;	/* data bytes avail for SGE */
 
 		sge = &wqe->wr.sgl.sge[rctx->sge_idx];
@@ -503,7 +512,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 					(void *)(sge->addr + rctx->sge_off),
 					sge_bytes);
 
-		if (rv != sge_bytes) {
+		if (unlikely(rv != sge_bytes)) {
 			wqe->processed += rcvd_bytes;
 			return -EINVAL;
 		}

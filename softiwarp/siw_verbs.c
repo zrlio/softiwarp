@@ -1028,7 +1028,7 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 	dprint(DBG_WR|DBG_TX, "(QP%d): state=%d\n", QP_ID(qp),
 		qp->attrs.state);
 
-	if (qp->srq) {
+	if (unlikely(qp->srq)) {
 		*bad_wr = wr;
 		return -EOPNOTSUPP; /* what else from errno.h? */
 	}
@@ -1353,8 +1353,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		}
 	}
 
-	umem = siw_umem_get(siw_ctx_ofa2siw(ofa_pd->uobject->context),
-			    start, len);
+	umem = siw_umem_get(start, len);
 	if (IS_ERR(umem)) {
 		dprint(DBG_MM, " siw_umem_get:%ld LOCKED:%lu, LIMIT:%lu\n",
 			PTR_ERR(umem), current->mm->locked_vm,

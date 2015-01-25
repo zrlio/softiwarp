@@ -110,7 +110,7 @@ void siw_umem_release(struct siw_umem *umem)
 	kfree(umem);
 }
 
-struct siw_umem *siw_umem_get(struct siw_ucontext *ctx, u64 start, u64 len)
+struct siw_umem *siw_umem_get(u64 start, u64 len)
 {
 	struct siw_umem *umem;
 	u64 first_page_va;
@@ -145,8 +145,7 @@ struct siw_umem *siw_umem_get(struct siw_ucontext *ctx, u64 start, u64 len)
 		goto out;
 	}
 
-	umem->context = ctx;
-	umem->fpa = first_page_va;
+	umem->fp_addr = first_page_va;
 
 	umem->page_chunk = kzalloc(num_chunks * sizeof(struct siw_page_chunk),
 				   GFP_KERNEL);
