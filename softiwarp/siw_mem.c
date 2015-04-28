@@ -47,6 +47,11 @@
 #include "siw.h"
 #include "siw_debug.h"
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 2, 0)
+/* Older kernels don't have pinned pages acounting */
+#define pinned_vm       locked_vm
+#endif
+
 static void siw_umem_update_stats(struct work_struct *work)
 {
 	struct siw_umem *umem = container_of(work, struct siw_umem, work);
