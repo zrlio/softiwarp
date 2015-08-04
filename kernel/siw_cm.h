@@ -161,8 +161,6 @@ static inline unsigned int get_tcp_mss(struct sock *sk)
 #endif
 	else
 		return tp->mss_cache;
-
-        return 0;
 }
 
 #endif
