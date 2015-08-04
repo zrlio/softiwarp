@@ -52,13 +52,19 @@
 #include "siw_cm.h"
 #include "siw_obj.h"
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0)
+#define FDENTRY(f) (f->f_dentry)
+#else
+#define FDENTRY(f) (f->f_path.dentry)
+#endif
+
 
 static struct dentry *siw_debugfs;
 
 static ssize_t siw_show_qps(struct file *f, char __user *buf, size_t space,
 			    loff_t *ppos)
 {
-	struct siw_dev	*sdev = f->f_dentry->d_inode->i_private;
+	struct siw_dev	*sdev = FDENTRY(f)->d_inode->i_private;
 	struct list_head *pos, *tmp;
 	char *kbuf = NULL;
 	int len = 0, n, num_qp;
@@ -128,7 +134,7 @@ out:
 static ssize_t siw_show_ceps(struct file *f, char __user *buf, size_t space,
 			     loff_t *ppos)
 {
-	struct siw_dev	*sdev = f->f_dentry->d_inode->i_private;
+	struct siw_dev	*sdev = FDENTRY(f)->d_inode->i_private;
 	struct list_head *pos, *tmp;
 	char *kbuf = NULL;
 	int len = 0, n, num_cep;
@@ -198,7 +204,7 @@ out:
 static ssize_t siw_show_stats(struct file *f, char __user *buf, size_t space,
 			      loff_t *ppos)
 {
-	struct siw_dev	*sdev = f->f_dentry->d_inode->i_private;
+	struct siw_dev	*sdev = FDENTRY(f)->d_inode->i_private;
 	char *kbuf = NULL;
 	int len = 0;
 

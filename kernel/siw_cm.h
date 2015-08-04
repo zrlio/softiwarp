@@ -152,12 +152,17 @@ extern void siw_cm_exit(void);
 static inline unsigned int get_tcp_mss(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0)
 	if (tp->xmit_size_goal_segs)
 		return tp->xmit_size_goal_segs * tp->mss_cache;
-
+#else
+	if (tp->gso_segs)
+		return tp->gso_segs * tp->mss_cache;
+#endif
 	else
 		return tp->mss_cache;
+
+        return 0;
 }
 
 #endif
