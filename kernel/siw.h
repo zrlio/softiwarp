@@ -41,6 +41,7 @@
 
 #include <linux/idr.h>
 #include <rdma/ib_verbs.h>
+#include <linux/const.h>
 #include <linux/socket.h>
 #include <linux/skbuff.h>
 #include <linux/in.h>
