@@ -47,11 +47,6 @@
 #include "siw.h"
 #include "siw_debug.h"
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 2, 0)
-/* Older kernels don't have pinned pages acounting */
-#define pinned_vm       locked_vm
-#endif
-
 static void siw_umem_update_stats(struct work_struct *work)
 {
 	struct siw_umem *umem = container_of(work, struct siw_umem, work);
@@ -149,7 +144,6 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 		rv = -ENOMEM;
 		goto out;
 	}
-
 	umem->fp_addr = first_page_va;
 
 	umem->page_chunk = kzalloc(num_chunks * sizeof(struct siw_page_chunk),
@@ -265,7 +259,7 @@ static void siw_dma_unmap_sg(struct ib_device *dev, struct scatterlist *sgl,
 	/* NOP */
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0) && !(defined(IS_RH_7_2))
 static u64 siw_dma_address(struct ib_device *dev, struct scatterlist *sg)
 {
 	u64 kva = (u64) page_address(sg_page(sg));
@@ -325,7 +319,7 @@ struct ib_dma_mapping_ops siw_dma_mapping_ops = {
 	.unmap_page		= siw_dma_unmap_page,
 	.map_sg			= siw_dma_map_sg,
 	.unmap_sg		= siw_dma_unmap_sg,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0) && !(defined(IS_RH_7_2))
 	.dma_address		= siw_dma_address,
 	.dma_len		= siw_dma_len,
 #endif

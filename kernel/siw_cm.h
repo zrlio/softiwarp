@@ -41,7 +41,6 @@
 
 #include <net/sock.h>
 #include <linux/tcp.h>
-#include <linux/version.h>
 
 #include <rdma/iw_cm.h>
 
@@ -126,6 +125,12 @@ struct siw_cm_work {
 	struct siw_cep	*cep;
 };
 
+/*
+ * With kernel 3.12, OFA ddressing changed from sockaddr_in to
+ * sockaddr_storage
+ */
+#define to_sockaddr_in(a) (*(struct sockaddr_in *)(&(a)))
+
 extern int siw_connect(struct iw_cm_id *, struct iw_cm_conn_param *);
 extern int siw_accept(struct iw_cm_id *, struct iw_cm_conn_param *);
 extern int siw_reject(struct iw_cm_id *, const void *, u8);
@@ -152,12 +157,13 @@ extern void siw_cm_exit(void);
 static inline unsigned int get_tcp_mss(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0)
-	if (tp->xmit_size_goal_segs)
-		return tp->xmit_size_goal_segs * tp->mss_cache;
-#else
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0) || defined(IS_RH_7_2)
 	if (tp->gso_segs)
 		return tp->gso_segs * tp->mss_cache;
+#else
+	if (tp->xmit_size_goal_segs)
+		return tp->xmit_size_goal_segs * tp->mss_cache;
 #endif
 	else
 		return tp->mss_cache;

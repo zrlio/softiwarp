@@ -46,6 +46,9 @@
 #include <infiniband/driver.h>
 #include <infiniband/arch.h>
 
+#define _NR_SYSCALL_DB 313
+
+
 enum siw_if_type {
 	SIW_IF_OFED = 0, 	/* only via standard ofed syscall if */
 	SIW_IF_MAPPED = 1	/* private qp and cq mapping */
@@ -63,6 +66,9 @@ struct siw_pd {
 
 struct siw_srq {
 	struct ibv_srq		ofa_srq;
+	struct siw_rqe		*recvq;
+	uint32_t		rq_put;
+	uint32_t		num_rqe;
 	pthread_spinlock_t	lock;
 };
 
@@ -78,22 +84,42 @@ struct siw_qp {
 	struct siw_device	*siw_dev;
 
 	uint32_t		id;
-	uint32_t		sq_size;
-	uint32_t		rq_size;
-	pthread_spinlock_t	lock;
+	uint32_t		dev_id;
+
+	uint32_t		num_sqe;
+	uint32_t		sq_put;
+	struct siw_sqe		*sendq;
+	pthread_spinlock_t	sq_lock;
+	
+	uint32_t		num_rqe;
+	uint32_t		rq_put;
+	struct siw_rqe		*recvq;
+	pthread_spinlock_t	rq_lock;
+
+	struct siw_srq		*srq;
+
+	int			sq_sig_all;
 };
 
 struct siw_cq {
 	struct ibv_cq		ofa_cq;
 	struct siw_device	*siw_dev;
-	uint32_t		k_id;	/* id of kernel object */
+	uint32_t		id;
 
+	/* Points to kernel shared control
+	 * object at the end of CQE array */
+	struct siw_cq_ctrl	*ctrl;
+
+	int			num_cqe;
+	uint32_t		cq_get;
+	struct siw_cqe		*queue;
 	pthread_spinlock_t	lock;
 };
 
 
 struct siw_context {
 	struct ibv_context	ofa_ctx;	
+	uint32_t		dev_id;
 };
 
 
@@ -137,6 +163,7 @@ extern int siw_resize_cq(struct ibv_cq *, int);
 extern int siw_destroy_cq(struct ibv_cq *);
 extern int siw_notify_cq(struct ibv_cq *, int);
 extern int siw_poll_cq_ofed(struct ibv_cq *, int, struct ibv_wc *);
+extern int siw_poll_cq_mapped(struct ibv_cq *, int, struct ibv_wc *);
 
 extern struct ibv_srq *siw_create_srq(struct ibv_pd *,
 				     struct ibv_srq_init_attr *);
@@ -151,10 +178,16 @@ extern int siw_destroy_qp(struct ibv_qp *);
 
 extern int siw_post_send_ofed(struct ibv_qp *, struct ibv_send_wr *,
 			     struct ibv_send_wr **);
+extern int siw_post_send_mapped(struct ibv_qp *, struct ibv_send_wr *,
+				struct ibv_send_wr **);
 extern int siw_post_recv_ofed(struct ibv_qp *, struct ibv_recv_wr *,
+			     struct ibv_recv_wr **);
+extern int siw_post_recv_mapped(struct ibv_qp *, struct ibv_recv_wr *,
 			     struct ibv_recv_wr **);
 extern int siw_post_srq_recv_ofed(struct ibv_srq *, struct ibv_recv_wr *,
 				  struct ibv_recv_wr **);
+extern int siw_post_srq_recv_mapped(struct ibv_srq *, struct ibv_recv_wr *,
+				    struct ibv_recv_wr **);
 
 extern struct ibv_ah *siw_create_ah(struct ibv_pd *, struct ibv_ah_attr *);
 extern int siw_destroy_ah(struct ibv_ah *);

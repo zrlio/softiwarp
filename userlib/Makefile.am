@@ -2,6 +2,7 @@
 lib_LTLIBRARIES = src/libsiw.la
 
 AM_CFLAGS = -g -Wall -D_GNU_SOURCE
+AM_CFLAGS += -I../common
 
 if HAVE_LD_VERSION_SCRIPT
 	siw_version_script = -Wl,--version-script=$(srcdir)/src/siw.map
@@ -22,9 +23,3 @@ EXTRA_DIST = src/siw.h src/siw_abi.h src/siw.map libsiw.spec.in \
 
 dist-hook: libsiw.spec
 	cp libsiw.spec $(distdir)
-
-
-
-
-
-

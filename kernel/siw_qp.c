@@ -148,9 +148,8 @@ struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 	.proc_data = siw_proc_terminate
 } };
 
-
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-static void siw_qp_llp_data_ready(struct sock *sk, int bytes)
+static void siw_qp_llp_data_ready(struct sock *sk, int flags)
 #else
 static void siw_qp_llp_data_ready(struct sock *sk)
 #endif
@@ -165,18 +164,13 @@ static void siw_qp_llp_data_ready(struct sock *sk)
 	}
 	qp = sk_to_qp(sk);
 
-	if (down_read_trylock(&qp->state_lock)) {
-		read_descriptor_t	rd_desc = {.arg.data = qp, .count = 1};
+	if (likely(!qp->rx_ctx.rx_suspend &&
+		   down_read_trylock(&qp->state_lock))) {
+		read_descriptor_t rd_desc = {.arg.data = qp, .count = 1};
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-		dprint(DBG_SK|DBG_RX, "(QP%d): "
-			"state (before tcp_read_sock)=%d, bytes=%x\n",
-			QP_ID(qp), qp->attrs.state, bytes);
-#else
 		dprint(DBG_SK|DBG_RX, "(QP%d): "
 			"state (before tcp_read_sock)=%d\n",
 			QP_ID(qp), qp->attrs.state);
-#endif
 
 		if (likely(qp->attrs.state == SIW_QP_STATE_RTS))
 			/*
@@ -187,20 +181,15 @@ static void siw_qp_llp_data_ready(struct sock *sk)
 			 */
 			tcp_read_sock(sk, &rd_desc, siw_tcp_rx_data);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-		dprint(DBG_SK|DBG_RX, "(QP%d): "
-			"state (after tcp_read_sock)=%d, bytes=%x\n",
-			QP_ID(qp), qp->attrs.state, bytes);
-#else
 		dprint(DBG_SK|DBG_RX, "(QP%d): "
 			"state (after tcp_read_sock)=%d\n",
 			QP_ID(qp), qp->attrs.state);
-#endif
 
 		up_read(&qp->state_lock);
 	} else {
 		dprint(DBG_SK|DBG_RX, "(QP%d): "
-			"Unable to acquire state_lock\n", QP_ID(qp));
+			"Unable to RX: rx_suspend: %d\n",
+			QP_ID(qp), qp->rx_ctx.rx_suspend);
 	}
 done:
 	read_unlock(&sk->sk_callback_lock);
@@ -214,6 +203,8 @@ void siw_qp_llp_close(struct siw_qp *qp)
 		qp->cep);
 
 	down_write(&qp->state_lock);
+
+	dprint(DBG_CM, "(QP%d): state locked\n", QP_ID(qp));
 
 	qp->rx_ctx.rx_suspend = 1;
 	qp->tx_ctx.tx_suspend = 1;
@@ -236,7 +227,7 @@ void siw_qp_llp_close(struct siw_qp *qp)
 	 * ERROR or IDLE ?
 	 */
 	case SIW_QP_STATE_CLOSING:
-		if (!TX_IDLE(qp))
+		if (tx_wqe(qp)->wr_status == SR_WR_IDLE)
 			qp->attrs.state = SIW_QP_STATE_ERROR;
 		else
 			qp->attrs.state = SIW_QP_STATE_IDLE;
@@ -260,6 +251,9 @@ void siw_qp_llp_close(struct siw_qp *qp)
 	}
 
 	up_write(&qp->state_lock);
+	dprint(DBG_CM, "(QP%d): Exit: SIW QP state = %s, cep=0x%p\n",
+		QP_ID(qp), siw_qp_state_to_string[qp->attrs.state],
+		qp->cep);
 }
 
 
@@ -284,6 +278,14 @@ static void siw_qp_llp_write_space(struct sock *sk)
 		siw_sq_queue_work(qp);
 	}
 #else
+#if 0
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	pr_info("SENT: nxt_write %u, snd_una %u, snd_nxt %u\n",
+		tp->write_seq, tp->snd_una, tp->snd_nxt);
+}
+#endif
 	sk_stream_write_space(sk);
 
 	if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
@@ -305,38 +307,35 @@ static void siw_qp_socket_assoc(struct socket *s, struct siw_qp *qp)
 }
 
 
-static int siw_qp_irq_init(struct siw_qp *qp, int size)
+static int siw_qp_readq_init(struct siw_qp *qp, int irq_size, int orq_size)
 {
-	struct siw_wqe *wqe = NULL;
-	int i = 0;
+	dprint(DBG_CM|DBG_WR, "(QP%d): %d %d\n", QP_ID(qp), irq_size, orq_size);
 
-	dprint(DBG_CM|DBG_WR, "(QP%d): irq size: %d\n", QP_ID(qp), i);
-	if (size <= 0)
-		return 0;
+	if (!irq_size)
+		irq_size = 1;
+	if (!orq_size)
+		orq_size = 1;
 
-	atomic_set(&qp->irq_space, size);
+	qp->attrs.irq_size = irq_size;
+	qp->attrs.orq_size = orq_size;
 
-	while (size--) {
-		wqe = kzalloc(sizeof(struct siw_wqe), GFP_KERNEL);
-		if (!wqe)
-			break;
-
-		INIT_LIST_HEAD(&wqe->list);
-		list_add(&wqe->list, &qp->freeq);
-		i++;
-		SIW_INC_STAT_WQE;
-	}
-	if (!wqe) {
+	qp->irq = vmalloc(irq_size * sizeof(struct siw_sqe));
+	if (!qp->irq) {
 		dprint(DBG_ON, "(QP%d): Failed\n", QP_ID(qp));
-		while (i--) {
-			wqe = list_first_wqe(&qp->freeq);
-			list_del(&wqe->list);
-			kfree(wqe);
-			SIW_DEC_STAT_WQE;
-		}
-		atomic_set(&qp->irq_space, 0);
+		qp->attrs.irq_size = 0;
 		return -ENOMEM;
 	}
+	qp->orq = vmalloc(orq_size * sizeof(struct siw_sqe));
+	if (!qp->orq) {
+		dprint(DBG_ON, "(QP%d): Failed\n", QP_ID(qp));
+		qp->attrs.orq_size = 0;
+		qp->attrs.irq_size = 0;
+		vfree(qp->irq);
+		return -ENOMEM;
+	}
+	memset(qp->irq, 0, irq_size * sizeof(struct siw_sqe));
+	memset(qp->orq, 0, orq_size * sizeof(struct siw_sqe));
+
 	return 0;
 }
 
@@ -415,7 +414,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			if (attrs->flags & SIW_RDMA_READ_ENABLED)
 				qp->attrs.flags |= SIW_RDMA_READ_ENABLED;
 			else
-				qp->attrs.flags &= ~SIW_RDMA_WRITE_ENABLED;
+				qp->attrs.flags &= ~SIW_RDMA_READ_ENABLED;
 
 		}
 		/*
@@ -478,18 +477,12 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			 * the RResponse it may trigger another peer RRequest
 			 * before the RResponse goes back to free queue.
 			 */
-			++attrs->ird;
-			rv = siw_qp_irq_init(qp, attrs->ird);
+			//XXXXX ++attrs->irq_size;
+			rv = siw_qp_readq_init(qp, attrs->irq_size,
+					       attrs->orq_size);
 			if (rv)
 				break;
 
-			if (!attrs->ord)
-				attrs->ord = 1;
-
-			atomic_set(&qp->orq_space, attrs->ord);
-
-			qp->attrs.ord = attrs->ord;
-			qp->attrs.ird = attrs->ird;
 			qp->attrs.mpa = attrs->mpa;
 			/*
 			 * move socket rx and tx under qp's control
@@ -540,7 +533,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			 * and wait for the socket state change upcall to
 			 * come back closed.
 			 */
-			if (TX_IDLE(qp))
+			if (tx_wqe(qp)->wr_status == SR_WR_IDLE)
 				qp->attrs.state = SIW_QP_STATE_CLOSING;
 			else {
 				qp->attrs.state = SIW_QP_STATE_ERROR;
@@ -596,7 +589,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			siw_rq_flush(qp);
 			qp->attrs.state = SIW_QP_STATE_ERROR;
 
-			if (!TX_IDLE(qp))
+			if (tx_wqe(qp)->wr_status != SR_WR_IDLE)
 				siw_sq_flush(qp);
 
 			break;
@@ -614,7 +607,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 		switch (attrs->state) {
 
 		case SIW_QP_STATE_IDLE:
-			BUG_ON(!TX_IDLE(qp));
+			BUG_ON(tx_wqe(qp)->wr_status != SR_WR_IDLE);
 			qp->attrs.state = SIW_QP_STATE_IDLE;
 
 			break;
@@ -633,7 +626,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			 */
 			qp->attrs.state = SIW_QP_STATE_ERROR;
 
-			if (!TX_IDLE(qp))
+			if (tx_wqe(qp)->wr_status != SR_WR_IDLE)
 				siw_sq_flush(qp);
 
 			siw_rq_flush(qp);
@@ -673,7 +666,7 @@ struct ib_qp *siw_get_ofaqp(struct ib_device *ofa_dev, int id)
 		dprint(DBG_OBJ, " QPID: %d\n", QP_ID(qp));
 		return &qp->ofa_qp;
 	}
-	return NULL;
+	return (struct ib_qp *)NULL;
 }
 
 /*
@@ -740,40 +733,38 @@ int siw_check_mem(struct siw_pd *pd, struct siw_mem *mem, u64 addr,
  *
  * @pd:		Protection Domain memory should belong to
  * @sge:	SGE to be checked
+ * @mem:	resulting memory reference if successful
  * @perms:	requested access permissions
  * @off:	starting offset in SGE
  * @len:	len of memory interval to be checked
  *
- * NOTE: Function references each SGE's memory object (sge->mem)
+ * NOTE: Function references SGE's memory object (mem->obj)
  * if not yet done. New reference is kept if check went ok and
- * released if check failed. If sge->mem is already valid, no new
+ * released if check failed. If mem->obj is already valid, no new
  * lookup is being done and mem is not released it check fails.
  */
 int
 siw_check_sge(struct siw_pd *pd, struct siw_sge *sge,
-	      enum siw_access_flags perms, u32 off, int len)
+	      union siw_mem_resolved *mem, enum siw_access_flags perms,
+	      u32 off, int len)
 {
 	struct siw_dev	*sdev = pd->hdr.sdev;
-	struct siw_mem	*mem;
 	int		new_ref = 0, rv = 0;
 
-	if (len + off > sge->len) {
+	if (len + off > sge->length) {
 		rv = -EPERM;
 		goto fail;
 	}
-	if (sge->mem.obj == NULL) {
-		mem = siw_mem_id2obj(sdev, sge->lkey >> 8);
-		if (!mem) {
+	if (mem->obj == NULL) {
+		mem->obj = siw_mem_id2obj(sdev, sge->lkey >> 8);
+		if (mem->obj == NULL) {
 			rv = -EINVAL;
 			goto fail;
 		}
-		sge->mem.obj = mem;
 		new_ref = 1;
-	} else {
-		mem = sge->mem.obj;
-		new_ref = 0;
 	}
-	rv = siw_check_mem(pd, mem, sge->addr + off, perms, len);
+
+	rv = siw_check_mem(pd, mem->obj, sge->laddr + off, perms, len);
 	if (rv)
 		goto fail;
 
@@ -781,60 +772,149 @@ siw_check_sge(struct siw_pd *pd, struct siw_sge *sge,
 
 fail:
 	if (new_ref) {
-		siw_mem_put(mem);
-		sge->mem.obj = NULL;
+		siw_mem_put(mem->obj);
+		mem->obj = NULL;
 	}
 	return rv;
 }
 
+void siw_read_to_orq(struct siw_sqe *rreq, struct siw_sqe *sqe)
+{
+	rreq->id = sqe->id;
+	rreq->opcode = SIW_OP_READ;
+	rreq->sge[0].laddr = sqe->sge[0].laddr;
+	rreq->sge[0].length = sqe->sge[0].length;
+	rreq->sge[0].lkey = sqe->sge[0].lkey;
+	rreq->flags = sqe->flags | SIW_WQE_VALID;
+	rreq->num_sge = 1;
+}
+
 
 /*
- * siw_check_sgl()
- *
- * Check permissions for a list of SGE's (SGL)
- *
- * @pd:		Protection Domain SGL should belong to
- * @sge:	List of SGE to be checked
- * @perms:	requested access permissions
- * @off:	starting offset in SGL
- * @len:	len of memory interval to be checked
- *
- * Function checks only subinterval of SGL described by bytelen @len,
- * check starts with byte offset @off which must be within
- * the length of the first SGE.
- *
- * The caller is responsible for keeping @len + @off within
- * the total byte len of the SGL.
+ * Must be called with SQ locked
  */
-
-int siw_check_sgl(struct siw_pd *pd, struct siw_sge *sge,
-		  enum siw_access_flags perms, u32 off, int len)
+int siw_activate_tx(struct siw_qp *qp)
 {
-	int	rv = 0;
+	struct siw_sqe	*sqe;
+	struct siw_wqe	*wqe = tx_wqe(qp);
+	int rv = 1;
 
-	dprint(DBG_WR, "(PD%d): Enter\n", OBJ_ID(pd));
+	if (unlikely(wqe->wr_status != SR_WR_IDLE)) {
+		WARN_ON(1);
+		return -1;
+	}
+	/*
+	 * This codes prefers pending READ Responses over SQ processing
+	 */
+	sqe = &qp->irq[qp->irq_get % qp->attrs.irq_size];
 
-	BUG_ON(off >= sge->len);
+	if (sqe->flags & SIW_WQE_VALID) {
+		memset(wqe->mem, 0, sizeof *wqe->mem * SIW_MAX_SGE);
+		wqe->wr_status = SR_WR_QUEUED;
 
-	while (len > 0) {
-		dprint(DBG_WR, "(PD%d): sge=%p, perms=0x%x, "
-			"len=%d, off=%u, sge->len=%d\n",
-			OBJ_ID(pd), sge, perms, len, off, sge->len);
-		/*
-		 * rdma verbs: do not check stag for a zero length sge
-		 */
-		if (sge->len == 0) {
-			sge++;
-			continue;
+		/* start READ RESPONSE */
+		wqe->sqe.opcode = SIW_OP_READ_RESPONSE;
+		wqe->sqe.flags = 0;
+		wqe->sqe.num_sge = 1;
+		wqe->sqe.sge[0].length = sqe->sge[0].length;
+		wqe->sqe.sge[0].laddr = sqe->sge[0].laddr;
+		wqe->sqe.sge[0].lkey = sqe->sge[0].lkey;
+		wqe->sqe.rkey = sqe->rkey;
+		wqe->sqe.raddr = sqe->raddr;
+
+		wqe->processed = 0;
+		qp->irq_get++;
+		set_mb(sqe->flags, 0);
+
+		goto out;
+	} 
+
+	sqe = sq_get_next(qp);
+	if (sqe) {
+		unsigned long flags;
+
+		memset(wqe->mem, 0, sizeof *wqe->mem * SIW_MAX_SGE);
+		wqe->wr_status = SR_WR_QUEUED;
+
+		/* First copy SQE to kernel private memory */
+		memcpy(&wqe->sqe, sqe, sizeof *sqe);
+
+		if (wqe->sqe.opcode > SIW_OP_SEND) {
+			rv = -EINVAL;
+			goto out;
 		}
 
-		rv = siw_check_sge(pd, sge, perms, off, sge->len - off);
-		if (rv)
-			break;
+		if (wqe->sqe.flags & SIW_WQE_INLINE) {
+			if (wqe->sqe.opcode != SIW_OP_SEND && 
+			    wqe->sqe.opcode != SIW_OP_WRITE) {
+				rv = -EINVAL;
+				goto out;
+			}
+			if (wqe->sqe.sge[0].length > SIW_MAX_INLINE) {
+				rv = -EINVAL;
+				goto out;
+			}
+			wqe->sqe.sge[0].laddr = (u64)&wqe->sqe.sge[1];
+			wqe->sqe.sge[0].lkey = 0;
+			wqe->sqe.num_sge = 1;
+		}
+		
+		if (wqe->sqe.flags & SIW_WQE_READ_FENCE) {
+			/* Only WRITE and SEND can be READ fenced */
+			if (unlikely(wqe->sqe.opcode != SIW_OP_WRITE &&
+				     wqe->sqe.opcode != SIW_OP_SEND)) {
+				pr_info("QP[%d]: cannot fence %d\n",
+					QP_ID(qp), wqe->sqe.opcode);
+				rv = -EINVAL;
+				goto out;
+			}
+			lock_orq_rxsave(qp, flags);
 
-		len -= sge->len - off;
-		off = 0;
-		sge++;
+			if (!siw_orq_empty(qp)) {
+				qp->tx_ctx.orq_fence = 1;
+				rv = 0;
+			}
+			unlock_orq_rxsave(qp, flags);
+
+		} else if (wqe->sqe.opcode == SIW_OP_READ) {
+			struct siw_sqe	*rreq;
+
+			wqe->sqe.num_sge = 1;
+
+			lock_orq_rxsave(qp, flags);
+
+			rreq = orq_get_free(qp);
+			if (rreq) {
+				/*
+				 * Make an immediate copy in ORQ to be ready
+				 * to process loopback READ reply
+				 */
+				siw_read_to_orq(rreq, &wqe->sqe);
+				qp->orq_put++;
+			} else {
+				qp->tx_ctx.orq_fence = 1;
+#ifdef DEBUG_ORQ
+				pr_info("QP[%d]: ORQ full, %d, %d, %d\n",
+					QP_ID(qp),
+					qp->orq_get % qp->attrs.orq_size,
+					qp->attrs.orq_size, qp->orq_put %
+					qp->attrs.orq_size);
+#endif
+				rv = 0;
+			}
+			unlock_orq_rxsave(qp, flags);
+		}
+
+		/* Clear SQE, can be re-used by application */
+		set_mb(sqe->flags, 0);
+		qp->sq_get++;
+	} else
+		rv = 0;
+	
+out:
+	if (unlikely(rv < 0)) {
+		pr_warn("QP[%d]: error %d in activate_tx\n", QP_ID(qp), rv);
+		wqe->wr_status = SR_WR_IDLE;
 	}
 	return rv;
 }
@@ -859,6 +939,126 @@ int siw_crc_page(struct hash_desc *desc, struct page *p, int off, int len)
 	return rv;
 }
 
+static void siw_cq_notify(struct siw_cq *cq, u32 flags)
+{
+	u32 cq_notify;
+
+	if (unlikely(!cq->ofa_cq.comp_handler))
+		return;
+
+	cq_notify = _load_shared(*cq->notify);
+
+	if ((cq_notify & SIW_NOTIFY_NEXT_COMPLETION) || 
+	    ((cq_notify & SIW_NOTIFY_SOLICITED) &&
+	     (flags & SIW_WQE_SOLICITED))) {
+		set_mb(*cq->notify, SIW_NOTIFY_NOT);
+		(*cq->ofa_cq.comp_handler)(&cq->ofa_cq, cq->ofa_cq.cq_context);
+	}
+}
+
+int siw_sqe_complete(struct siw_qp *qp, struct siw_sqe *sqe, u32 bytes,
+		     enum siw_wc_status status)
+{
+	struct siw_cq *cq = qp->scq;
+	struct siw_cqe *cqe;
+	unsigned long flags;
+	u32 idx;
+	int rv = 0;
+
+#if 0
+{
+	struct socket *s = qp->cep->llp.sock;
+	struct sock *sk = s->sk;
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	pr_info("SEND: nxt_write %u, snd_una %u\n",
+		tp->write_seq, tp->snd_una);
+}
+#endif
+	if (cq) {
+		u32 sqe_flags = sqe->flags;
+
+		lock_cq_rxsave(cq, flags);
+
+		idx = cq->cq_put % cq->num_cqe;
+		cqe = &cq->queue[idx];
+
+		if (!cqe->flags) {
+			cqe->id = sqe->id;
+			cqe->opcode = sqe->opcode;
+			cqe->status = status;
+			cqe->imm_data = 0;
+			cqe->bytes = bytes;
+
+			if (cq->kernel_verbs) {
+				siw_qp_get(qp);
+				cqe->qp = qp;
+			} else
+				cqe->qp_id = QP_ID(qp);
+
+			set_mb(cqe->flags, SIW_WQE_VALID);
+			set_mb(sqe->flags, 0);
+
+			cq->cq_put++;
+			unlock_cq_rxsave(cq, flags);
+			siw_cq_notify(cq, sqe_flags);
+		} else {
+			unlock_cq_rxsave(cq, flags);
+			rv = -ENOMEM;
+			siw_cq_event(cq, IB_EVENT_CQ_ERR);
+		}
+	} else
+		set_mb(sqe->flags, 0);
+
+	return rv;
+}
+
+int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
+		     enum siw_wc_status status)
+{
+	struct siw_cq *cq = qp->rcq;
+	struct siw_cqe *cqe;
+	unsigned long flags;
+	u32 idx;
+	int rv = 0;
+
+	if (cq) {
+		u32 rqe_flags = rqe->flags;
+
+		lock_cq_rxsave(cq, flags);
+
+		idx = cq->cq_put % cq->num_cqe;
+		cqe = &cq->queue[idx];
+
+		if (!cqe->flags) {
+			cqe->id = rqe->id;
+			cqe->opcode = SIW_OP_RECEIVE;
+			cqe->status = status;
+			cqe->imm_data = 0;
+			cqe->bytes = bytes;
+
+			if (cq->kernel_verbs) {
+				siw_qp_get(qp);
+				cqe->qp = qp;
+			} else
+				cqe->qp_id = QP_ID(qp);
+
+			set_mb(cqe->flags, SIW_WQE_VALID);
+			set_mb(rqe->flags, 0);
+
+			cq->cq_put++;
+			unlock_cq_rxsave(cq, flags);
+			siw_cq_notify(cq, rqe_flags);
+		} else {
+			unlock_cq_rxsave(cq, flags);
+			rv = -ENOMEM;
+			siw_cq_event(cq, IB_EVENT_CQ_ERR);
+		}
+	} else
+		set_mb(rqe->flags, 0);
+
+	return rv;
+}
 
 /*
  * siw_sq_flush()
@@ -877,94 +1077,70 @@ int siw_crc_page(struct hash_desc *desc, struct page *p, int off, int len)
  */
 void siw_sq_flush(struct siw_qp *qp)
 {
-	struct list_head	*pos, *n;
-	struct siw_wqe		*wqe = tx_wqe(qp);
-	struct siw_cq		*cq = qp->scq;
-	int			async_event = 0;
-	unsigned long		flags;
+	struct siw_sqe	*sqe;
+	struct siw_wqe	*wqe = tx_wqe(qp);
+	unsigned long	flags;
+	int		async_event = 0;
 
 	dprint(DBG_OBJ|DBG_CM|DBG_WR, "(QP%d): Enter\n", QP_ID(qp));
-
 	/*
-	 * flush the in-progress wqe, if there.
+	 * Start with completing any work currently on the ORQ
 	 */
-	if (wqe) {
+	lock_orq_rxsave(qp, flags);
+
+	while (qp->attrs.orq_size) {
+		sqe = &qp->orq[qp->orq_get % qp->attrs.orq_size];
+		if (!sqe->flags)
+			break;
+
+		if (siw_sqe_complete(qp, sqe, 0,
+				     SIW_WC_WR_FLUSH_ERR) != 0)
+			break;
+
+		qp->orq_get++;
+	}
+	unlock_orq_rxsave(qp, flags);
+	/*
+	 * Flush the in-progress wqe, if there.
+	 */
+	if (wqe->wr_status != SR_WR_IDLE) {
 		/*
 		 * TODO: Add iWARP Termination code
 		 */
-		tx_wqe(qp) = NULL;
-
 		dprint(DBG_WR,
-			" (QP%d): Flush current WQE %p, type %d\n",
-			QP_ID(qp), wqe, wr_type(wqe));
+			" (QP%d): Flush current WQE %p, type %d, status %d\n",
+			QP_ID(qp), wqe, tx_type(wqe), wqe->wr_status);
 
-		if (wr_type(wqe) == SIW_WR_RDMA_READ_RESP) {
-			siw_wqe_put(wqe);
-			wqe = NULL;
-		} else if (wr_type(wqe) != SIW_WR_RDMA_READ_REQ)
-			/*
-			 *  A RREQUEST is already on the ORRQ
-			 */
-			list_add_tail(&wqe->list, &qp->orq);
+		siw_wqe_put_mem(wqe, wqe->sqe.opcode);
+
+		if (wqe->sqe.opcode != SIW_OP_READ_RESPONSE &&
+		    (wqe->sqe.opcode != SIW_OP_READ ||
+		     wqe->wr_status == SR_WR_QUEUED))
+				/*
+				 * An in-progress RREQUEST is already in
+				 * the ORQ
+				 */
+				siw_sqe_complete(qp, &wqe->sqe, wqe->bytes,
+						 SIW_WC_WR_FLUSH_ERR);
+
+		wqe->wr_status = SR_WR_IDLE;
 	}
-	if (!list_empty(&qp->irq))
-		list_for_each_safe(pos, n, &qp->irq) {
-			wqe = list_entry_wqe(pos);
-			dprint(DBG_WR,
-				" (QP%d): Flush IRQ WQE %p, status %d\n",
-				QP_ID(qp), wqe, wqe->wr_status);
-			list_del(&wqe->list);
-			siw_wqe_put(wqe);
-		}
+	/*
+	 * Flush the Send Queue
+	 */
+	while (qp->attrs.sq_size) {
+		sqe = &qp->sendq[qp->sq_get % qp->attrs.sq_size];
+		if (!sqe->flags)
+			break;
 
-	if (!list_empty(&qp->orq))
-		list_for_each_safe(pos, n, &qp->orq) {
-			wqe = list_entry_wqe(pos);
-			dprint(DBG_WR,
-				" (QP%d): Flush ORQ WQE %p, type %d,"
-				" status %d\n", QP_ID(qp), wqe, wr_type(wqe),
-				wqe->wr_status);
-			if (wqe->wr_status != SR_WR_DONE) {
-				async_event = 1;
-				wqe->wc_status = IB_WC_WR_FLUSH_ERR;
-				wqe->wr_status = SR_WR_DONE;
-			}
-			if (cq) {
-				lock_cq_rxsave(cq, flags);
-				list_move_tail(&wqe->list, &cq->queue);
-				/* TODO: enforce CQ limits */
-				atomic_inc(&cq->qlen);
-				unlock_cq_rxsave(cq, flags);
-			} else {
-				list_del(&wqe->list);
-				siw_wqe_put(wqe);
-			}
-		}
-	if (!list_empty(&qp->sq)) {
 		async_event = 1;
-		list_for_each_safe(pos, n, &qp->sq) {
-			wqe = list_entry_wqe(pos);
-			dprint(DBG_WR,
-				" (QP%d): Flush SQ WQE %p, type %d\n",
-				QP_ID(qp), wqe, wr_type(wqe));
-			if (cq) {
-				wqe->wc_status = IB_WC_WR_FLUSH_ERR;
-				wqe->wr_status = SR_WR_DONE;
-				lock_cq_rxsave(cq, flags);
-				list_move_tail(&wqe->list, &cq->queue);
-				/* TODO: enforce CQ limits */
-				atomic_inc(&cq->qlen);
-				unlock_cq_rxsave(cq, flags);
-			} else  {
-				list_del(&wqe->list);
-				siw_wqe_put(wqe);
-			}
-		}
+		if (siw_sqe_complete(qp, sqe, 0, SIW_WC_WR_FLUSH_ERR) != 0)
+			/* Shall IB_EVENT_SQ_DRAINED be supressed ? */
+			break;
+
+		sqe->flags = 0;
+		qp->sq_get++;
 	}
-
-	if (wqe != NULL && cq != NULL && cq->ofa_cq.comp_handler != NULL)
-		(*cq->ofa_cq.comp_handler)(&cq->ofa_cq, cq->ofa_cq.cq_context);
-
 	if (async_event)
 		siw_qp_event(qp, IB_EVENT_SQ_DRAINED);
 }
@@ -980,43 +1156,35 @@ void siw_sq_flush(struct siw_qp *qp)
  */
 void siw_rq_flush(struct siw_qp *qp)
 {
-	struct list_head	*pos, *n;
-	struct siw_wqe		*wqe;
-	struct siw_cq		*cq;
-	unsigned long		flags;
+	struct siw_wqe		*wqe = rx_wqe(qp);
 
 	dprint(DBG_OBJ|DBG_CM|DBG_WR, "(QP%d): Enter\n", QP_ID(qp));
 
 	/*
 	 * Flush an in-progess WQE if present
 	 */
-	if (rx_wqe(qp)) {
-		if (__rdmap_opcode(&qp->rx_ctx.hdr.ctrl) != RDMAP_RDMA_WRITE)
-			list_add(&rx_wqe(qp)->list, &qp->rq);
-		else
+	if (wqe->wr_status != SR_WR_IDLE) {
+		if (__rdmap_opcode(&qp->rx_ctx.hdr.ctrl) != RDMAP_RDMA_WRITE) {
+			siw_wqe_put_mem(wqe, SIW_OP_RECEIVE);
+			siw_rqe_complete(qp, &wqe->rqe, wqe->bytes,
+					 SIW_WC_WR_FLUSH_ERR);
+		} else
 			siw_mem_put(rx_mem(qp));
 
-		rx_wqe(qp) = NULL;
-	}
-	if (list_empty(&qp->rq))
-		return;
-
-	cq = qp->rcq;
-
-	list_for_each_safe(pos, n, &qp->rq) {
-		wqe = list_entry_wqe(pos);
-		list_del_init(&wqe->list);
-		if (cq) {
-			wqe->wc_status = IB_WC_WR_FLUSH_ERR;
-			lock_cq_rxsave(cq, flags);
-			list_add_tail(&wqe->list, &cq->queue);
-			/* TODO: enforce CQ limits */
-			atomic_inc(&cq->qlen);
-			unlock_cq_rxsave(cq, flags);
-		} else
-			siw_wqe_put(wqe);
+		wqe->wr_status = SR_WR_IDLE;
 	}
 
-	if (cq != NULL && cq->ofa_cq.comp_handler != NULL)
-		(*cq->ofa_cq.comp_handler)(&cq->ofa_cq, cq->ofa_cq.cq_context);
+	while (qp->recvq && qp->attrs.rq_size) {
+		struct siw_rqe *rqe =
+			&qp->recvq[qp->rq_get % qp->attrs.rq_size];
+
+		if (!rqe->flags)
+			break;
+
+		if (siw_rqe_complete(qp, rqe, 0, SIW_WC_WR_FLUSH_ERR) != 0)
+			break;
+		rqe->flags = 0;
+
+		qp->rq_get++;
+	}
 }

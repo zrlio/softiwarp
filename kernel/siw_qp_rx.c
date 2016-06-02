@@ -135,6 +135,9 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 		struct page *p = siw_get_upage(umem, dest_addr);
 
 		if (unlikely(!p)) {
+			pr_warn("siw_rx_umem: QP[%d]: bogus addr: %p, %p\n",
+				RX_QPID(rctx),
+				(void *)dest_addr, (void *)umem->fp_addr);
 			/* siw internal error */
 			rctx->skb_copied += copied;
 			rctx->skb_new -= copied;
@@ -197,7 +200,12 @@ out:
 
 static inline int siw_rx_kva(struct siw_iwarp_rx *rctx, void *kva, int len)
 {
-	int rv = skb_copy_bits(rctx->skb, rctx->skb_offset, kva, len);
+	int rv;
+
+	dprint(DBG_RX, "(QP%d): receive %d bytes into %p\n", RX_QPID(rctx),
+		len, kva);
+
+	rv = skb_copy_bits(rctx->skb, rctx->skb_offset, kva, len);
 
 	if (likely(!rv)) {
 		rctx->skb_offset += len;
@@ -228,14 +236,14 @@ done:
 static inline int siw_rresp_check_ntoh(struct siw_iwarp_rx *rctx)
 {
 	struct iwarp_rdma_rresp	*rresp = &rctx->hdr.rresp;
-	struct siw_wqe		*wqe = rctx->dest.wqe;
+	struct siw_wqe		*wqe = &rctx->wqe_active;
 
 	u32 sink_stag = be32_to_cpu(rresp->sink_stag);
 	u64 sink_to   = be64_to_cpu(rresp->sink_to);
 
 	if (rctx->first_ddp_seg) {
-		rctx->ddp_stag = wqe->wr.rread.sge[0].lkey;
-		rctx->ddp_to   = wqe->wr.rread.sge[0].addr;
+		rctx->ddp_stag = wqe->sqe.sge[0].lkey;
+		rctx->ddp_to   = wqe->sqe.sge[0].laddr;
 	}
 	if (rctx->ddp_stag != sink_stag) {
 		dprint(DBG_RX|DBG_ON,
@@ -326,13 +334,13 @@ static inline int siw_write_check_ntoh(struct siw_iwarp_rx *rctx)
 static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 {
 	struct iwarp_send	*send = &rctx->hdr.send;
-	struct siw_wqe		*wqe = rctx->dest.wqe;
+	struct siw_wqe		*wqe = &rctx->wqe_active;
 
 	u32 ddp_msn = be32_to_cpu(send->ddp_msn);
 	u32 ddp_mo  = be32_to_cpu(send->ddp_mo);
 	u32 ddp_qn  = be32_to_cpu(send->ddp_qn);
 
-	if (unlikely(ddp_qn != RDMAP_UNTAGGED_QN_SEND)) {
+	if (ddp_qn != RDMAP_UNTAGGED_QN_SEND) {
 		dprint(DBG_RX|DBG_ON, " Invalid DDP QN %d for SEND\n",
 			ddp_qn);
 		return -EINVAL;
@@ -361,70 +369,76 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		rctx->sge_off = 0;
 	}
 	if (unlikely(wqe->bytes < wqe->processed + rctx->fpdu_part_rem)) {
-		dprint(DBG_RX|DBG_ON, " Receive space short: %d < %d\n",
-			wqe->bytes - wqe->processed, rctx->fpdu_part_rem);
-		wqe->wc_status = IB_WC_LOC_LEN_ERR;
+		dprint(DBG_RX|DBG_ON, " Receive space short: (%d - %d) < %d\n",
+			wqe->bytes, wqe->processed, rctx->fpdu_part_rem);
+		wqe->wc_status = SIW_WC_LOC_LEN_ERR;
 		return -EINVAL;
 	}
 	return 0;
 }
 
-
-/*
- * siw_srq_fetch_wqe()
- *
- * Get one RQ wqe from SRQ and inform user
- * if SRQ lower watermark reached
- */
-static inline struct siw_wqe *siw_srq_fetch_wqe(struct siw_srq *srq)
+static struct siw_wqe *siw_rqe_get(struct siw_qp *qp)
 {
+	struct siw_rqe *rqe;
+	struct siw_srq *srq = qp->srq;
 	struct siw_wqe *wqe = NULL;
-	int qlen;
 
-	lock_srq(srq);
-	if (!list_empty(&srq->rq)) {
-		wqe = list_first_wqe(&srq->rq);
-		list_del_init(&wqe->list);
-		/*
-		 * The SRQ wqe is counted for SRQ space until completed.
-		 */
-		qlen = srq->max_wr - (atomic_read(&srq->space) + 1);
-		if (srq->armed && qlen < srq->limit) {
-			srq->armed = 0;
-			dprint(DBG_RX, " SRQ(%p): SRQ limit event\n", srq);
-			siw_srq_event(srq, IB_EVENT_SRQ_LIMIT_REACHED);
-		}
+	if (!srq)
+		rqe = &qp->recvq[qp->rq_get % qp->attrs.rq_size];
+	else {
+		lock_srq(srq);
+		rqe = &srq->recvq[srq->rq_get % srq->num_rqe];
 	}
-	unlock_srq(srq);
+	if (likely(rqe->flags == SIW_WQE_VALID)) {
+		int num_sge = rqe->num_sge;
+		if (likely(num_sge <= SIW_MAX_SGE)) {
+			int i = 0;
 
-	return wqe;
-}
+			wqe = rx_wqe(qp);
+			wqe->wr_status = SR_WR_INPROGRESS;
+			wqe->bytes = 0;
+			wqe->processed = 0;
 
-static inline struct siw_wqe *siw_get_rqe(struct siw_qp *qp)
-{
-	struct siw_wqe	*wqe = NULL;
+			wqe->rqe.id = rqe->id;
+			wqe->rqe.num_sge = num_sge;
 
-	if (!qp->srq) {
-		lock_rq(qp);
-		if (!list_empty(&qp->rq)) {
-			wqe = list_first_wqe(&qp->rq);
-			list_del_init(&wqe->list);
-			unlock_rq(qp);
+			while (i < num_sge) {
+				wqe->rqe.sge[i].laddr = rqe->sge[i].laddr;
+				wqe->rqe.sge[i].lkey = rqe->sge[i].lkey;
+				wqe->rqe.sge[i].length = rqe->sge[i].length;
+				wqe->bytes += wqe->rqe.sge[i].length;
+				wqe->mem[i].obj = NULL;
+				i++;
+			}
+			set_mb(rqe->flags, 0);	/* can be re-used by appl */
 		} else {
-			unlock_rq(qp);
-			dprint(DBG_RX, " QP(%d): RQ empty!\n", QP_ID(qp));
+			pr_info("RQE: too many SGE's: %d\n", rqe->num_sge);
+			goto out;
 		}
-	} else {
-		wqe = siw_srq_fetch_wqe(qp->srq);
-		if (wqe) {
-			siw_qp_get(qp);
-			wqe->qp = qp;
-		} else
-			dprint(DBG_RX, " QP(%d): SRQ empty!\n", QP_ID(qp));
-	}
+		if (!srq)
+			qp->rq_get++;
+		else {
+			if (srq->armed) {
+				/* Test SRQ limit */
+				u32 off = (srq->rq_get + srq->limit) %
+					  srq->num_rqe;
+				struct siw_rqe *rqe2 = &srq->recvq[off];
+
+				if (!(rqe2->flags & SIW_WQE_VALID)) {
+					srq->armed = 0;
+					siw_srq_event(srq,
+						IB_EVENT_SRQ_LIMIT_REACHED);
+				}
+			}
+			srq->rq_get++;
+		}
+	} 
+out:
+	if (srq)
+		unlock_srq(qp->srq);
+
 	return wqe;
 }
-
 
 /*
  * siw_proc_send:
@@ -441,24 +455,19 @@ static inline struct siw_wqe *siw_get_rqe(struct siw_qp *qp)
  */
 int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	struct siw_wqe	*wqe;
-	struct siw_mr	*mr;
-	u32		data_bytes,	/* all data bytes available */
-			rcvd_bytes;	/* sum of data bytes rcvd */
-	int		rv = 0;
+	struct siw_wqe		*wqe;
+	struct siw_sge		*sge;
+	u32			data_bytes,	/* all data bytes available */
+				rcvd_bytes;	/* sum of data bytes rcvd */
+	int rv = 0;
 
 	if (rctx->first_ddp_seg) {
-		WARN_ON(rx_wqe(qp) != NULL);
-
-		wqe = siw_get_rqe(qp);
+		wqe = siw_rqe_get(qp);
 		if (unlikely(!wqe))
 			return -ENOENT;
-
-		rx_wqe(qp) = wqe;
-		wqe->wr_status = SR_WR_INPROGRESS;
 	} else  {
 		wqe = rx_wqe(qp);
-		if (unlikely(!wqe)) {
+		if (unlikely(wqe->wr_status != SR_WR_INPROGRESS)) {
 			/*
 			 * this is a siw bug!
 			 */
@@ -472,44 +481,48 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			siw_qp_event(qp, IB_EVENT_QP_FATAL);
 			return rv;
 		}
+		if (!rctx->fpdu_part_rem) /* zero length SEND */
+			return 0;
 	}
 	data_bytes = min(rctx->fpdu_part_rem, rctx->skb_new);
 	rcvd_bytes = 0;
 
 	/* A zero length SEND will skip below loop */
 	while (data_bytes) {
-		struct siw_pd	*pd;
-		struct siw_sge	*sge;
-		u32	sge_bytes;	/* data bytes avail for SGE */
+		struct siw_pd *pd;
+		struct siw_mr *mr;
+		union siw_mem_resolved *mem;
+		u32 sge_bytes;	/* data bytes avail for SGE */
 
-		sge = &wqe->wr.sgl.sge[rctx->sge_idx];
+		sge = &wqe->rqe.sge[rctx->sge_idx];
 
-		if (!sge->len) {
+		if (!sge->length) {
 			/* just skip empty sge's */
 			rctx->sge_idx++;
 			rctx->sge_off = 0;
 			continue;
 		}
-		sge_bytes = min(data_bytes, sge->len - rctx->sge_off);
+		sge_bytes = min(data_bytes, sge->length - rctx->sge_off);
+		mem = &wqe->mem[rctx->sge_idx];
 
 		/*
 		 * check with QP's PD if no SRQ present, SRQ's PD otherwise
 		 */
 		pd = qp->srq == NULL ? qp->pd : qp->srq->pd;
 
-		rv = siw_check_sge(pd, sge, SR_MEM_LWRITE, rctx->sge_off,
+		rv = siw_check_sge(pd, sge, mem, SR_MEM_LWRITE, rctx->sge_off,
 				   sge_bytes);
-		if (rv) {
+		if (unlikely(rv)) {
 			siw_qp_event(qp, IB_EVENT_QP_ACCESS_ERR);
 			break;
 		}
-		mr = siw_mem2mr(sge->mem.obj);
+		mr = siw_mem2mr(mem->obj);
 		if (mr->umem)
 			rv = siw_rx_umem(rctx, mr->umem,
-					 sge->addr + rctx->sge_off, sge_bytes);
+					 sge->laddr + rctx->sge_off, sge_bytes);
 		else
 			rv = siw_rx_kva(rctx,
-					(void *)(sge->addr + rctx->sge_off),
+					(void *)(sge->laddr + rctx->sge_off),
 					sge_bytes);
 
 		if (unlikely(rv != sge_bytes)) {
@@ -518,7 +531,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		}
 		rctx->sge_off += rv;
 
-		if (rctx->sge_off == sge->len) {
+		if (rctx->sge_off == sge->length) {
 			rctx->sge_idx++;
 			rctx->sge_off = 0;
 		}
@@ -563,17 +576,13 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			return 0;
 
 		rv = siw_write_check_ntoh(rctx);
-		if (rv) {
+		if (unlikely(rv)) {
 			siw_qp_event(qp, IB_EVENT_QP_FATAL);
 			return rv;
 		}
 	}
 	bytes = min(rctx->fpdu_part_rem, rctx->skb_new);
 
-	/*
-	 * NOTE: bytes > 0 is always true, since this routine
-	 * gets only called if so.
-	 */
 	if (rctx->first_ddp_seg) {
 		/* DEBUG Code, to be removed */
 		if (rx_mem(qp) != NULL) {
@@ -582,8 +591,9 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			return -EFAULT;
 		}
 		rx_mem(qp) = siw_mem_id2obj(dev, rctx->ddp_stag >> 8);
+		rx_wqe(qp)->wr_status = SR_WR_INPROGRESS;
 	}
-	if (rx_mem(qp) == NULL) {
+	if (unlikely(!rx_mem(qp))) {
 		dprint(DBG_RX|DBG_ON, "(QP%d): "
 			"Sink STag not found or invalid,  STag=0x%08x\n",
 			QP_ID(qp), rctx->ddp_stag);
@@ -596,12 +606,12 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	 */
 	rv = siw_check_mem(qp->pd, mem, rctx->ddp_to + rctx->fpdu_part_rcvd,
 			   SR_MEM_RWRITE, bytes);
-	if (rv) {
+	if (unlikely(rv)) {
 		siw_qp_event(qp, IB_EVENT_QP_ACCESS_ERR);
 		return rv;
 	}
-	mr = siw_mem2mr(mem);
 
+	mr = siw_mem2mr(mem);
 	if (mr->umem)
 		rv = siw_rx_umem(rctx, mr->umem,
 				 rctx->ddp_to + rctx->fpdu_part_rcvd, bytes);
@@ -610,7 +620,7 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 				(void *)(rctx->ddp_to + rctx->fpdu_part_rcvd),
 				bytes);
 
-	if (rv != bytes)
+	if(unlikely(rv != bytes))
 		return -EINVAL;
 
 	rctx->fpdu_part_rem -= rv;
@@ -638,26 +648,6 @@ int siw_proc_rreq(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	return -EPROTO;
 }
 
-static inline struct siw_wqe *siw_get_irqe(struct siw_qp *qp)
-{
-	struct siw_wqe *wqe = NULL;
-
-	if (atomic_dec_return(&qp->irq_space) >= 0) {
-		wqe = siw_freeq_wqe_get(qp);
-		if (wqe) {
-			INIT_LIST_HEAD(&wqe->list);
-			wqe->processed = 0;
-			siw_qp_get(qp);
-			wqe->qp = qp;
-			wr_type(wqe) = SIW_WR_RDMA_READ_RESP;
-		} else
-			atomic_inc(&qp->irq_space);
-	} else
-		atomic_inc(&qp->irq_space);
-
-	return wqe;
-}
-
 /*
  * siw_init_rresp:
  *
@@ -674,147 +664,176 @@ static inline struct siw_wqe *siw_get_irqe(struct siw_qp *qp)
  *		failure code otherwise
  */
 
-int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
+static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	struct siw_wqe *rsp;
+	struct siw_wqe *tx_work = tx_wqe(qp);
+	struct siw_sqe *resp;
 
-	rsp = siw_get_irqe(qp);
-	if (rsp) {
-		rsp->wr.rresp.sge.len = be32_to_cpu(rctx->hdr.rreq.read_size);
-		rsp->bytes = rsp->wr.rresp.sge.len;	/* redundant */
+	uint64_t	raddr	= be64_to_cpu(rctx->hdr.rreq.sink_to),
+			laddr	= be64_to_cpu(rctx->hdr.rreq.source_to);
+	uint32_t	length	= be32_to_cpu(rctx->hdr.rreq.read_size),
+			lkey	= be32_to_cpu(rctx->hdr.rreq.source_stag),
+			rkey	= be32_to_cpu(rctx->hdr.rreq.sink_stag);
+	int run_sq = 1, rv = 0;
 
-		rsp->wr.rresp.sge.addr = be64_to_cpu(rctx->hdr.rreq.source_to);
-		rsp->wr.rresp.num_sge = rsp->bytes ? 1 : 0;
-
-		rsp->wr.rresp.sge.mem.obj = NULL;	/* defer lookup */
-		rsp->wr.rresp.sge.lkey =
-			be32_to_cpu(rctx->hdr.rreq.source_stag);
-
-		rsp->wr.rresp.raddr = be64_to_cpu(rctx->hdr.rreq.sink_to);
-		rsp->wr.rresp.rtag = be32_to_cpu(rctx->hdr.rreq.sink_stag);
-
-	} else {
-		dprint(DBG_RX|DBG_ON, "(QP%d): IRD exceeded!\n", QP_ID(qp));
-		return -EPROTO;
-	}
-	rsp->wr_status = SR_WR_QUEUED;
-
-	/*
-	 * Insert into IRQ
-	 *
-	 * TODO: Revisit ordering of genuine SQ WRs and Read Response
-	 * pseudo-WRs. RDMAP specifies that there is no ordering among
-	 * the two directions of transmission, so there is a degree of
-	 * freedom.
-	 *
-	 * The current logic favours Read Responses over SQ work requests
-	 * that are queued but not already in progress.
-	 */
 	lock_sq(qp);
-	if (!tx_wqe(qp)) {
-		tx_wqe(qp) = rsp;
-		unlock_sq(qp);
+
+	if (tx_work->wr_status == SR_WR_IDLE) {
 		/*
-		 * schedule TX work, even if SQ was supended due to
-		 * ORD limit: it is always OK (and may even prevent peers
-		 * from appl lock) to send RRESPONSE's
+		 * immediately schedule READ response w/o
+		 * consuming IRQ entry: IRQ must be empty.
 		 */
-		siw_sq_queue_work(qp);
+		tx_work->processed = 0;
+		tx_work->mem[0].obj = NULL;
+		tx_work->wr_status = SR_WR_QUEUED;
+		resp = &tx_work->sqe;
 	} else {
-		list_add_tail(&rsp->list, &qp->irq);
-		unlock_sq(qp);
+		resp = irq_get_free(qp);
+		run_sq = 0;
 	}
-	return 0;
+	if (likely(resp)) {
+		resp->opcode = SIW_OP_READ_RESPONSE;
+
+		resp->sge[0].length = length;
+		resp->sge[0].laddr = laddr;
+		resp->sge[0].lkey = lkey;
+
+		resp->raddr = raddr;
+		resp->rkey = rkey;
+		resp->num_sge = length ? 1 : 0;
+
+		set_mb(resp->flags, SIW_WQE_VALID);
+	} else {
+		dprint(DBG_RX|DBG_ON, ": QP[%d]: IRQ %d exceeded %d!\n",
+			QP_ID(qp), qp->irq_put % qp->attrs.irq_size,
+			qp->attrs.irq_size);
+		rv = -EPROTO;
+	}
+
+	unlock_sq(qp);
+
+	if (run_sq)
+		siw_sq_queue_work(qp);
+	else if (rv == 0)
+		qp->irq_put++;
+
+	return rv;
 }
+
+/*
+ * Only called at start of Read.Resonse processing.
+ * Fetch pending Read from ORQ, but keep it valid until
+ * Read.Response processing done. No Queue locking needed.
+ */
+static struct siw_wqe *siw_orqe_get(struct siw_qp *qp)
+{
+	struct siw_sqe *orqe;
+	struct siw_wqe *wqe = NULL;
+
+	smp_mb();
+
+	orqe = &qp->orq[qp->orq_get % qp->attrs.orq_size];
+	if (_load_shared(orqe->flags) & SIW_WQE_VALID) {
+		wqe = rx_wqe(qp);
+		wqe->sqe.id = orqe->id;
+		wqe->sqe.opcode = SIW_OP_READ;
+		wqe->sqe.sge[0].laddr = orqe->sge[0].laddr;
+		wqe->sqe.sge[0].lkey = orqe->sge[0].lkey;
+		wqe->sqe.sge[0].length = orqe->sge[0].length;
+		wqe->sqe.flags = orqe->flags;
+		wqe->sqe.num_sge = 1;
+		wqe->bytes = orqe->sge[0].length;
+		wqe->processed = 0;
+		wqe->mem[0].obj = NULL;
+		wqe->wr_status = SR_WR_INPROGRESS;
+		smp_wmb();
+	}
+	return wqe;
+}
+
 
 /*
  * siw_proc_rresp:
  *
- * Place incoming RRESP data into memory referenced by RREQ WQE.
+ * Place incoming RRESP data into memory referenced by RREQ WQE
+ * which is at the tip of the ORQ
  *
  * Function supports partially received RRESP's (suspending/resuming
  * current receive processing)
  */
 int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	struct siw_wqe	*wqe;
-	struct siw_mr	*mr;
-	struct siw_sge	*sge;
-	int		bytes,
-			rv;
+	struct siw_wqe		*wqe;
+	union siw_mem_resolved	*mem;
+	struct siw_sge		*sge;
+	struct siw_mr		*mr;
+	int			bytes,
+				rv;
 
 	if (rctx->first_ddp_seg) {
-		WARN_ON(rx_wqe(qp) != NULL);
+		if (unlikely(rx_wqe(qp)->wr_status != SR_WR_IDLE)) {
+			pr_warn("QP[%d]: Start RRESP: RX status %d, op %d\n",
+				QP_ID(qp), rx_wqe(qp)->wr_status,
+				rx_wqe(qp)->sqe.opcode);
+			rv = -EPROTO;
+			goto done;
+		}
 		/*
 		 * fetch pending RREQ from orq
 		 */
-		lock_orq(qp);
-		if (!list_empty(&qp->orq)) {
-			wqe = list_first_entry(&qp->orq, struct siw_wqe, list);
-			list_del_init(&wqe->list);
-		} else {
-			unlock_orq(qp);
-			dprint(DBG_RX|DBG_ON, "(QP%d): ORQ empty\n",
-				QP_ID(qp));
-			/*
-			 * TODO: Should generate an async error
-			 */
-			rv = -ENODATA; /* or -ENOENT ? */
+		wqe = siw_orqe_get(qp);
+		if (unlikely(!wqe)) {
+			dprint(DBG_RX|DBG_ON, "(QP%d): ORQ empty at idx %d\n",
+				QP_ID(qp),
+				qp->orq_get % qp->attrs.orq_size);
+			rv = -EPROTO;
 			goto done;
 		}
-		unlock_orq(qp);
-
-		rx_wqe(qp) = wqe;
-
-		if (wr_type(wqe) != SIW_WR_RDMA_READ_REQ || wqe->processed) {
-			WARN_ON(wqe->processed);
-			WARN_ON(wr_type(wqe) != SIW_WR_RDMA_READ_REQ);
-			rv = -EINVAL;
-			goto done;
-		}
-
-		wqe->wr_status = SR_WR_INPROGRESS;
-
 		rv = siw_rresp_check_ntoh(rctx);
-		if (rv) {
+		if (unlikely(rv)) {
 			siw_qp_event(qp, IB_EVENT_QP_FATAL);
 			goto done;
 		}
 	} else {
 		wqe = rx_wqe(qp);
-		if (!wqe) {
-			WARN_ON(1);
-			rv = -ENODATA;
+		if (unlikely(wqe->wr_status != SR_WR_INPROGRESS)) {
+			pr_warn("QP[%d]: Resume RRESP: status %d\n",
+				QP_ID(qp), rx_wqe(qp)->wr_status);
+			rv = -EPROTO;
 			goto done;
 		}
 	}
 	if (!rctx->fpdu_part_rem) /* zero length RRESPONSE */
 		return 0;
 
-	bytes = min(rctx->fpdu_part_rem, rctx->skb_new);
-	sge = wqe->wr.rread.sge; /* there is only one */
+	sge = wqe->sqe.sge; /* there is only one */
+	mem = &wqe->mem[0];
 
-	/*
-	 * check target memory which resolves memory on first fragment
-	 */
-	rv = siw_check_sge(qp->pd, sge, SR_MEM_LWRITE, wqe->processed, bytes);
-	if (rv) {
-		dprint(DBG_RX|DBG_ON, "(QP%d): siw_check_sge failed: %d\n",
-			QP_ID(qp), rv);
-		wqe->wc_status = IB_WC_LOC_PROT_ERR;
-		siw_qp_event(qp, IB_EVENT_QP_ACCESS_ERR);
-		goto done;
+	if (mem->obj == NULL) {
+		/*
+		 * check target memory which resolves memory on first fragment
+		 */
+		rv = siw_check_sge(qp->pd, sge, mem, SR_MEM_LWRITE, 0,
+				   wqe->bytes);
+		if (rv) {
+			dprint(DBG_RX|DBG_ON, "(QP%d): siw_check_sge: %d\n",
+				QP_ID(qp), rv);
+			wqe->wc_status = SIW_WC_LOC_PROT_ERR;
+			siw_qp_event(qp, IB_EVENT_QP_ACCESS_ERR);
+			goto done;
+		}
 	}
-	mr = siw_mem2mr(sge->mem.obj);
+	bytes = min(rctx->fpdu_part_rem, rctx->skb_new);
 
+	mr = siw_mem2mr(mem->obj);
 	if (mr->umem)
-		rv = siw_rx_umem(rctx, mr->umem, sge->addr + wqe->processed,
+		rv = siw_rx_umem(rctx, mr->umem, sge->laddr + wqe->processed,
 				 bytes);
 	else
-		rv = siw_rx_kva(rctx, (void *)(sge->addr + wqe->processed),
+		rv = siw_rx_kva(rctx, (void *)(sge->laddr + wqe->processed),
 				bytes);
 	if (rv != bytes) {
-		wqe->wc_status = IB_WC_GENERAL_ERR;
+		wqe->wc_status = SIW_WC_GENERAL_ERR;
 		rv = -EINVAL;
 		goto done;
 	}
@@ -831,33 +850,13 @@ done:
 	return (rv < 0) ? rv : -EAGAIN;
 }
 
-static void siw_drain_pkt(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
-{
-	char	buf[128];
-	int	len;
-
-	dprint(DBG_ON|DBG_RX, " (QP%d): drain %d bytes\n",
-		QP_ID(qp), rctx->fpdu_part_rem);
-
-	while (rctx->fpdu_part_rem) {
-		len = min(rctx->fpdu_part_rem, 128);
-
-		skb_copy_bits(rctx->skb, rctx->skb_offset,
-				      buf, rctx->fpdu_part_rem);
-
-		rctx->skb_copied += len;
-		rctx->skb_offset += len;
-		rctx->skb_new -= len;
-		rctx->fpdu_part_rem -= len;
-		rctx->fpdu_part_rcvd += len;
-	}
-}
 
 int siw_proc_unsupp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	WARN_ON(1);
-	siw_drain_pkt(qp, rctx);
-	return 0;
+	pr_info("QP[%d]: unrecognized packet received, %d bytes payload\n",
+		QP_ID(qp), rctx->fpdu_part_rem);
+
+	return -ECONNRESET;
 }
 
 
@@ -869,8 +868,7 @@ int siw_proc_terminate(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		__rdmap_term_layer(&rctx->hdr.terminate),
 		__rdmap_term_ecode(&rctx->hdr.terminate));
 
-	siw_drain_pkt(qp, rctx);
-	return 0;
+	return -ECONNRESET;
 }
 
 
@@ -1039,144 +1037,132 @@ static inline int siw_fpdu_trailer_len(struct siw_iwarp_rx *rctx)
 	return MPA_CRC_SIZE + (-mpa_len & 0x3);
 }
 
-/*
- * siw_rreq_complete()
- *
- * Complete the current READ REQUEST after READ RESPONSE processing.
- * It may complete consecutive WQE's which were already SQ
- * processed before but are awaiting completion due to completion
- * ordering (see verbs 8.2.2.2).
- * The READ RESPONSE may also resume SQ processing if it was stalled
- * due to ORD exhaustion (see verbs 8.2.2.18)
- * Function stops completion when next READ REQUEST found or ORQ empty.
- */
-static void siw_rreq_complete(struct siw_wqe *wqe, int error)
+
+
+static void siw_check_tx_fence(struct siw_qp *qp)
 {
-	struct siw_qp		*qp = wqe->qp;
-	int			num_wc = 1;
-	enum ib_send_flags	flags;
-	LIST_HEAD(c_list);
+	struct siw_wqe *tx_waiting = tx_wqe(qp);
+	struct siw_sqe *rreq;
+	int resume_tx = 0;
 
-	flags = wr_flags(wqe);
-
-	if (flags & IB_SEND_SIGNALED)
-		list_add(&wqe->list, &c_list);
-	else {
-		atomic_inc(&qp->sq_space);
-		siw_wqe_put(wqe);
-		num_wc = 0;
-	}
-
-	lock_orq(qp);
-
-	/* More WQE's to complete following this RREQ? */
-	if (!list_empty(&qp->orq)) {
-		struct list_head *pos, *n;
-		list_for_each_safe(pos, n, &qp->orq) {
-			wqe = list_entry_wqe(pos);
-			if (wr_type(wqe) == SIW_WR_RDMA_READ_REQ)
-				break;
-			flags |= wr_flags(wqe);
-			num_wc++;
-			dprint(DBG_WR,
-				"(QP%d): Resume completion, wr_type %d\n",
-				QP_ID(qp), wr_type(wqe));
-			list_move_tail(pos, &c_list);
-		}
-	}
-	unlock_orq(qp);
-
-	if (num_wc)
-		siw_sq_complete(&c_list, qp, num_wc, flags);
-
-	/*
-	 * Check if SQ processing was stalled due to ORD limit
-	 */
 	lock_sq(qp);
 
-	if (ORD_SUSPEND_SQ(qp)) {
-
-		wqe = siw_next_tx_wqe(qp);
-
-		if (wqe && !tx_wqe(qp)) {
-			list_del_init(&wqe->list);
-			tx_wqe(qp) = wqe;
-
-			if (wr_type(wqe) == SIW_WR_RDMA_READ_REQ)
-				list_add_tail(&wqe->list, &qp->orq);
-			else
-				atomic_inc(&qp->orq_space);
-
-			unlock_sq(qp);
-
-			dprint(DBG_RX, "(QP%d): SQ resume (%d)\n",
-				QP_ID(qp), atomic_read(&qp->sq_space));
-
-			siw_sq_queue_work(qp);
-		} else {
-			/* only new ORQ space if not next RREQ queued */
-			atomic_inc(&qp->orq_space);
-			unlock_sq(qp);
-		}
+	if (qp->tx_ctx.orq_fence == 0) {
+		rreq = &qp->orq[qp->orq_get % qp->attrs.orq_size];
+		set_mb(rreq->flags, 0); /* One new free ORQ entry */
 	} else {
-		unlock_sq(qp);
-		atomic_inc(&qp->orq_space);
+		if (unlikely(tx_waiting->wr_status != SR_WR_QUEUED)) {
+			pr_warn("QP[%d]: Resume from fence: status %d wrong\n",
+				QP_ID(qp), tx_waiting->wr_status);
+			goto out;
+		}
+		/* resume SQ processing */
+		if (tx_waiting->sqe.opcode == SIW_OP_READ) {
+
+			rreq = orq_get_tail(qp);
+			if (unlikely(!rreq))
+				goto out;
+
+			siw_read_to_orq(rreq, &tx_waiting->sqe);
+
+			qp->orq_put++;
+			qp->tx_ctx.orq_fence = 0;
+			resume_tx = 1;
+
+		} else if (siw_orq_empty(qp)) {
+
+			qp->tx_ctx.orq_fence = 0;
+			resume_tx = 1;
+		} else
+			pr_warn("QP[%d]:  Resume from fence: error: %d:%d\n",
+				QP_ID(qp), qp->orq_get, qp->orq_put);
 	}
+	qp->orq_get++;
+out:
+	unlock_sq(qp);
+
+	if (resume_tx)
+		siw_sq_queue_work(qp);
 }
 
 /*
  * siw_rdmap_complete()
  *
- * complete processing of an RDMA message after receiving all
- * DDP segmens
+ * Complete processing of an RDMA message after receiving all
+ * DDP segmens or ABort processing after encountering error case.
  *
  *   o SENDs + RRESPs will need for completion,
  *   o RREQs need for  READ RESPONSE initialization
  *   o WRITEs need memory dereferencing
  *
- * TODO: Could siw_[s,r]_complete() fail? (CQ full)
+ * TODO: Failed WRITEs need local error to be surfaced.
  */
-static inline int siw_rdmap_complete(struct siw_qp *qp,
-				     struct siw_iwarp_rx *rctx)
+
+static inline int
+siw_rdmap_complete(struct siw_qp *qp, int error)
 {
-	struct siw_wqe	*wqe;
+	struct siw_iwarp_rx	*rctx = &qp->rx_ctx;
+	struct siw_wqe		*wqe = rx_wqe(qp);
+	enum siw_wc_status	wc_status = wqe->wc_status;
+
 	u8 opcode = __rdmap_opcode(&rctx->hdr.ctrl);
 	int rv = 0;
 
 	switch (opcode) {
 
 	case RDMAP_SEND_SE:
-		wr_flags(rx_wqe(qp)) |= IB_SEND_SOLICITED;
+		wqe->rqe.flags |= SIW_WQE_SOLICITED;
 	case RDMAP_SEND:
+		if (wqe->wr_status == SR_WR_IDLE)
+			break;
+
 		rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]++;
 
-		wqe = rx_wqe(qp);
+		if (error != 0 && wc_status == SIW_WC_SUCCESS)
+			wc_status = SIW_WC_GENERAL_ERR;
 
-		wqe->wc_status = IB_WC_SUCCESS;
-		wqe->wr_status = SR_WR_DONE;
-
-		siw_rq_complete(wqe, qp);
+		rv = siw_rqe_complete(qp, &wqe->rqe, wqe->processed,
+				      wc_status);
+		siw_wqe_put_mem(wqe, SIW_OP_RECEIVE);
 
 		break;
 
 	case RDMAP_RDMA_READ_RESP:
+		if (wqe->wr_status == SR_WR_IDLE)
+			break;
+
 		rctx->ddp_msn[RDMAP_UNTAGGED_QN_RDMA_READ]++;
 
-		wqe = rx_wqe(qp);
+		if (error != 0) {
+			if  (rctx->state == SIW_GET_HDR || error == -ENODATA)
+				/*  eventual RREQ in ORQ left untouched */
+				break;
 
-		wqe->wc_status = IB_WC_SUCCESS;
-		wqe->wr_status = SR_WR_DONE;
+			if (wc_status == SIW_WC_SUCCESS)
+				wc_status = SIW_WC_GENERAL_ERR;
+		}
+		/*
+		 * All errors turn the wqe into signalled.
+		 */
+		if ((wqe->sqe.flags & SIW_WQE_SIGNALLED) || error != 0)
+			rv = siw_sqe_complete(qp, &wqe->sqe, wqe->processed,
+					      wc_status);
+		siw_wqe_put_mem(wqe, SIW_OP_READ);
 
-		siw_rreq_complete(wqe, 0);
-
+		if (error == 0)
+			siw_check_tx_fence(qp);
 		break;
 
 	case RDMAP_RDMA_READ_REQ:
-		rv = siw_init_rresp(qp, rctx);
+		if (error == 0)
+			rv = siw_init_rresp(qp, rctx);
 
 		break;
 
 	case RDMAP_RDMA_WRITE:
+		if (wqe->wr_status == SR_WR_IDLE)
+			break;
+
 		/*
 		 * Free References from memory object if
 		 * attached to receive context (inbound WRITE)
@@ -1187,102 +1173,18 @@ static inline int siw_rdmap_complete(struct siw_qp *qp,
 		 *
 		 * TODO: check zero length WRITE semantics
 		 */
-		if (rx_mem(qp))
+		if (rx_mem(qp)) {
 			siw_mem_put(rx_mem(qp));
-		break;
-
-	default:
-		break;
-
-	}
-	rx_wqe(qp) = NULL;	/* also clears MEM object for WRITE */
-
-	return rv;
-}
-
-/*
- * siw_rdmap_error()
- *
- * Abort processing of RDMAP message after failure.
- * SENDs + RRESPs will need for receive completion, if
- * already started.
- *
- * TODO: WRITE need local error to be surfaced.
- *
- */
-static inline void
-siw_rdmap_error(struct siw_qp *qp, struct siw_iwarp_rx *rctx, int status)
-{
-	struct siw_wqe	*wqe;
-	u8 opcode = __rdmap_opcode(&rctx->hdr.ctrl);
-
-	switch (opcode) {
-
-	case RDMAP_SEND_SE:
-	case RDMAP_SEND:
-		rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]++;
-
-		wqe = rx_wqe(qp);
-		if (!wqe)
-			return;
-
-		if (opcode == RDMAP_SEND_SE)
-			wr_flags(wqe) |= IB_SEND_SOLICITED;
-
-		if (!wqe->wc_status)
-			wqe->wc_status = IB_WC_GENERAL_ERR;
-
-		wqe->wr_status = SR_WR_DONE;
-		siw_rq_complete(wqe, qp);
-
-		break;
-
-	case RDMAP_RDMA_READ_RESP:
-		/*
-		 * A READ RESPONSE may flush consecutive WQE's
-		 * which were SQ processed before
-		 */
-		rctx->ddp_msn[RDMAP_UNTAGGED_QN_RDMA_READ]++;
-
-		if (rctx->state == SIW_GET_HDR || status == -ENODATA)
-			/*  eventual RREQ left untouched */
-			break;
-
-		wqe = rx_wqe(qp);
-		if (wqe) {
-			if (status)
-				wqe->wc_status = status;
-			else
-				wqe->wc_status = IB_WC_GENERAL_ERR;
-
-			wqe->wr_status = SR_WR_DONE;
-			/*
-			 * All errors turn the wqe into signalled.
-			 */
-			wr_flags(wqe) |= IB_SEND_SIGNALED;
-			siw_rreq_complete(wqe, status);
+			rx_mem(qp) = NULL;
 		}
 		break;
 
-	case RDMAP_RDMA_WRITE:
-		/*
-		 * Free References from memory object if
-		 * attached to receive context (inbound WRITE)
-		 * While a zero-length WRITE is allowed, the
-		 * current implementation does not create
-		 * a memory reference (it is unclear if memory
-		 * rights should be checked in that case!).
-		 *
-		 * TODO: check zero length WRITE semantics
-		 */
-		if (rx_mem(qp))
-			siw_mem_put(rx_mem(qp));
-		break;
-
 	default:
 		break;
 	}
-	rx_wqe(qp) = NULL;	/* also clears MEM object for WRITE */
+	wqe->wr_status = SR_WR_IDLE;
+
+	return rv;
 }
 
 /*
@@ -1307,17 +1209,17 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 	rctx->skb_offset = off;
 	rctx->skb_copied = 0;
 
-	dprint(DBG_RX, "(QP%d): new data %d, rx-state %d\n", QP_ID(qp),
-		rctx->skb_new, rctx->state);
+	dprint(DBG_RX, "(QP%d): new data %d\n",
+		QP_ID(qp), rctx->skb_new);
 
-	if (unlikely(rctx->rx_suspend == 1 ||
-		     qp->attrs.state != SIW_QP_STATE_RTS)) {
-		dprint(DBG_RX|DBG_ON, "(QP%d): failed. state rx:%d, qp:%d\n",
-			QP_ID(qp), qp->rx_ctx.state, qp->attrs.state);
-		return 0;
-	}
 	while (rctx->skb_new) {
+		int run_completion = 1;
 
+		if (unlikely(rctx->rx_suspend)) {
+			/* Do not process any more data */
+			rctx->skb_copied += rctx->skb_new;
+			break;
+		}
 		switch (rctx->state) {
 
 		case SIW_GET_HDR:
@@ -1363,9 +1265,12 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 					siw_fpdu_trailer_len(rctx);
 				rctx->fpdu_part_rcvd = 0;
 				rctx->state = SIW_GET_TRAILER;
-			} else
-				rctx->state = SIW_GET_DATA_MORE;
-
+			} else {
+				if (unlikely(rv == -ECONNRESET))
+					run_completion = 0;
+				else
+					rctx->state = SIW_GET_DATA_MORE;
+			}
 			break;
 
 		case SIW_GET_TRAILER:
@@ -1386,15 +1291,15 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 					/* more frags */
 					break;
 
-				rv = siw_rdmap_complete(qp, rctx);
-				if (rv)
-					break;
+				rv = siw_rdmap_complete(qp, 0);
+				run_completion = 0;
 			}
 			break;
 
 		default:
-			WARN_ON(1);
-			rv = -EAGAIN;
+			pr_warn("QP[%d]: RX out of state\n", QP_ID(qp));
+			rv = -EPROTO;
+			run_completion = 0;
 		}
 
 		if (unlikely(rv != 0 && rv != -EAGAIN)) {
@@ -1406,6 +1311,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 			 *	 for now we are left with a bogus rx status
 			 *	 unable to receive any further byte.
 			 *	 BUT: code must handle difference between
+			 *	 errors:
 			 *
 			 *	 o protocol syntax (FATAL, framing lost)
 			 *	 o crc	(FATAL, framing lost since we do not
@@ -1413,9 +1319,9 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 			 *	 o local resource (maybe non fatal, framing
 			 *	   not lost)
 			 *
-			 *	 errors.
 			 */
-			siw_rdmap_error(qp, rctx, rv);
+			if (rctx->state > SIW_GET_HDR && run_completion)
+				siw_rdmap_complete(qp, rv);
 
 			dprint(DBG_RX|DBG_ON,
 				"(QP%d): RX ERROR %d at RX state %d\n",

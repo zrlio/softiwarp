@@ -41,7 +41,6 @@
 
 #include <linux/idr.h>
 #include <rdma/ib_verbs.h>
-#include <linux/const.h>
 #include <linux/socket.h>
 #include <linux/skbuff.h>
 #include <linux/in.h>
@@ -50,9 +49,13 @@
 #include <linux/crypto.h>
 #include <linux/resource.h>	/* MLOCK_LIMIT */
 #include <linux/module.h>
+#include <linux/version.h>
+#include <linux/llist.h>
 
-#include "siw_user.h"
+#include <siw_user.h>
 #include "iwarp.h"
+
+#define _load_shared(a)		(*(volatile typeof(a) *)&(a))
 
 enum siw_if_type {
 	SIW_IF_OFED = 0,	/* only via standard ofed syscall if */
@@ -60,15 +63,12 @@ enum siw_if_type {
 };
 
 #define DEVICE_ID_SOFTIWARP	0x0815
-#define VERSION_ID_SOFTIWARP	0x0001
-#define SIW_VENDOR_ID		0x626d74 /* ascii 'bmt' for now */
+#define SIW_VENDOR_ID		0x626d74	/* ascii 'bmt' for now */
 #define SIW_VENDORT_PART_ID	0
-#define SIW_SW_VERSION		1
 #define SIW_MAX_QP		(1024 * 100)
 #define SIW_MAX_QP_WR		(1024 * 32)
 #define SIW_MAX_ORD		128
 #define SIW_MAX_IRD		128
-#define SIW_MAX_SGE		4
 #define SIW_MAX_SGE_RD		1	/* iwarp limitation. we could relax */
 #define SIW_MAX_CQ		(1024 * 100)
 #define SIW_MAX_CQE		(SIW_MAX_QP_WR * 100)
@@ -78,13 +78,14 @@ enum siw_if_type {
 #define SIW_MAX_FMR		0
 #define SIW_MAX_SRQ		SIW_MAX_QP
 #define SIW_MAX_SRQ_WR		(SIW_MAX_QP_WR * 10)
-#define SIW_MAX_CONTEXT		(SIW_MAX_PD * 10)
+#define SIW_MAX_CONTEXT		SIW_MAX_PD
 
 #define SENDPAGE_THRESH		PAGE_SIZE /* min bytes for using sendpage() */
 #define SQ_USER_MAXBURST	10
 
-#define	SIW_NODE_DESC		"Software iWARP stack"
-
+#if defined __NR_rdma_db
+#define SIW_DB_SYSCALL
+#endif
 
 struct siw_devinfo {
 	unsigned		device;
@@ -155,10 +156,20 @@ struct siw_objhdr {
 	struct siw_dev		*sdev;
 };
 
+struct siw_uobj {
+	struct list_head	list;
+	void	*addr;
+	u32	size;
+	u32	key;
+};
 
 struct siw_ucontext {
 	struct ib_ucontext	ib_ucontext;
 	struct siw_dev		*sdev;
+	/* List of user mappable queue objects */
+	spinlock_t		uobj_lock;
+	struct list_head	uobj_list;
+	u32			uobj_key;
 };
 
 struct siw_pd {
@@ -180,7 +191,7 @@ enum siw_access_flags {
 
 #define STAG_VALID	1
 #define STAG_INVALID	0
-#define SIW_STAG_MAX	0xffffff
+#define SIW_STAG_MAX	0xffffffff
 
 struct siw_mr;
 
@@ -226,7 +237,6 @@ struct siw_mem {
 };
 
 #define SIW_MEM_IS_MW(m)	((m)->mr != NULL)
-#define SIW_INLINED_DATA(w)	((w)->wr.hdr.flags & IB_SEND_INLINE)
 
 /*
  * MR and MW definition.
@@ -236,6 +246,7 @@ struct siw_mem {
 struct siw_mr {
 	struct ib_mr	ofa_mr;
 	struct siw_mem	mem;
+	struct rcu_head rcu;
 	struct siw_umem	*umem;
 	struct siw_pd	*pd;
 };
@@ -243,164 +254,52 @@ struct siw_mr {
 struct siw_mw {
 	struct ib_mw	ofa_mw;
 	struct siw_mem	mem;
+	struct rcu_head rcu;
 };
 
 /********** WR definitions ****************/
 
-enum siw_wr_opcode {
-	SIW_WR_RDMA_WRITE		= IB_WR_RDMA_WRITE,
-	SIW_WR_RDMA_WRITE_WITH_IMM	= IB_WR_RDMA_WRITE_WITH_IMM,
-	SIW_WR_SEND			= IB_WR_SEND,
-	SIW_WR_SEND_WITH_IMM		= IB_WR_SEND_WITH_IMM,
-	SIW_WR_RDMA_READ_REQ		= IB_WR_RDMA_READ,
-
-	/* Unsupported */
-	SIW_WR_ATOMIC_CMP_AND_SWP	= IB_WR_ATOMIC_CMP_AND_SWP,
-	SIW_WR_ATOMIC_FETCH_AND_ADD	= IB_WR_ATOMIC_FETCH_AND_ADD,
-	SIW_WR_INVAL_STAG		= IB_WR_LOCAL_INV,
-	SIW_WR_FASTREG			= IB_WR_FAST_REG_MR,
-
-	SIW_WR_RECEIVE,
-	SIW_WR_RDMA_READ_RESP,		/* pseudo WQE */
-	SIW_WR_NUM
-};
-
-#define opcode_ofa2siw(code)	(enum siw_wr_opcode)code
-
 #define SIW_WQE_IS_TX(wqe)	1	/* add BIND/FASTREG/INVAL_STAG */
 
-struct siw_sge {
-	u64		addr;	/* HBO */
-	unsigned int	len;	/* HBO */
-	u32		lkey;	/* HBO */
-	union {
-		struct siw_mem	*obj; /* reference to registered memory */
-		char		*buf; /* linear kernel buffer */
-	} mem;
-};
-
-struct siw_wr_common {
-	enum siw_wr_opcode	type;
-	enum ib_send_flags	flags;
-	u64			id;
-};
-
-/*
- * All WRs below having an SGL (with 1 ore more SGEs) must start with
- * the layout given by struct siw_wr_with_sgl!
- */
-struct siw_wr_with_sgl {
-	struct siw_wr_common	hdr;
-	int			num_sge;
-	struct siw_sge		sge[0]; /* Start of source or dest. SGL */
-};
-
-struct siw_wr_send {
-	struct siw_wr_common	hdr;
-	int			num_sge;
-	struct siw_sge		sge[SIW_MAX_SGE];
-};
-
-struct siw_wr_rmda_write {
-	struct	siw_wr_common	hdr;
-	int			num_sge;
-	struct siw_sge		sge[SIW_MAX_SGE];
-	u64			raddr;
-	u32			rtag;
-};
-
-struct siw_wr_rdma_rread {
-	struct	siw_wr_common	hdr;
-	int			num_sge;
-	struct siw_sge		sge[SIW_MAX_SGE];
-	u64			raddr;
-	u32			rtag;
-};
-
-/*
- * Inline data are kept within the work request itself occupying
- * the space of sge[1] .. sge[n]. Therefore, inline data cannot be
- * supported if SIW_MAX_SGE is below 2 elements.
- */
-#if SIW_MAX_SGE < 2
-#error "SIW_MAX_SGE must be at least 2"
-#endif
-
-#define SIW_MAX_INLINE	(sizeof(struct siw_sge) * (SIW_MAX_SGE - 1))
-
-struct siw_wr_inline_data {
-	struct siw_wr_common	hdr;
-	int			num_sge;	/* always 1 */
-	struct siw_sge		sge;		/* single SGE, points to data */
-	char			data[SIW_MAX_INLINE];
-};
-
-
-struct siw_wr_rdma_rresp {
-	struct	siw_wr_common	hdr;
-	int			num_sge; /* must be 1 */
-	struct siw_sge		sge;
-	u64			raddr;
-	u32			rtag;
-};
-
-struct siw_wr_bind {
-	struct	siw_wr_common	hdr;
-	u32			rtag;
-	u32			ltag;
-	struct siw_mr		*mr;
-	u64			addr;
-	u32			len;
-	enum siw_access_flags	perms;
-};
-
-struct siw_wr_recv {
-	struct	siw_wr_common	hdr;
-	int			num_sge;
-	struct siw_sge		sge[SIW_MAX_SGE];
-};
 
 enum siw_wr_state {
-	SR_WR_QUEUED		= 0,	/* processing has not started yet */
-	SR_WR_INPROGRESS	= 1,	/* initiated processing of the WR */
-	SR_WR_DONE		= 2,
+	SR_WR_IDLE		= 0,
+	SR_WR_QUEUED		= 1,	/* processing has not started yet */
+	SR_WR_INPROGRESS	= 2,	/* initiated processing of the WR */
+	SR_WR_DONE		= 3
 };
 
-/* better name it siw_qe? */
+union siw_mem_resolved {
+	struct siw_mem	*obj;	/* reference to registered memory */
+	char		*buf;	/* linear kernel buffer */
+};
+
+struct siw_qp;
+
 struct siw_wqe {
-	struct list_head	list;
 	union {
-		struct siw_wr_common		hdr;
-		struct siw_wr_with_sgl		sgl;
-		struct siw_wr_inline_data	inlined_data;
-		struct siw_wr_send		send;
-		struct siw_wr_rmda_write	write;
-		struct siw_wr_rdma_rread	rread;
-		struct siw_wr_rdma_rresp	rresp;
-		struct siw_wr_bind		bind;
-		struct siw_wr_recv		recv;
-	} wr;
-	struct siw_qp		*qp;
-	enum siw_wr_state	wr_status;
-	enum ib_wc_status	wc_status;
-	u32			bytes;		/* # bytes to processed */
-	u32			processed;	/* # bytes processed */
-	int			error;
-};
+		struct siw_sqe	sqe;
+		struct siw_rqe	rqe;
+	};
+	union siw_mem_resolved	mem[SIW_MAX_SGE]; /* per sge's resolved mem */
 
-enum siw_cq_armed {
-	SIW_CQ_NOTIFY_NOT = 0,
-	SIW_CQ_NOTIFY_SOLICITED,
-	SIW_CQ_NOTIFY_ALL
+	enum siw_wr_state	wr_status;
+	enum siw_wc_status	wc_status;
+	u32			bytes;		/* total bytes to process */
+	u32			processed;	/* bytes processed */
+	int			error;
 };
 
 struct siw_cq {
 	struct ib_cq		ofa_cq;
 	struct siw_objhdr	hdr;
-	enum siw_cq_armed	notify;
+	enum siw_notify_flags	*notify;
 	spinlock_t		lock;
-	struct list_head	queue;		/* simple list of cqe's */
-	atomic_t		qlen;		/* number of elements */
+	struct siw_cqe		*queue;
+	u32			cq_put;
+	u32			cq_get;
+	u32			num_cqe;
+	int			kernel_verbs;
 };
 
 enum siw_qp_state {
@@ -419,8 +318,7 @@ enum siw_qp_flags {
 	SIW_RDMA_BIND_ENABLED	= (1 << 0),
 	SIW_RDMA_WRITE_ENABLED	= (1 << 1),
 	SIW_RDMA_READ_ENABLED	= (1 << 2),
-	SIW_KERNEL_VERBS	= (1 << 3),
-	SIW_SIGNAL_ALL_WR	= (1 << 4),
+	SIW_SIGNAL_ALL_WR	= (1 << 3),
 	/*
 	 * QP currently being destroyed
 	 */
@@ -459,14 +357,15 @@ struct siw_sq_work {
 struct siw_srq {
 	struct ib_srq		ofa_srq;
 	struct siw_pd		*pd;
-	struct list_head	freeq;
-	spinlock_t		freeq_lock;
-	struct list_head	rq;
+	atomic_t		rq_index;
 	spinlock_t		lock;
 	u32			max_sge;
 	atomic_t		space;	/* current space for posting wqe's */
 	u32			limit;	/* low watermark for async event */
-	u32			max_wr;	/* max # of wqe's allowed */
+	struct siw_rqe		*recvq;
+	u32			rq_put;	
+	u32			rq_get;	
+	u32			num_rqe;	/* max # of wqe's allowed */
 	char			armed;	/* inform user if limit hit */
 	char			kernel_verbs; /* '1' if kernel client */
 };
@@ -481,11 +380,11 @@ struct siw_qp_attrs {
 	u32			rq_hiwat;
 	u32			sq_size;
 	u32			rq_size;
+	u32			orq_size;
+	u32			irq_size;
 	u32			sq_max_sges;
 	u32			sq_max_sges_rdmaw;
 	u32			rq_max_sges;
-	u32			ord;
-	u32			ird;
 	struct siw_mpa_attrs	mpa;
 	enum siw_qp_flags	flags;
 
@@ -513,12 +412,9 @@ struct siw_iwarp_rx {
 	struct mpa_trailer	trailer;
 	/*
 	 * local destination memory of inbound iwarp operation.
-	 * valid, if already resolved, NULL otherwise.
+	 * valid, according to wqe->wr_status
 	 */
-	union {
-		struct siw_wqe	*wqe; /* SEND, RRESP */
-		struct siw_mem	*mem; /* WRITE */
-	} dest;
+	struct siw_wqe		wqe_active;
 
 	struct hash_desc	mpa_crc_hd;
 	/*
@@ -612,11 +508,12 @@ struct siw_iwarp_tx {
 	/* DDP MSN for untagged messages */
 	u32			ddp_msn[RDMAP_UNTAGGED_QN_COUNT];
 
-	enum siw_tx_ctx	state;
+	enum siw_tx_ctx		state;
 	wait_queue_head_t	waitq;
-
 	u16			ctrl_len;	/* ddp+rdmap hdr */
 	u16			ctrl_sent;
+	int			burst;
+	
 	int			bytes_unsent;	/* ddp payload bytes */
 
 	struct hash_desc	mpa_crc_hd;
@@ -629,23 +526,27 @@ struct siw_iwarp_tx {
 				new_tcpseg:1,	/* start new tcp segment */
 				tx_suspend:1,	/* stop sending DDP segs. */
 				pad:2,		/* # pad in current fpdu */
-				rsvd:2;
+				orq_fence:1;	/* ORQ full or Send fenced */
 
-	u8			unused;
 	u16			fpdu_len;	/* len of FPDU to tx */
 
 	int			tcp_seglen;	/* remaining tcp seg space */
-	struct siw_wqe		*wqe;
+
+	struct siw_wqe		wqe_active;
 
 	int			sge_idx;	/* current sge in tx */
 	u32			sge_off;	/* already sent in curr. sge */
+	int			in_syscall;	/* TX out of user context */
 };
+
+#define USE_SQ_KTHREAD
 
 struct siw_qp {
 	struct ib_qp		ofa_qp;
 	struct siw_objhdr	hdr;
 	struct list_head	devq;
 	int			cpu;
+	int			kernel_verbs;
 	struct siw_iwarp_rx	rx_ctx;
 	struct siw_iwarp_tx	tx_ctx;
 
@@ -655,22 +556,31 @@ struct siw_qp {
 	struct siw_pd		*pd;
 	struct siw_cq		*scq;
 	struct siw_cq		*rcq;
+	struct siw_srq		*srq;
 
 	struct siw_qp_attrs	attrs;
 
-	struct list_head	freeq;
-	spinlock_t		freeq_lock;
-	struct list_head	sq;
+	struct siw_sqe		*sendq;	/* send queue element array */
+	uint32_t		sq_get;	/* consumer index into sq array */
+	uint32_t		sq_put;	/* kernel prod. index into sq array */
+#ifdef USE_SQ_KTHREAD
+	struct llist_node	tx_list;
+#endif
+
+	struct siw_sqe		*irq;	/* inbound read queue element array */
+	uint32_t		irq_get;/* consumer index into irq array */
+	uint32_t		irq_put;/* producer index into irq array */
+
+	struct siw_rqe		*recvq;	/* recv queue element array */
+	uint32_t		rq_get;	/* consumer index into rq array */
+	uint32_t		rq_put;	/* kernel prod. index into rq array */
+
+	struct siw_sqe		*orq; /* outbound read queue element array */
+	uint32_t		orq_get;/* consumer index into orq array */
+	uint32_t		orq_put;/* shared producer index for ORQ */
+
 	spinlock_t		sq_lock;
-	atomic_t		sq_space;
-	struct list_head	irq;
-	atomic_t		irq_space;
-	struct siw_srq		*srq;
-	struct list_head	rq;
 	spinlock_t		rq_lock;
-	atomic_t		rq_space;
-	struct list_head	orq;
-	atomic_t		orq_space;
 	spinlock_t		orq_lock;
 
 	struct siw_sq_work	sq_work;
@@ -679,8 +589,13 @@ struct siw_qp {
 #define lock_sq(qp)	spin_lock(&qp->sq_lock)
 #define unlock_sq(qp)	spin_unlock(&qp->sq_lock)
 
+#ifdef LOCK_WO_FLAG
+#define lock_sq_rxsave(qp, flags) spin_lock_bh(&qp->sq_lock)
+#define unlock_sq_rxsave(qp, flags) spin_unlock_bh(&qp->sq_lock)
+#else
 #define lock_sq_rxsave(qp, flags) spin_lock_irqsave(&qp->sq_lock, flags)
 #define unlock_sq_rxsave(qp, flags) spin_unlock_irqrestore(&qp->sq_lock, flags)
+#endif
 
 #define lock_rq(qp)	spin_lock(&qp->rq_lock)
 #define unlock_rq(qp)	spin_unlock(&qp->rq_lock)
@@ -704,9 +619,14 @@ struct siw_qp {
 #define lock_orq(qp)	spin_lock(&qp->orq_lock)
 #define unlock_orq(qp)	spin_unlock(&qp->orq_lock)
 
+#ifdef LOCK_WO_FLAG
+#define lock_orq_rxsave(qp, flags)	spin_lock_bh(&qp->orq_lock)
+#define unlock_orq_rxsave(qp, flags)	spin_unlock_bh(&qp->orq_lock)
+#else
 #define lock_orq_rxsave(qp, flags)	spin_lock_irqsave(&qp->orq_lock, flags)
 #define unlock_orq_rxsave(qp, flags)\
 	spin_unlock_irqrestore(&qp->orq_lock, flags)
+#endif
 
 #define RX_QP(rx)		container_of(rx, struct siw_qp, rx_ctx)
 #define TX_QP(tx)		container_of(tx, struct siw_qp, tx_ctx)
@@ -716,27 +636,23 @@ struct siw_qp {
 #define TX_QPID(tx)		QP_ID(TX_QP(tx))
 
 /* helper macros */
-#define tx_wqe(qp)		((qp)->tx_ctx.wqe)
-#define rx_wqe(qp)		((qp)->rx_ctx.dest.wqe)
-#define rx_mem(qp)		((qp)->rx_ctx.dest.mem)
-#define wr_id(wqe)		((wqe)->wr.hdr.id)
-#define wr_type(wqe)		((wqe)->wr.hdr.type)
-#define wr_flags(wqe)		((wqe)->wr.hdr.flags)
+#define tx_wqe(qp)		(&(qp)->tx_ctx.wqe_active)
+#define rx_wqe(qp)		(&(qp)->rx_ctx.wqe_active)
+#define rx_mem(qp)		((qp)->rx_ctx.wqe_active.mem[0].obj)
+#define tx_type(wqe)		((wqe)->sqe.opcode)
+#define rx_type(wqe)		((wqe)->rqe.opcode)
+#define tx_flags(wqe)		((wqe)->sqe.flags)
+#define rx_flags(wqe)		((wqe)->rqe.flags)
 #define list_entry_wqe(pos)	list_entry(pos, struct siw_wqe, list)
 #define list_first_wqe(pos)	list_first_entry(pos, struct siw_wqe, list)
 
-#define ORD_SUSPEND_SQ(qp)	(!atomic_read(&(qp)->orq_space))
-#define TX_ACTIVE(qp)		(tx_wqe(qp) != NULL)
-#define SQ_EMPTY(qp)		list_empty(&((qp)->sq))
-#define ORQ_EMPTY(qp)		list_empty(&((qp)->orq))
-#define IRQ_EMPTY(qp)		list_empty(&((qp)->irq))
+#define TX_ACTIVE(qp)		(tx_wqe(qp).status != SIW_WR_IDLE)
 #define TX_ACTIVE_RRESP(qp)	(TX_ACTIVE(qp) &&\
-			wr_type(tx_wqe(qp)) == SIW_WR_RDMA_READ_RESP)
+			tx_type(tx_wqe(qp)) == SIW_OP_READ_RESP)
 
 #define TX_IDLE(qp)		(!TX_ACTIVE(qp) && SQ_EMPTY(qp) && \
 				IRQ_EMPTY(qp) && ORQ_EMPTY(qp))
 
-#define TX_MORE_WQE(qp)		(!SQ_EMPTY(qp) || !IRQ_EMPTY(qp))
 
 struct iwarp_msg_info {
 	int			hdr_len;
@@ -760,21 +676,21 @@ struct ib_qp *siw_get_ofaqp(struct ib_device *, int);
 void siw_qp_get_ref(struct ib_qp *);
 void siw_qp_put_ref(struct ib_qp *);
 
-int siw_no_mad(struct ib_device *, int, u8, struct ib_wc *, struct ib_grh *,
-	       struct ib_mad *, struct ib_mad *);
-
 enum siw_qp_state siw_map_ibstate(enum ib_qp_state);
 
 int siw_check_mem(struct siw_pd *, struct siw_mem *, u64,
 		  enum siw_access_flags, int);
-int siw_check_sge(struct siw_pd *, struct siw_sge *,
+int siw_check_sge(struct siw_pd *, struct siw_sge *, union siw_mem_resolved *,
 		  enum siw_access_flags, u32, int);
-int siw_check_sgl(struct siw_pd *, struct siw_sge *,
-		  enum siw_access_flags, u32, int);
+int siw_check_sgl(struct siw_pd *, struct siw_wqe *,
+		  enum siw_access_flags);
 
-void siw_rq_complete(struct siw_wqe *, struct siw_qp *);
-void siw_sq_complete(struct list_head *, struct siw_qp *, int,
-		     enum ib_send_flags);
+void siw_read_to_orq(struct siw_sqe *, struct siw_sqe *);
+
+int siw_sqe_complete(struct siw_qp *, struct siw_sqe *, u32,
+		     enum siw_wc_status);
+int siw_rqe_complete(struct siw_qp *, struct siw_rqe *, u32,
+		     enum siw_wc_status);
 
 
 /* SIW user memory management */
@@ -798,25 +714,24 @@ static inline struct page *siw_get_upage(struct siw_umem *umem, u64 addr)
 			chunk_idx	= page_idx >> CHUNK_SHIFT,
 			page_in_chunk	= page_idx & ~CHUNK_MASK;
 
-	if (unlikely(page_idx >= umem->num_pages)) {
-		WARN_ON(1);
-		return NULL;
-	}
-	return umem->page_chunk[chunk_idx].p[page_in_chunk];
-}
+	if (likely(page_idx < umem->num_pages))
+		return umem->page_chunk[chunk_idx].p[page_in_chunk];
 
+	return NULL;
+}
 struct siw_umem *siw_umem_get(u64, u64);
 void siw_umem_release(struct siw_umem *);
 
+
 /* QP TX path functions */
-int siw_qp_sq_process(struct siw_qp *, int);
+int siw_qp_sq_process(struct siw_qp *);
 int siw_sq_worker_init(void);
 void siw_sq_worker_exit(void);
 int siw_sq_queue_work(struct siw_qp *qp);
+int siw_activate_tx(struct siw_qp *);
 
 /* QP RX path functions */
 int siw_proc_send(struct siw_qp *, struct siw_iwarp_rx *);
-int siw_init_rresp(struct siw_qp *, struct siw_iwarp_rx *);
 int siw_proc_rreq(struct siw_qp *, struct siw_iwarp_rx *);
 int siw_proc_rresp(struct siw_qp *, struct siw_iwarp_rx *);
 int siw_proc_write(struct siw_qp *, struct siw_iwarp_rx *);
@@ -843,29 +758,58 @@ void siw_cq_event(struct siw_cq *, enum ib_event_type);
 void siw_srq_event(struct siw_srq *, enum ib_event_type);
 void siw_port_event(struct siw_dev *, u8, enum ib_event_type);
 
-static inline struct siw_wqe *
-siw_next_tx_wqe(struct siw_qp *qp) {
-	struct siw_wqe *wqe;
 
-	if (!list_empty(&qp->irq))
-		wqe = list_first_entry(&qp->irq, struct siw_wqe, list);
-	else if (!list_empty(&qp->sq))
-		wqe = list_first_entry(&qp->sq, struct siw_wqe, list);
-	else
-		wqe = NULL;
-	return wqe;
-}
-
-static inline void
-siw_rreq_queue(struct siw_wqe *wqe, struct siw_qp *qp)
+static inline int siw_sq_empty(struct siw_qp *qp)
 {
-	unsigned long	flags;
-
-	lock_orq_rxsave(qp, flags);
-	list_move_tail(&wqe->list, &qp->orq);
-	atomic_dec(&qp->orq_space);
-	unlock_orq_rxsave(qp, flags);
+	return qp->sendq[qp->sq_get % qp->attrs.sq_size].flags == 0;
 }
+
+static inline struct siw_sqe *sq_get_next(struct siw_qp *qp)
+{
+	struct siw_sqe *sqe = &qp->sendq[qp->sq_get % qp->attrs.sq_size];
+	if (sqe->flags & SIW_WQE_VALID)
+		return sqe;
+	return NULL;
+}
+
+static inline struct siw_sqe *orq_get_tail(struct siw_qp *qp)
+{
+	if (likely(qp->attrs.orq_size))
+		return &qp->orq[qp->orq_put % qp->attrs.orq_size];
+
+	pr_warn("QP[%d]: ORQ has zero length", QP_ID(qp));
+	return NULL;
+}
+
+static inline struct siw_sqe *orq_get_free(struct siw_qp *qp)
+{
+	struct siw_sqe *orq_e = orq_get_tail(qp);
+
+	if (orq_e && orq_e->flags == 0)
+		return orq_e;
+
+	return NULL;
+}
+
+static inline int siw_orq_empty(struct siw_qp *qp)
+{
+	return qp->orq[qp->orq_get % qp->attrs.orq_size].flags == 0 ? 1 : 0;
+}
+
+static inline struct siw_sqe *irq_get_free(struct siw_qp *qp)
+{
+	struct siw_sqe *irq_e = &qp->irq[qp->irq_put % qp->attrs.irq_size];
+	if (irq_e->flags == 0)
+		return irq_e;
+	return NULL;
+}
+
+static inline int siw_irq_empty(struct siw_qp *qp)
+{
+	return qp->irq[qp->irq_get % qp->attrs.irq_size].flags == 0;
+}
+
+#define tx_more_wqe(qp)		(!siw_sq_empty(qp) || !siw_irq_empty(qp))
 
 
 static inline struct siw_mr *siw_mem2mr(struct siw_mem *m)

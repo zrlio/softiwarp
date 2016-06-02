@@ -49,11 +49,29 @@
 #include "siw.h"
 #include "siw_cm.h"
 
-extern int siw_query_device(struct ib_device *, struct ib_device_attr *);
 
 extern struct ib_ucontext *siw_alloc_ucontext(struct ib_device *,
 					      struct ib_udata *);
 extern int siw_dealloc_ucontext(struct ib_ucontext *);
+extern int siw_query_port(struct ib_device *, u8, struct ib_port_attr *);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0) || defined(IS_RH_7_2)
+extern int siw_get_port_immutable(struct ib_device *, u8,
+				  struct ib_port_immutable *);
+extern int siw_query_device(struct ib_device *, struct ib_device_attr *,
+			    struct ib_udata *);
+extern struct ib_cq *siw_create_cq(struct ib_device *,
+				   const struct ib_cq_init_attr *,
+				   struct ib_ucontext *, struct ib_udata *);
+int siw_no_mad(struct ib_device *, int, u8, const struct ib_wc *,
+	       const struct ib_grh *, const struct ib_mad_hdr *, size_t,
+	       struct ib_mad_hdr *, size_t *, u16 *);
+#else
+extern int siw_query_device(struct ib_device *, struct ib_device_attr *);
+extern struct ib_cq *siw_create_cq(struct ib_device *, int, int,
+				   struct ib_ucontext *, struct ib_udata *);
+int siw_no_mad(struct ib_device *, int, u8, struct ib_wc *, struct ib_grh *,
+	       struct ib_mad *, struct ib_mad *);
+#endif
 extern int siw_query_port(struct ib_device *, u8, struct ib_port_attr *);
 extern int siw_query_pkey(struct ib_device *, u8, u16, u16 *);
 extern int siw_query_gid(struct ib_device *, u8, int, union ib_gid *);
@@ -74,8 +92,6 @@ extern int siw_post_send(struct ib_qp *, struct ib_send_wr *,
 			 struct ib_send_wr **);
 extern int siw_post_receive(struct ib_qp *, struct ib_recv_wr *,
 			    struct ib_recv_wr **);
-extern struct ib_cq *siw_create_cq(struct ib_device *, int, int,
-				   struct ib_ucontext *, struct ib_udata *);
 extern int siw_destroy_cq(struct ib_cq *);
 extern int siw_poll_cq(struct ib_cq *, int num_entries, struct ib_wc *);
 extern int siw_req_notify_cq(struct ib_cq *, enum ib_cq_notify_flags);
@@ -95,6 +111,5 @@ extern int siw_mmap(struct ib_ucontext *, struct vm_area_struct *);
 
 extern struct dma_map_ops siw_dma_generic_ops;
 extern struct ib_dma_mapping_ops siw_dma_mapping_ops;
-extern struct device	siw_generic_dma_device;
 
 #endif

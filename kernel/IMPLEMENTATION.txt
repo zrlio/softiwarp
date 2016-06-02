@@ -89,26 +89,35 @@ for achieving higher performance.
 
 Fast Path Operations:
 While RDMA hardware (RNIC) is typically using a private fast path
-between application and RDMA device, siw uses the OFA environment to
-post work and to reap work completions through the openfabrics core.
-Nevertheless, we do not expect too much overhead from trapping into
-the kernel for all post operations, since for a doorbell call the user
-library would have to trap into the kernel anyway, and Linux is known for
-a very efficient system call implementation anyway.
+between application and RDMA device, siw normally uses the OFA kernel 
+environment to trigger execution of work previously posted on the send
+queue.
+
+As an experimental extension, we implemented a code path to use a
+prorietary system call to ring the doorbell during user space post_send()
+operations. The SoftiWarp code detects the availability of that system
+call and falls back to using above described mechanism for triggering
+transmit operations. The proprietary system call is not part of the
+software.
+
+For user level operations, endpoint resources are by default mapped
+to user space. This includes send queue, receive queue, and completion
+queue. With that, the doorbell call during post_send() is the only
+operation which requires the application to trap into the kernel
+during fast path operations. All work queue element / completion queue
+element handling is done within the user library.
 
 
 Debugging:
 ==========
 siw flexibly allows to set different levels of runtime debugging (see
-siw_debug.h). Debug level setting is compile-time.
+siw_debug.h). Debug level setting is only compile-time.
 
 
 Incomplete List of Missing Functionality:
 =========================================
-Termination message creation and handling
 MPA Marker insertion
 MPA Marker reception (not very useful)
-Explicit WR fencing
 
 
 

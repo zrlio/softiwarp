@@ -46,23 +46,15 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <net/if.h>
 #include <pthread.h>
 
 #include "siw.h"
 #include "siw_abi.h"
 
 
-#define VERSION_ID_SOFTRDMA	0x0001
-#define SIW_NODE_DESC		"Software iWARP stack"
-
-struct {
-	unsigned		version;
-	enum siw_if_type	if_type;
-} siw_device_type = {
-	.version = VERSION_ID_SOFTRDMA,
-	.if_type = SIW_IF_OFED,
-};
-
+int rdma_db_nr = -1;
+extern const int siw_debug;
 
 static struct ibv_context_ops siw_context_ops = {
 	.query_device	= siw_query_device,
@@ -103,12 +95,14 @@ static struct ibv_context *siw_alloc_context(struct ibv_device *ofa_dev, int fd)
 	context->ofa_ctx.cmd_fd = fd;
 
 	if (ibv_cmd_get_context(&context->ofa_ctx, &cmd, sizeof cmd,
-				&resp.ofa_resp, sizeof resp)) {
+				&resp.ofa, sizeof resp)) {
 		free(context);
 		return NULL;
 	}
 	context->ofa_ctx.device = ofa_dev;
 	context->ofa_ctx.ops = siw_context_ops;
+	context->dev_id = resp.siw.dev_id;
+	rdma_db_nr = resp.siw.rdma_db_nr;
 
 	/*
 	 * here we take the chance to put in two versions of fast path
@@ -122,9 +116,18 @@ static struct ibv_context *siw_alloc_context(struct ibv_device *ofa_dev, int fd)
 		context->ofa_ctx.ops.post_recv = siw_post_recv_ofed;
 		context->ofa_ctx.ops.post_srq_recv = siw_post_srq_recv_ofed;
 		context->ofa_ctx.ops.poll_cq = siw_poll_cq_ofed;
+
 		break;
 
 	case SIW_IF_MAPPED:
+		context->ofa_ctx.ops.async_event = siw_async_event;
+		context->ofa_ctx.ops.post_send = siw_post_send_mapped;
+		context->ofa_ctx.ops.post_recv = siw_post_recv_mapped;
+		context->ofa_ctx.ops.post_srq_recv = siw_post_srq_recv_mapped;
+		context->ofa_ctx.ops.poll_cq = siw_poll_cq_mapped;
+
+		break;
+
 	default:
 		printf("SIW IF type %d not supported\n", siw_dev->if_type);
 		free(context);
@@ -149,7 +152,8 @@ static struct ibv_device_ops siw_dev_ops = {
 static struct ibv_device *siw_driver_init(const char *uverbs_sys_path,
 					  int abi_version)
 {
-	char			value[16], siw_devpath[IBV_SYSFS_PATH_MAX],
+	char			value[IFNAMSIZ + sizeof(SIW_IBDEV_PREFIX)],
+				siw_devpath[IBV_SYSFS_PATH_MAX],
 				node_desc[24];
 	struct siw_device	*dev;
 	int			version, if_type;
@@ -173,7 +177,7 @@ static struct ibv_device *siw_driver_init(const char *uverbs_sys_path,
 				node_desc, sizeof node_desc) < 0)
 		return NULL;
 
-	if (strncmp(SIW_NODE_DESC, node_desc, strlen(SIW_NODE_DESC)))
+	if (strncmp(SIW_NODE_DESC_COMMON, node_desc, strlen(SIW_NODE_DESC_COMMON)))
 		return NULL;
 
 	if (ibv_read_sysfs_file(siw_devpath, "sw_version",
@@ -188,14 +192,9 @@ static struct ibv_device *siw_driver_init(const char *uverbs_sys_path,
 
 	sscanf(value, "%i", &if_type); 
 
-	if (version != siw_device_type.version ||
-	    if_type != siw_device_type.if_type) {
-		fprintf(stderr, "%s: Kernel module not supported: "
-			"v=%d:%d, if=%d:%d\n",
-			 siw_devpath, version, siw_device_type.version,
-			 if_type, siw_device_type.if_type);
+	if (version != VERSION_ID_SOFTIWARP ||
+	    (if_type != SIW_IF_OFED && if_type != SIW_IF_MAPPED))
 		return NULL;
-	}
 
 	dev = malloc(sizeof *dev);
 	if (!dev)
@@ -203,7 +202,7 @@ static struct ibv_device *siw_driver_init(const char *uverbs_sys_path,
 
 	pthread_spin_init(&dev->lock, PTHREAD_PROCESS_PRIVATE);
 	dev->ofa_dev.ops = siw_dev_ops;
-	dev->if_type = siw_device_type.if_type;
+	dev->if_type = if_type;
 
 	return &dev->ofa_dev;
 }

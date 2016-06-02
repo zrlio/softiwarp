@@ -67,7 +67,7 @@ void siw_idr_release(struct siw_dev *sdev)
 	idr_destroy(&sdev->mem_idr);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 9, 0)
 static inline int siw_add_obj(spinlock_t *lock, struct idr *idr,
 			      struct siw_objhdr *obj)
 {
@@ -76,7 +76,7 @@ static inline int siw_add_obj(spinlock_t *lock, struct idr *idr,
 	int		rv;
 
 	get_random_bytes(&pre_id, sizeof pre_id);
-	pre_id &= 0xffffff;
+	pre_id &= 0xffff;
 again:
 	do {
 		if (!(idr_pre_get(idr, GFP_KERNEL)))
@@ -164,17 +164,16 @@ struct siw_qp *siw_qp_id2obj(struct siw_dev *sdev, int id)
  * siw_mem_id2obj()
  *
  * resolves memory from stag given by id. might be called from:
- * o process context before sending out of sgl
- * o or in softirq when resolving target memory
+ * o process context before sending out of sgl, or
+ * o in softirq when resolving target memory
  */
 struct siw_mem *siw_mem_id2obj(struct siw_dev *sdev, int id)
 {
 	struct siw_objhdr *obj;
-	unsigned long flags;
 
-	spin_lock_irqsave(&sdev->idr_lock, flags);
+	rcu_read_lock();
 	obj = siw_get_obj(&sdev->mem_idr, id);
-	spin_unlock_irqrestore(&sdev->idr_lock, flags);
+	rcu_read_unlock();
 
 	if (obj) {
 		dprint(DBG_MM|DBG_OBJ, "(MEM%d): New refcount: %d\n",
@@ -217,7 +216,7 @@ int siw_pd_add(struct siw_dev *sdev, struct siw_pd *pd)
 	return rv;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 9, 0)
 /*
  * Stag lookup is based on its index part only (24 bits)
  * It is assumed that the idr_get_new_above(,,1,) function will
@@ -334,6 +333,8 @@ static void siw_free_cq(struct kref *ref)
 	dprint(DBG_OBJ, "(CQ%d): Free Object\n", cq->hdr.id);
 
 	atomic_dec(&cq->hdr.sdev->num_cq);
+	if (cq->queue)
+		vfree(cq->queue);
 	kfree(cq);
 }
 
@@ -350,13 +351,20 @@ static void siw_free_qp(struct kref *ref)
 	if (qp->cep)
 		siw_cep_put(qp->cep);
 
-	siw_drain_wq(&qp->freeq);
-
 	siw_remove_obj(&sdev->idr_lock, &sdev->qp_idr, &qp->hdr);
 
 	spin_lock_irqsave(&sdev->idr_lock, flags);
 	list_del(&qp->devq);
 	spin_unlock_irqrestore(&sdev->idr_lock, flags);
+
+	if (qp->sendq)
+		vfree(qp->sendq);
+	if (qp->recvq)
+		vfree(qp->recvq);
+	if (qp->irq)
+		vfree(qp->irq);
+	if (qp->orq)
+		vfree(qp->orq);
 
 	atomic_dec(&sdev->num_qp);
 	kfree(qp);
@@ -387,13 +395,13 @@ static void siw_free_mem(struct kref *ref)
 
 	if (SIW_MEM_IS_MW(m)) {
 		struct siw_mw *mw = container_of(m, struct siw_mw, mem);
-		kfree(mw);
+		kfree_rcu(mw, rcu);
 	} else {
 		struct siw_mr *mr = container_of(m, struct siw_mr, mem);
 		dprint(DBG_MM|DBG_OBJ, "(MEM%d): Release UMem\n", OBJ_ID(m));
 		if (mr->umem)
 			siw_umem_release(mr->umem);
-		kfree(mr);
+		kfree_rcu(mr, rcu);
 	}
 }
 
@@ -429,95 +437,39 @@ void siw_mem_put(struct siw_mem *m)
 
 /***** routines for WQE handling ***/
 
-inline struct siw_wqe *siw_freeq_wqe_get(struct siw_qp *qp)
-{
-	struct siw_wqe *wqe = NULL;
-	unsigned long flags;
-
-	spin_lock_irqsave(&qp->freeq_lock, flags);
-	if (!list_empty(&qp->freeq)) {
-		wqe = list_first_wqe(&qp->freeq);
-		list_del(&wqe->list);
-		spin_unlock_irqrestore(&qp->freeq_lock, flags);
-		dprint(DBG_OBJ|DBG_WR,
-			"(QP%d): WQE from FreeList p: %p\n",
-			QP_ID(qp), wqe);
-	} else {
-		spin_unlock_irqrestore(&qp->freeq_lock, flags);
-		dprint(DBG_ON|DBG_OBJ|DBG_WR,
-			"(QP%d): FreeList empty!\n", QP_ID(qp));
-	}
-	return wqe;
-}
-
-static inline void siw_unref_mem_sgl(struct siw_sge *sge, int num_sge)
+static inline void siw_unref_mem_sgl(union siw_mem_resolved *mem, int num_sge)
 {
 	while (num_sge--) {
-		if (sge->mem.obj != NULL)
-			siw_mem_put(sge->mem.obj);
-		sge++;
+		if (mem->obj != NULL) {
+			siw_mem_put(mem->obj);
+			mem->obj = NULL;
+			mem++;
+		} else
+			break;
 	}
 }
 
-void siw_wqe_put(struct siw_wqe *wqe)
+void siw_wqe_put_mem(struct siw_wqe *wqe, enum siw_opcode op)
 {
-	struct siw_qp *qp = wqe->qp;
+	switch (op) {
 
-	dprint(DBG_OBJ|DBG_WR, " WQE: %llu:, type: %d, p: %p\n",
-		(unsigned long long)wr_id(wqe), wr_type(wqe), wqe);
-
-	switch (wr_type(wqe)) {
-
-	case SIW_WR_SEND:
-	case SIW_WR_RDMA_WRITE:
-	case SIW_WR_RDMA_WRITE_WITH_IMM:
-	case SIW_WR_SEND_WITH_IMM:
-	case SIW_WR_RDMA_READ_REQ:
-		if (!SIW_INLINED_DATA(wqe))
-			siw_unref_mem_sgl(wqe->wr.sgl.sge,
-					  wqe->wr.sgl.num_sge);
-
-		if (qp->attrs.flags & SIW_KERNEL_VERBS)
-			siw_add_wqe(wqe, &qp->freeq, &qp->freeq_lock);
-		else {
-			kfree(wqe);
-			SIW_DEC_STAT_WQE;
-		}
-		atomic_inc(&qp->sq_space);
+	case SIW_OP_SEND:
+	case SIW_OP_WRITE:
+	case SIW_OP_SEND_WITH_IMM:
+	case SIW_OP_READ:
+		if (!(wqe->sqe.flags & SIW_WQE_INLINE))
+			siw_unref_mem_sgl(wqe->mem, wqe->sqe.num_sge);
 		break;
 
-	case SIW_WR_RECEIVE:
-		siw_unref_mem_sgl(wqe->wr.sgl.sge, wqe->wr.sgl.num_sge);
-		if (qp->srq) {
-			struct siw_srq *srq = qp->srq;
-			if (srq->kernel_verbs)
-				siw_add_wqe(wqe, &srq->freeq,
-					    &srq->freeq_lock);
-			else {
-				kfree(wqe);
-				SIW_DEC_STAT_WQE;
-			}
-			atomic_inc(&srq->space);
-		} else {
-			if (qp->attrs.flags & SIW_KERNEL_VERBS)
-				siw_add_wqe(wqe, &qp->freeq, &qp->freeq_lock);
-			else {
-				kfree(wqe);
-				SIW_DEC_STAT_WQE;
-			}
-			atomic_inc(&qp->rq_space);
-		}
+	case SIW_OP_RECEIVE:
+		siw_unref_mem_sgl(wqe->mem, wqe->rqe.num_sge);
 		break;
 
-	case SIW_WR_RDMA_READ_RESP:
-		siw_unref_mem_sgl(wqe->wr.sgl.sge, 1);
-		wqe->wr.sgl.sge[0].mem.obj = NULL;
-		siw_add_wqe(wqe, &qp->freeq, &qp->freeq_lock);
-		atomic_inc(&qp->irq_space);
+	case SIW_OP_READ_RESPONSE:
+		siw_unref_mem_sgl(wqe->mem, 1);
 		break;
 
 	default:
 		WARN_ON(1);
 	}
-	siw_qp_put(qp);
 }

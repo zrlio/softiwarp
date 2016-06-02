@@ -106,10 +106,10 @@ static ssize_t siw_show_qps(struct file *f, char __user *buf, size_t space,
 			     QP_ID(qp),
 			     qp->attrs.state,
 			     atomic_read(&qp->hdr.ref.refcount),
-			     qp->attrs.sq_size - atomic_read(&qp->sq_space),
-			     qp->attrs.rq_size - atomic_read(&qp->rq_space),
-			     qp->attrs.ird - atomic_read(&qp->irq_space),
-			     qp->attrs.ord - atomic_read(&qp->orq_space),
+			     qp->attrs.sq_size,
+			     qp->attrs.rq_size,
+			     qp->attrs.irq_size,
+			     qp->attrs.orq_size,
 			     tx_wqe(qp) ? 1 : 0,
 			     rx_wqe(qp) ? 1 : 0,
 			     qp->attrs.llp_stream_handle,
@@ -439,12 +439,13 @@ void siw_print_rctx(struct siw_iwarp_rx *rctx)
 		"pad:%d\n", rctx->state, rctx->fpdu_part_rcvd,
 		rctx->fpdu_part_rem, rctx->pad);
 	pr_info("Rx Mem:\t\tp:0x%p, stag:0x%08x, mem_id:%d\n",
-		rctx->dest.wqe, rctx->ddp_stag, rctx->ddp_stag >> 8);
+		&rctx->wqe_active, rctx->ddp_stag, rctx->ddp_stag >> 8);
 	pr_info("DDP State:\tprev_op:%d, first_seg:%d, "
 		"more_segs:%d\n", rctx->prev_rdmap_opcode, rctx->first_ddp_seg,
 		rctx->more_ddp_segs);
 	pr_info("MPA State:\tlen:%d, crc_enabled:%d, crc:0x%x\n",
-		rctx->hdr.ctrl.mpa_len, rctx->crc_enabled, rctx->trailer.crc);
+		ntohs(rctx->hdr.ctrl.mpa_len), rctx->crc_enabled,
+		rctx->trailer.crc);
 	pr_info("<---------------\n");
 }
 

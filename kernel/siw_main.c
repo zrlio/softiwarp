@@ -44,6 +44,7 @@
 #include <linux/rtnetlink.h>
 #include <linux/if_arp.h>
 #include <linux/list.h>
+#include <linux/kernel.h>
 
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_smi.h>
@@ -53,12 +54,15 @@
 #include "siw_obj.h"
 #include "siw_cm.h"
 #include "siw_verbs.h"
+#ifdef USE_SQ_KTHREAD
+#include <linux/kthread.h>
+#endif
 
 
 MODULE_AUTHOR("Bernard Metzler");
 MODULE_DESCRIPTION("Software iWARP Driver");
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_VERSION("0.1");
+MODULE_VERSION("0.2");
 
 #define SIW_MAX_IF 12
 static char *iface_list[SIW_MAX_IF];
@@ -69,9 +73,24 @@ static bool loopback_enabled = 1;
 module_param(loopback_enabled, bool, 0644);
 MODULE_PARM_DESC(loopback_enabled, "enable_loopback");
 
-static LIST_HEAD(siw_devlist);
+LIST_HEAD(siw_devlist);
 DEFINE_SPINLOCK(siw_dev_lock);
 
+#ifdef USE_SQ_KTHREAD
+static char *tx_cpu_list[NR_CPUS];
+module_param_array(tx_cpu_list, charp, NULL, 0444);
+MODULE_PARM_DESC(tx_cpu_list, "List of CPUs siw TX thread shall be bound to");
+
+int default_tx_cpu = -1;
+static int tx_on_all_cpus = 1;
+extern int siw_run_sq(void *);
+struct task_struct *qp_tx_thread[NR_CPUS];
+#endif
+
+#ifdef SIW_DB_SYSCALL
+extern long siw_doorbell(u32, u32, u32);
+long (*db_orig_call) (u32, u32, u32);
+#endif
 
 static ssize_t show_sw_version(struct device *dev,
 			       struct device_attribute *attr, char *buf)
@@ -97,6 +116,21 @@ static struct device_attribute *siw_dev_attributes[] = {
 	&dev_attr_if_type
 };
 
+static void siw_device_release(struct device *dev)
+{
+	pr_info("%s device released\n", dev_name(dev));
+}
+
+static struct device siw_generic_dma_device = {
+	.archdata.dma_ops	= &siw_dma_generic_ops,
+	.init_name		= "software-rdma-v2",
+	.release		= siw_device_release
+};
+
+static struct bus_type siw_bus = {
+	.name	= "siw",
+};
+
 static int siw_modify_port(struct ib_device *ofa_dev, u8 port, int mask,
 			   struct ib_port_modify *props)
 {
@@ -108,6 +142,7 @@ static void siw_device_register(struct siw_dev *sdev)
 {
 	struct ib_device *ofa_dev = &sdev->ofa_dev;
 	int rv, i;
+	static int dev_id = 1;
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 34) 
 	rv = ib_register_device(ofa_dev, NULL);
@@ -131,6 +166,8 @@ static void siw_device_register(struct siw_dev *sdev)
 		}
 	}
 	siw_debugfs_add_device(sdev);
+
+	sdev->attrs.vendor_part_id = dev_id++;
 
 	dprint(DBG_DM, ": Registered '%s' for interface '%s', "
 		"HWaddr=%02x.%02x.%02x.%02x.%02x.%02x\n",
@@ -225,6 +262,61 @@ static struct siw_dev *siw_dev_from_netdev(struct net_device *dev)
 	return NULL;
 }
 
+#ifdef USE_SQ_KTHREAD
+static int siw_tx_qualified(int cpu)
+{
+	int i = 0;
+
+	if (tx_on_all_cpus)
+		return 1;
+
+	for (i = 0; i < NR_CPUS; i++) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 39) 
+		if (tx_cpu_list[i] &&
+		    simple_strtoull(tx_cpu_list[i], NULL, 10) == cpu)
+#else
+		int c;
+		if (tx_cpu_list[i] && kstrtoint(tx_cpu_list[i], 0, &c) == 0 &&
+		    cpu == c)
+#endif
+			return 1;
+	}
+	return 0;
+}
+
+static int siw_create_tx_threads(int max_threads, int check_qualified)
+{
+	int cpu, rv, assigned = 0;
+
+	if (max_threads < 0 || max_threads > NR_CPUS)
+		return 0;
+
+	for_each_online_cpu(cpu) {
+		if (check_qualified == 0 || siw_tx_qualified(cpu)) {
+			qp_tx_thread[cpu] =
+				kthread_create(siw_run_sq,
+					(unsigned long *)(long)cpu,
+					"qp_tx_thread/%d", cpu);
+			kthread_bind(qp_tx_thread[cpu], cpu);
+			if (IS_ERR(qp_tx_thread)) {
+				rv = PTR_ERR(qp_tx_thread);
+				qp_tx_thread[cpu] = NULL;
+				pr_info("Binding TX thread to CPU %d failed",
+					cpu);
+				break;
+			}
+			wake_up_process(qp_tx_thread[cpu]);
+			assigned++;
+			if (default_tx_cpu < 0)
+				default_tx_cpu = cpu;
+			if (assigned >= max_threads)
+				break;
+		}
+	}
+	return assigned;
+}
+#endif
+
 static int siw_dev_qualified(struct net_device *netdev)
 {
 	if (!siw_match_iflist(netdev)) {
@@ -239,6 +331,7 @@ static int siw_dev_qualified(struct net_device *netdev)
 	 */
 	if (netdev->type == ARPHRD_ETHER ||
 	    netdev->type == ARPHRD_IEEE802 ||
+	    netdev->type == ARPHRD_INFINIBAND ||
 	    (netdev->type == ARPHRD_LOOPBACK && loopback_enabled))
 		return 1;
 
@@ -265,9 +358,9 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	sdev->netdev = netdev;
 	list_add_tail(&sdev->list, &siw_devlist);
 
-	strcpy(ofa_dev->name, "siw_");
-	strlcpy(ofa_dev->name + strlen("siw_"), netdev->name,
-		IB_DEVICE_NAME_MAX - strlen("siw_"));
+	strcpy(ofa_dev->name, SIW_IBDEV_PREFIX);
+	strlcpy(ofa_dev->name + strlen(SIW_IBDEV_PREFIX), netdev->name,
+		IB_DEVICE_NAME_MAX - strlen(SIW_IBDEV_PREFIX));
 
 	memset(&ofa_dev->node_guid, 0, sizeof(ofa_dev->node_guid));
 	if (netdev->type != ARPHRD_LOOPBACK)
@@ -308,7 +401,7 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	    (1ull << IB_USER_VERBS_CMD_POST_SRQ_RECV);
 
 	ofa_dev->node_type = RDMA_NODE_RNIC;
-	memcpy(ofa_dev->node_desc, SIW_NODE_DESC, sizeof(SIW_NODE_DESC));
+	memcpy(ofa_dev->node_desc, SIW_NODE_DESC_COMMON, sizeof(SIW_NODE_DESC_COMMON));
 
 	/*
 	 * Current model (one-to-one device association):
@@ -321,6 +414,9 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->dma_device = &siw_generic_dma_device;
 	ofa_dev->query_device = siw_query_device;
 	ofa_dev->query_port = siw_query_port;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0) || defined(IS_RH_7_2)
+	ofa_dev->get_port_immutable = siw_get_port_immutable;
+#endif
 	ofa_dev->query_qp = siw_query_qp;
 	ofa_dev->modify_port = siw_modify_port;
 	ofa_dev->query_pkey = siw_query_pkey;
@@ -376,11 +472,11 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	 * set and register sw version + user if type
 	 */
 	sdev->attrs.version = VERSION_ID_SOFTIWARP;
-	sdev->attrs.iftype  = SIW_IF_OFED;
+	sdev->attrs.iftype  = SIW_IF_MAPPED;
 
 	sdev->attrs.vendor_id = SIW_VENDOR_ID;
 	sdev->attrs.vendor_part_id = SIW_VENDORT_PART_ID;
-	sdev->attrs.sw_version = SIW_SW_VERSION;
+	sdev->attrs.sw_version = VERSION_ID_SOFTIWARP;
 	sdev->attrs.max_qp = SIW_MAX_QP;
 	sdev->attrs.max_qp_wr = SIW_MAX_QP_WR;
 	sdev->attrs.max_ord = SIW_MAX_ORD;
@@ -526,14 +622,12 @@ done:
 	return NOTIFY_OK;
 }
 
-
 static struct notifier_block siw_netdev_nb = {
 	.notifier_call = siw_netdev_event,
 };
-
-static struct bus_type siw_bus = {
-	.name		= "siw",
-};
+#ifdef SIW_DB_SYSCALL
+extern long (*doorbell_call)(u32, u32, u32);
+#endif
 
 /*
  * siw_init_module - Initialize Softiwarp module and register with netdev
@@ -542,10 +636,25 @@ static struct bus_type siw_bus = {
 static __init int siw_init_module(void)
 {
 	int rv;
+#ifdef USE_SQ_KTHREAD
+	int nr_cpu;
+#endif
 
+	if (SENDPAGE_THRESH < SIW_MAX_INLINE) {
+		pr_info("SENDPAGE_THRESH: %d < SIW_MAX_INLINE: %d"
+			" -- check SIW_MAX_SGE (%d)\n",
+			(int)SENDPAGE_THRESH, (int)SIW_MAX_INLINE,
+			(int)SIW_MAX_SGE);
+		rv = EINVAL;
+		goto out;
+	}
+	/*
+	 * The xprtrdma module needs at least some rudimentary bus to set
+	 * some devices path MTU.
+	 */
 	rv = bus_register(&siw_bus);
 	if (rv)
-		return rv;
+		goto out_nobus;
 
 	siw_generic_dma_device.bus = &siw_bus;
 
@@ -568,14 +677,48 @@ static __init int siw_init_module(void)
 		siw_debugfs_delete();
 		goto out_unregister;
 	}
-	pr_info("SoftIWARP attached\n");
+#ifdef SIW_DB_SYSCALL
+	db_orig_call = doorbell_call;
+	doorbell_call = siw_doorbell;
 
+	pr_info("SoftiWARP: doorbell call assigned, syscall # %d\n",
+		__NR_rdma_db);
+#else
+	pr_info("SoftiWARP: no doorbell call\n");
+#endif
+
+#ifdef USE_SQ_KTHREAD
+	for (nr_cpu = 0; nr_cpu < NR_CPUS; nr_cpu++) {
+		qp_tx_thread[nr_cpu] = NULL;
+		if (tx_cpu_list[nr_cpu])
+			tx_on_all_cpus = 0;
+	}
+
+        if (siw_create_tx_threads(NR_CPUS, 1) == 0) {
+		pr_info("Try starting default TX thread\n");
+		if (siw_create_tx_threads(1, 0) == 0) {
+			pr_info("Could not start any TX thread\n");
+			goto out_unregister;
+		}
+	}
+#endif
+	pr_info("SoftiWARP attached\n");
 	return 0;
 
 out_unregister:
+#ifdef USE_SQ_KTHREAD
+	for (nr_cpu = 0; nr_cpu < NR_CPUS; nr_cpu++) {
+		if (qp_tx_thread[nr_cpu]) {
+			kthread_stop(qp_tx_thread[nr_cpu]);
+			qp_tx_thread[nr_cpu] = NULL;
+		}
+	}
+#endif
 	device_unregister(&siw_generic_dma_device);
+
 out:
 	bus_unregister(&siw_bus);
+out_nobus:
 	pr_info("SoftIWARP attach failed. Error: %d\n", rv);
 	siw_sq_worker_exit();
 	siw_cm_exit();
@@ -584,27 +727,29 @@ out:
 }
 
 
-static void siw_device_release(struct device *dev)
-{
-	pr_info("%s device released\n", dev_name(dev));
-}
-
-struct device siw_generic_dma_device = {
-	.archdata.dma_ops	= &siw_dma_generic_ops,
-	.init_name		= "software-rdma",
-	.release		= siw_device_release
-};
-
 static void __exit siw_exit_module(void)
 {
+#ifdef USE_SQ_KTHREAD
+	int nr_cpu;
+
+	for (nr_cpu = 0; nr_cpu < NR_CPUS; nr_cpu++) {
+		if (qp_tx_thread[nr_cpu]) {
+			kthread_stop(qp_tx_thread[nr_cpu]);
+			qp_tx_thread[nr_cpu] = NULL;
+		}
+	}
+#endif
+
 	spin_lock(&siw_dev_lock);
-
 	unregister_netdevice_notifier(&siw_netdev_nb);
-
 	spin_unlock(&siw_dev_lock);
 
 	siw_sq_worker_exit();
 	siw_cm_exit();
+
+#ifdef SIW_DB_SYSCALL
+	doorbell_call = db_orig_call;
+#endif
 
 	while (!list_empty(&siw_devlist)) {
 		struct siw_dev  *sdev =
@@ -618,9 +763,10 @@ static void __exit siw_exit_module(void)
 	siw_debugfs_delete();
 
 	device_unregister(&siw_generic_dma_device);
+
 	bus_unregister(&siw_bus);
 
-	pr_info("SoftIWARP detached\n");
+	pr_info("SoftiWARP detached\n");
 }
 
 module_init(siw_init_module);

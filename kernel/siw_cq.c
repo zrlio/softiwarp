@@ -49,33 +49,32 @@
 #include "siw_obj.h"
 #include "siw_cm.h"
 
-static int siw_wc_op_siw2ofa[SIW_WR_NUM] = {
-	[SIW_WR_RDMA_WRITE]		= IB_WC_RDMA_WRITE,
-	[SIW_WR_RDMA_WRITE_WITH_IMM]	= IB_WC_RDMA_WRITE,
-	[SIW_WR_SEND]			= IB_WC_SEND,
-	[SIW_WR_SEND_WITH_IMM]		= IB_WC_SEND,
-	[SIW_WR_RDMA_READ_REQ]		= IB_WC_RDMA_READ,
-	[SIW_WR_ATOMIC_CMP_AND_SWP]	= IB_WC_COMP_SWAP,
-	[SIW_WR_ATOMIC_FETCH_AND_ADD]	= IB_WC_FETCH_ADD,
-	[SIW_WR_FASTREG]		= IB_WC_FAST_REG_MR,
-	[SIW_WR_INVAL_STAG]		= IB_WC_LOCAL_INV,
-	[SIW_WR_RECEIVE]		= IB_WC_RECV,
-	[SIW_WR_RDMA_READ_RESP]		= 0 /* not used */
+static int siw_wc_op_siw2ofa[SIW_NUM_OPCODES] = {
+	[SIW_OP_WRITE]		= IB_WC_RDMA_WRITE,
+	[SIW_OP_SEND]		= IB_WC_SEND,
+	[SIW_OP_SEND_WITH_IMM]	= IB_WC_SEND,
+	[SIW_OP_READ]		= IB_WC_RDMA_READ,
+	[SIW_OP_COMP_AND_SWAP]	= IB_WC_COMP_SWAP,
+	[SIW_OP_FETCH_AND_ADD]	= IB_WC_FETCH_ADD,
+	[SIW_OP_FASTREG]	= IB_WC_FAST_REG_MR,
+	[SIW_OP_INVAL_STAG]	= IB_WC_LOCAL_INV,
+	[SIW_OP_RECEIVE]	= IB_WC_RECV,
+	[SIW_OP_READ_RESPONSE]	= -1 /* not used */
 };
 
 /*
  * translate wc into ofa syntax
  */
-static void siw_wc_siw2ofa(struct siw_wqe *siw_wc, struct ib_wc *ofa_wc)
+static void siw_wc_siw2ofa(struct siw_cqe *cqe, struct ib_wc *ofa_wc)
 {
 	memset(ofa_wc, 0, sizeof *ofa_wc);
 
-	ofa_wc->wr_id = wr_id(siw_wc);
-	ofa_wc->status = siw_wc->wc_status;
-	ofa_wc->byte_len = siw_wc->processed;
-	ofa_wc->qp = &siw_wc->qp->ofa_qp;
+	ofa_wc->wr_id = cqe->id;
+	ofa_wc->status = cqe->status;
+	ofa_wc->byte_len = cqe->bytes;
+	ofa_wc->qp = &((struct siw_qp *)cqe->qp)->ofa_qp;
 
-	ofa_wc->opcode = siw_wc_op_siw2ofa[wr_type(siw_wc)];
+	ofa_wc->opcode = siw_wc_op_siw2ofa[cqe->opcode];
 	/*
 	 * ofa_wc->imm_data = 0;
 	 * ofa_wc->vendor_err = 0;
@@ -98,28 +97,31 @@ static void siw_wc_siw2ofa(struct siw_wqe *siw_wc, struct ib_wc *ofa_wc)
  */
 int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 {
-	struct siw_wqe	*cqe = NULL;
+	struct siw_cqe *cqe;
 	unsigned long flags;
 
 	lock_cq_rxsave(cq, flags);
 
-	if (!list_empty(&cq->queue)) {
-		cqe = list_first_wqe(&cq->queue);
-		list_del(&cqe->list);
-		atomic_dec(&cq->qlen);
+	cqe = &cq->queue[cq->cq_get % cq->num_cqe];
+	if (cqe->flags & SIW_WQE_VALID) {
+		siw_wc_siw2ofa(cqe, ofa_wc);
+		
+		dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d, p: %p\n",
+			QP_ID((struct siw_qp *)cqe->qp), OBJ_ID(cq),
+			cqe->opcode, cqe);
+
+		siw_qp_put(cqe->qp);
+
+		cqe->flags = 0;
+		cq->cq_get++;
+
+		smp_wmb();
+
+		unlock_cq_rxsave(cq, flags);
+		return 1;
 	}
 	unlock_cq_rxsave(cq, flags);
-
-	if (cqe) {
-		siw_wc_siw2ofa(cqe, ofa_wc);
-
-		dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d, p: %p\n",
-			  QP_ID(cqe->qp), OBJ_ID(cq), wr_type(cqe), cqe);
-
-		siw_wqe_put(cqe);
-		return 1;
-	} else
-		return 0;
+	return 0;
 }
 
 /*
@@ -129,99 +131,7 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
  */
 void siw_cq_flush(struct siw_cq *cq)
 {
-	struct list_head	*pos, *n;
-	struct siw_wqe		*cqe;
-
 	dprint(DBG_CM|DBG_OBJ, "(CQ%d:) Enter\n", OBJ_ID(cq));
 
-	if (list_empty(&cq->queue))
-		return;
-
-	list_for_each_safe(pos, n, &cq->queue) {
-		cqe = list_entry_wqe(pos);
-		list_del(&cqe->list);
-
-		dprint(DBG_OBJ|DBG_WR, " WQE: 0x%llu:, type: %d, p: %p\n",
-			(unsigned long long)wr_id(cqe),
-			wr_type(cqe), cqe);
-
-		siw_wqe_put(cqe);
-	}
-	atomic_set(&cq->qlen, 0);
-}
-
-
-
-/*
- * siw_rq_complete()
- *
- * Appends RQ/SRQ WQE to CQ, if assigned.
- * Must be called with qp state read locked
- */
-void siw_rq_complete(struct siw_wqe *wqe, struct siw_qp *qp)
-{
-	struct siw_cq	*cq = qp->rcq;
-	unsigned long flags;
-
-	dprint(DBG_OBJ|DBG_WR, " QP%d WQE: 0x%llu:, type: %d, p: %p\n",
-		QP_ID(qp),
-		(unsigned long long)wr_id(wqe), wr_type(wqe), wqe);
-
-	if (cq) {
-		lock_cq_rxsave(cq, flags);
-
-		list_add_tail(&wqe->list, &cq->queue);
-		atomic_inc(&cq->qlen); /* FIXME: test overflow */
-
-		unlock_cq_rxsave(cq, flags);
-
-		if (cq->ofa_cq.comp_handler != NULL &&
-			((cq->notify & SIW_CQ_NOTIFY_ALL) ||
-			 (cq->notify == SIW_CQ_NOTIFY_SOLICITED &&
-			  wr_flags(wqe) & IB_SEND_SOLICITED))) {
-				cq->notify = SIW_CQ_NOTIFY_NOT;
-				(*cq->ofa_cq.comp_handler)
-					(&cq->ofa_cq, cq->ofa_cq.cq_context);
-		}
-	} else
-		siw_wqe_put(wqe);
-}
-
-/*
- * siw_sq_complete()
- * Appends list of former SQ WQE's to CQ, if assigned.
- * Must be called with qp state read locked
- */
-void siw_sq_complete(struct list_head *c_list, struct siw_qp *qp, int num,
-		     enum ib_send_flags send_flags)
-{
-	struct siw_cq		*cq = qp->scq;
-	unsigned long flags;
-
-	if (cq) {
-		lock_cq_rxsave(cq, flags);
-
-		list_splice_tail(c_list, &cq->queue);
-		atomic_add(num, &cq->qlen); /* FIXME: test overflow */
-
-
-		dprint(DBG_WR, " CQ%d: add %d from QP%d, CQ len %d\n",
-			OBJ_ID(cq), num, QP_ID(qp), atomic_read(&cq->qlen));
-
-		if (cq->ofa_cq.comp_handler != NULL &&
-			((cq->notify & SIW_CQ_NOTIFY_ALL) ||
-			 (cq->notify == SIW_CQ_NOTIFY_SOLICITED &&
-			  send_flags & IB_SEND_SOLICITED))) {
-				cq->notify = SIW_CQ_NOTIFY_NOT;
-				unlock_cq_rxsave(cq, flags);
-				(*cq->ofa_cq.comp_handler)
-					(&cq->ofa_cq, cq->ofa_cq.cq_context);
-		} else
-			unlock_cq_rxsave(cq, flags);
-	} else {
-		struct list_head *pos;
-
-		list_for_each(pos, c_list)
-			siw_wqe_put(list_entry_wqe(pos));
-	}
+	memset(cq->queue, 0, cq->num_cqe * sizeof(struct siw_cqe));
 }
