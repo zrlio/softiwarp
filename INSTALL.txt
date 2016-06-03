@@ -16,6 +16,9 @@ $ ./autogen.sh
 $ ./configure
 $ su
 # make install
+# ln -s /usr/local/etc/libibverbs.d/siw.driver /etc/libibverbs.d/siw.driver
+# echo /usr/local/lib >> /etc/ld.so.conf.d/usr_local_lib.conf
+# ldconfig
 
 2. Goto kernel dir
 
