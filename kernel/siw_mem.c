@@ -4,7 +4,7 @@
  * Authors: Animesh Trivedi <atr@zurich.ibm.com>
  *          Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2015, IBM Corporation
+ * Copyright (c) 2008-2016, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
