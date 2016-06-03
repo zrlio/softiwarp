@@ -278,14 +278,6 @@ static void siw_qp_llp_write_space(struct sock *sk)
 		siw_sq_queue_work(qp);
 	}
 #else
-#if 0
-{
-	struct tcp_sock *tp = tcp_sk(sk);
-
-	pr_info("SENT: nxt_write %u, snd_una %u, snd_nxt %u\n",
-		tp->write_seq, tp->snd_una, tp->snd_nxt);
-}
-#endif
 	sk_stream_write_space(sk);
 
 	if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
@@ -472,12 +464,9 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			qp->rx_ctx.ddp_msn[RDMAP_UNTAGGED_QN_TERMINATE] = 1;
 
 			/*
-			 * init IRD freequeue, caller has already checked
-			 * limits. Add one extra entry since after sending
-			 * the RResponse it may trigger another peer RRequest
-			 * before the RResponse goes back to free queue.
+			 * init IRD free queue, caller has already checked
+			 * limits.
 			 */
-			//XXXXX ++attrs->irq_size;
 			rv = siw_qp_readq_init(qp, attrs->irq_size,
 					       attrs->orq_size);
 			if (rv)
@@ -893,13 +882,6 @@ int siw_activate_tx(struct siw_qp *qp)
 				qp->orq_put++;
 			} else {
 				qp->tx_ctx.orq_fence = 1;
-#ifdef DEBUG_ORQ
-				pr_info("QP[%d]: ORQ full, %d, %d, %d\n",
-					QP_ID(qp),
-					qp->orq_get % qp->attrs.orq_size,
-					qp->attrs.orq_size, qp->orq_put %
-					qp->attrs.orq_size);
-#endif
 				rv = 0;
 			}
 			unlock_orq_rxsave(qp, flags);
@@ -965,16 +947,6 @@ int siw_sqe_complete(struct siw_qp *qp, struct siw_sqe *sqe, u32 bytes,
 	u32 idx;
 	int rv = 0;
 
-#if 0
-{
-	struct socket *s = qp->cep->llp.sock;
-	struct sock *sk = s->sk;
-	struct tcp_sock *tp = tcp_sk(sk);
-
-	pr_info("SEND: nxt_write %u, snd_una %u\n",
-		tp->write_seq, tp->snd_una);
-}
-#endif
 	if (cq) {
 		u32 sqe_flags = sqe->flags;
 
@@ -1116,12 +1088,12 @@ void siw_sq_flush(struct siw_qp *qp)
 		if (wqe->sqe.opcode != SIW_OP_READ_RESPONSE &&
 		    (wqe->sqe.opcode != SIW_OP_READ ||
 		     wqe->wr_status == SR_WR_QUEUED))
-				/*
-				 * An in-progress RREQUEST is already in
-				 * the ORQ
-				 */
-				siw_sqe_complete(qp, &wqe->sqe, wqe->bytes,
-						 SIW_WC_WR_FLUSH_ERR);
+			/*
+			 * An in-progress RREQUEST is already in
+			 * the ORQ
+			 */
+			siw_sqe_complete(qp, &wqe->sqe, wqe->bytes,
+					 SIW_WC_WR_FLUSH_ERR);
 
 		wqe->wr_status = SR_WR_IDLE;
 	}

@@ -1668,13 +1668,6 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 		return rv;
 	}
 
-#if 0
-	rv = siw_sock_nodelay(s);
-	if (rv != 0) {
-		pr_info("listen: TCP_NODELAY failed\n");
-		goto error;
-	}
-#endif
 	/*
 	 * Probably to be removed later. Allows binding
 	 * local port when still in TIME_WAIT from last close.

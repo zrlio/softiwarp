@@ -177,7 +177,8 @@ static struct ibv_device *siw_driver_init(const char *uverbs_sys_path,
 				node_desc, sizeof node_desc) < 0)
 		return NULL;
 
-	if (strncmp(SIW_NODE_DESC_COMMON, node_desc, strlen(SIW_NODE_DESC_COMMON)))
+	if (strncmp(SIW_NODE_DESC_COMMON, node_desc,
+		    strlen(SIW_NODE_DESC_COMMON)))
 		return NULL;
 
 	if (ibv_read_sysfs_file(siw_devpath, "sw_version",

@@ -315,7 +315,7 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 
 	return PKT_FRAGMENTED;
 }
-#define MSG_NOMORE MSG_MORE
+
 /*
  * Send out one complete FPDU. Used for fixed sized packets like
  * Read Requests or zero length SENDs, WRITEs, READ.responses.
@@ -342,7 +342,7 @@ static inline int siw_tx_ctrl(struct siw_iwarp_tx *c_tx, struct socket *s,
 		if (c_tx->ctrl_sent == c_tx->ctrl_len) {
 			siw_dprint_hdr(&c_tx->pkt.hdr, TX_QPID(c_tx),
 					"CTRL sent");
-			if (!(flags & MSG_NOMORE))
+			if (!(flags & MSG_MORE))
 				c_tx->new_tcpseg = 1;
 			rv = 0;
 		} else if (c_tx->ctrl_sent < c_tx->ctrl_len)
@@ -383,7 +383,7 @@ static int siw_tcp_sendpages(struct socket *s, struct page **page,
 	/*
 	 * just return what sendpages has return
 	 */
-	rv = do_tcp_sendpages(sk, page, offset, size, MSG_NOMORE|MSG_DONTWAIT);
+	rv = do_tcp_sendpages(sk, page, offset, size, MSG_MORE|MSG_DONTWAIT);
 
 	TCP_CHECK_TIMER(sk);
 	release_sock(sk);
@@ -401,7 +401,7 @@ static int siw_tcp_sendpages(struct socket *s, struct page **page,
 		size_t bytes = min_t(size_t, PAGE_SIZE - offset, size);
 
 		rv = s->ops->sendpage(s, page[i], offset, bytes,
-				      MSG_NOMORE|MSG_DONTWAIT);
+				      MSG_MORE|MSG_DONTWAIT);
 		if (rv <= 0)
 			break;
 
@@ -492,7 +492,7 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 
 	if (c_tx->state == SIW_SEND_HDR) {
 		if (c_tx->use_sendpage) {
-			rv = siw_tx_ctrl(c_tx, s, MSG_DONTWAIT|MSG_NOMORE);
+			rv = siw_tx_ctrl(c_tx, s, MSG_DONTWAIT|MSG_MORE);
 			if (rv)
 				goto done;
 
@@ -622,7 +622,7 @@ sge_done:
 
 	if (c_tx->tcp_seglen >= (int)MPA_MIN_FRAG &&
 				 tx_more_wqe(TX_QP(c_tx))) {
-		msg.msg_flags |= MSG_NOMORE;
+		msg.msg_flags |= MSG_MORE;
 		c_tx->new_tcpseg = 0;
 	} else
 		c_tx->new_tcpseg = 1;
@@ -760,7 +760,7 @@ static void siw_prepare_fpdu(struct siw_qp *qp, struct siw_wqe *wqe)
 	/*
 	 * TODO: TCP Fragmentation dynamics needs for further investigation.
 	 *	 Resuming SQ processing may start with full-sized packet
-	 *	 or short packet which resets MSG_NOMORE and thus helps
+	 *	 or short packet which resets MSG_MORE and thus helps
 	 *	 to synchronize.
 	 *	 This version resumes with short packet.
 	 */
@@ -954,7 +954,7 @@ next_segment:
 		enum siw_opcode tx_type = tx_type(wqe);
 
 		/*
-		 * Always end current TCP segment (no MSG_NOMORE flag):
+		 * Always end current TCP segment (no MSG_MORE flag):
 		 * trying to fill segment would result in excessive delay.
 		 */
 		rv = siw_tx_ctrl(c_tx, s, MSG_DONTWAIT);
@@ -1320,7 +1320,7 @@ int siw_run_sq(void *data)
 		if (active != NULL) {
 /*
  * llist_for_each_entry_safe() is #defined as a macro
- * for kernel versions >= 3.12.
+ * only for kernel versions >= 3.12.
  */
 #if defined llist_for_each_entry_safe
 			llist_for_each_entry_safe(qp, next_qp, active,

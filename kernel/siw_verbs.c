@@ -118,7 +118,6 @@ static u32 siw_insert_uobj(struct siw_ucontext *uctx, void *vaddr, u32 size)
 		goto out;
 	}
 	uobj->size = size;
-//	uobj->addr = (void *)virt_to_phys(vaddr);
 	uobj->addr = vaddr;
 
 	list_add_tail(&uobj->list, &uctx->uobj_list);
