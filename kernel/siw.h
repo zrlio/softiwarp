@@ -57,6 +57,14 @@
 
 #define _load_shared(a)		(*(volatile typeof(a) *)&(a))
 
+#ifndef set_mb
+# ifdef CONFIG_SMP
+#  define set_mb(var, value) do { (void) xchg(&var, value); } while (0)
+# else
+#  define set_mb(var, value) do { var = value; mb(); } while (0)
+# endif
+#endif
+
 enum siw_if_type {
 	SIW_IF_OFED = 0,	/* only via standard ofed syscall if */
 	SIW_IF_MAPPED = 1	/* private qp and cq mapping */
