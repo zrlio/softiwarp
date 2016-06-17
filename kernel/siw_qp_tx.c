@@ -104,10 +104,16 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 	else {
 		struct siw_mr *mr = siw_mem2mr(wqe->mem[0].obj);
 
-		if (!mr->umem || (c_tx->in_syscall &&
-		     access_ok(VERIFY_READ, wqe->sqe.sge[0].laddr, bytes)))
-			 memcpy(payload, (void *)sge->laddr, bytes);
-		else {
+		if (mr->umem == NULL) /* Kernel client */
+			memcpy(payload, (void *)sge->laddr, bytes);
+		else if (c_tx->in_syscall) {
+			if (copy_from_user(payload,
+					   (void *)sge->laddr,
+					   bytes)) {
+				WARN_ON(1);
+				return -1;
+			}
+		} else {
 			unsigned int off =  sge->laddr & ~PAGE_MASK;
 			struct page *p = siw_get_upage(mr->umem, sge->laddr);
 			char *buffer;
