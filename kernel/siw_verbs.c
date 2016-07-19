@@ -1127,8 +1127,8 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			/*
 			 * NOTE: zero length RREAD is allowed!
 			 */
-			sqe->raddr	= wr->wr.rdma.remote_addr;
-			sqe->rkey	= wr->wr.rdma.rkey;
+			sqe->raddr	= rdma_wr(wr)->remote_addr;
+			sqe->rkey	= rdma_wr(wr)->rkey;
 			sqe->num_sge	= 1;
 			sqe->opcode	= SIW_OP_READ;
 
@@ -1148,8 +1148,8 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 				sqe->flags |= SIW_WQE_INLINE;
 				sqe->num_sge = 1;
 			}
-			sqe->raddr	= wr->wr.rdma.remote_addr;
-			sqe->rkey	= wr->wr.rdma.rkey;
+			sqe->raddr	= rdma_wr(wr)->remote_addr;
+			sqe->rkey	= rdma_wr(wr)->rkey;
 			sqe->opcode	= SIW_OP_WRITE;
 
 			break;
