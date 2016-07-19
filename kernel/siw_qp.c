@@ -351,17 +351,17 @@ static int siw_qp_enable_crc(struct siw_qp *qp)
 	struct siw_iwarp_tx *c_tx = &qp->tx_ctx;
 	int rv = 0;
 
-	c_tx->mpa_crc_hd.tfm = crypto_alloc_hash("crc32c", 0,
-						 CRYPTO_ALG_ASYNC);
+	c_tx->mpa_crc_hd.tfm = crypto_alloc_shash("crc32c", 0,
+						  CRYPTO_ALG_ASYNC);
 	if (IS_ERR(c_tx->mpa_crc_hd.tfm)) {
 		rv = -PTR_ERR(c_tx->mpa_crc_hd.tfm);
 		goto out;
 	}
-	c_rx->mpa_crc_hd.tfm = crypto_alloc_hash("crc32c", 0,
-						 CRYPTO_ALG_ASYNC);
+	c_rx->mpa_crc_hd.tfm = crypto_alloc_shash("crc32c", 0,
+						  CRYPTO_ALG_ASYNC);
 	if (IS_ERR(c_rx->mpa_crc_hd.tfm)) {
 		rv = -PTR_ERR(c_rx->mpa_crc_hd.tfm);
-		crypto_free_hash(c_tx->mpa_crc_hd.tfm);
+		crypto_free_shash(c_tx->mpa_crc_hd.tfm);
 	}
 out:
 	if (rv)
@@ -902,22 +902,19 @@ out:
 	return rv;
 }
 
-int siw_crc_array(struct hash_desc *desc, u8 *start, size_t len)
+int siw_crc_array(struct shash_desc *desc, u8 *start, size_t len)
 {
-	struct scatterlist sg;
-
-	sg_init_one(&sg, start, len);
-	return crypto_hash_update(desc, &sg, len);
+	return crypto_shash_update(desc, start, len);
 }
 
-int siw_crc_page(struct hash_desc *desc, struct page *p, int off, int len)
+int siw_crc_page(struct shash_desc *desc, struct page *p, int off, int len)
 {
 	int rv;
 	struct scatterlist t_sg;
 
 	sg_init_table(&t_sg, 1);
 	sg_set_page(&t_sg, p, len, off);
-	rv = crypto_hash_update(desc, &t_sg, len);
+	rv = crypto_shash_update(desc, sg_virt(&t_sg), len);
 
 	return rv;
 }

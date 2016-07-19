@@ -103,7 +103,7 @@
 
 static inline int siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
 {
-	crypto_hash_init(&ctx->mpa_crc_hd);
+	crypto_shash_init(&ctx->mpa_crc_hd);
 
 	return siw_crc_array(&ctx->mpa_crc_hd, (u8 *)&ctx->hdr,
 			     ctx->fpdu_part_rcvd);
@@ -905,7 +905,7 @@ static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 					       tbuf, rctx->pad) != 0)
 			return -EINVAL;
 
-		crypto_hash_final(&rctx->mpa_crc_hd, (u8 *)&crc_own);
+		crypto_shash_final(&rctx->mpa_crc_hd, (u8 *)&crc_own);
 
 		/*
 		 * CRC32 is computed, transmitted and received directly in NBO,
