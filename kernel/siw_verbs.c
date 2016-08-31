@@ -39,6 +39,7 @@
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
+#include <linux/vmalloc.h>
 
 #include <rdma/iw_cm.h>
 #include <rdma/ib_verbs.h>
@@ -49,6 +50,7 @@
 #include "siw_verbs.h"
 #include "siw_obj.h"
 #include "siw_cm.h"
+
 
 static int ib_qp_state_to_siw_qp_state[IB_QPS_ERR+1] = {
 	[IB_QPS_RESET]	= SIW_QP_STATE_IDLE,

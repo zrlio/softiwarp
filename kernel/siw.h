@@ -54,7 +54,8 @@
 
 #include <siw_user.h>
 #include "iwarp.h"
-
+//copy set_mb from asm-generic/barrier.h  by liulele
+#define set_mb(var, value)  do { (var) = (value); mb(); } while (0)
 #define _load_shared(a)		(*(volatile typeof(a) *)&(a))
 
 enum siw_if_type {

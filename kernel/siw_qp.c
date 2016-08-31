@@ -46,6 +46,7 @@
 #include <net/sock.h>
 #include <net/tcp_states.h>
 #include <net/tcp.h>
+#include <linux/vmalloc.h>
 
 #include <rdma/iw_cm.h>
 #include <rdma/ib_verbs.h>

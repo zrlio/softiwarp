@@ -38,6 +38,7 @@
 
 #include <linux/spinlock.h>
 #include <linux/kref.h>
+#include <linux/vmalloc.h>
 
 #include "siw.h"
 #include "siw_obj.h"
