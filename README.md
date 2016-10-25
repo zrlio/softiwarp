@@ -43,8 +43,8 @@ make
 
 To load:
 
-settings 1: for binding TX thread to one arbitrary CPU 
-(check dmesg which CPU runs TX thread) 
+settings 1: for starting TX threads on available CPUs 
+(check dmesg which CPUs runs TX thread) 
 ```bash
 sudo insmod ./siw.ko
 ```
