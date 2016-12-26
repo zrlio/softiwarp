@@ -838,12 +838,10 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 	}
 
 	up_write(&qp->state_lock);
-
 	if (qp->rx_ctx.crc_enabled)
 		crypto_free_hash(qp->rx_ctx.mpa_crc_hd.tfm);
 	if (qp->tx_ctx.crc_enabled)
 		crypto_free_hash(qp->tx_ctx.mpa_crc_hd.tfm);
-
 	/* Drop references */
 	siw_cq_put(qp->scq);
 	siw_cq_put(qp->rcq);
@@ -1128,8 +1126,15 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			/*
 			 * NOTE: zero length RREAD is allowed!
 			 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0)
+			sqe->raddr	= rdma_wr(wr)->remote_addr;	 
+			sqe->raddr	= rdma_wr(wr)->remote_addr;
+			sqe->rkey	= rdma_wr(wr)->rkey;
+#else
+			sqe->raddr	= wr->wr.rdma.remote_addr;	 
 			sqe->raddr	= wr->wr.rdma.remote_addr;
 			sqe->rkey	= wr->wr.rdma.rkey;
+#endif
 			sqe->num_sge	= 1;
 			sqe->opcode	= SIW_OP_READ;
 
@@ -1149,8 +1154,13 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 				sqe->flags |= SIW_WQE_INLINE;
 				sqe->num_sge = 1;
 			}
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0)			
+			sqe->raddr	= rdma_wr(wr)->remote_addr;
+			sqe->rkey	= rdma_wr(wr)->rkey;
+#else
 			sqe->raddr	= wr->wr.rdma.remote_addr;
 			sqe->rkey	= wr->wr.rdma.rkey;
+#endif
 			sqe->opcode	= SIW_OP_WRITE;
 
 			break;
