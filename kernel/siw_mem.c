@@ -159,9 +159,15 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 		got = 0;
 		while (nents) {
 			struct page **plist = &umem->page_chunk[i].p[got];
-			rv = get_user_pages(current, current->mm,
-					    first_page_va, nents, 1, 1, plist,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+			rv = get_user_pages_remote(current, current->mm,
+					    first_page_va, nents, FOLL_FORCE|FOLL_WRITE, plist,
 					    NULL);
+#else
+			rv = get_user_pages(current, current->mm,
+				first_page_va, nents, 1, 1, plist,
+				NULL);
+#endif
 			if (rv < 0 )
 				goto out;
 

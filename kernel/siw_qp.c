@@ -46,6 +46,7 @@
 #include <net/sock.h>
 #include <net/tcp_states.h>
 #include <net/tcp.h>
+#include <linux/vmalloc.h>
 
 #include <rdma/iw_cm.h>
 #include <rdma/ib_verbs.h>
@@ -901,16 +902,23 @@ out:
 	return rv;
 }
 
-int siw_crc_array(struct hash_desc *desc, u8 *start, size_t len)
+int siw_crc_array(hash_desc_t *desc, u8 *start, size_t len)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+	return crypto_hash_update(desc, start, len);
+#else
 	struct scatterlist sg;
 
 	sg_init_one(&sg, start, len);
 	return crypto_hash_update(desc, &sg, len);
+#endif
 }
 
-int siw_crc_page(struct hash_desc *desc, struct page *p, int off, int len)
+int siw_crc_page(hash_desc_t *desc, struct page *p, int off, int len)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+	return crypto_hash_update(desc, phys_to_virt(page_to_phys(p))+off, len);
+#else
 	int rv;
 	struct scatterlist t_sg;
 
@@ -919,6 +927,7 @@ int siw_crc_page(struct hash_desc *desc, struct page *p, int off, int len)
 	rv = crypto_hash_update(desc, &t_sg, len);
 
 	return rv;
+#endif
 }
 
 static void siw_cq_notify(struct siw_cq *cq, u32 flags)

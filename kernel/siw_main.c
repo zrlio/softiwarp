@@ -436,12 +436,16 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->resize_cq = NULL;
 	ofa_dev->poll_cq = siw_poll_cq;
 	ofa_dev->get_dma_mr = siw_get_dma_mr;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(3,19,0)
 	ofa_dev->reg_phys_mr = NULL;
 	ofa_dev->rereg_phys_mr = NULL;
+#endif
 	ofa_dev->reg_user_mr = siw_reg_user_mr;
 	ofa_dev->dereg_mr = siw_dereg_mr;
 	ofa_dev->alloc_mw = NULL;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,0,0)
 	ofa_dev->bind_mw = NULL;
+#endif
 	ofa_dev->dealloc_mw = NULL;
 
 	ofa_dev->create_srq = siw_create_srq;

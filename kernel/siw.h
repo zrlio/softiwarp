@@ -51,10 +51,21 @@
 #include <linux/module.h>
 #include <linux/version.h>
 #include <linux/llist.h>
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+#include <crypto/hash.h>
+typedef struct shash_desc hash_desc_t;
+#define crypto_alloc_hash crypto_alloc_shash
+#define crypto_free_hash crypto_free_shash
+#define crypto_hash_update crypto_shash_update
+#define crypto_hash_init crypto_shash_init
+#define crypto_hash_final crypto_shash_final
+#else
+typedef struct hash_desc hash_desc_t;
+#endif
 #include <siw_user.h>
 #include "iwarp.h"
-
+//copy set_mb from asm-generic/barrier.h  by liulele
+#define set_mb(var, value)  do { (var) = (value); mb(); } while (0)
 #define _load_shared(a)		(*(volatile typeof(a) *)&(a))
 
 enum siw_if_type {
@@ -415,8 +426,8 @@ struct siw_iwarp_rx {
 	 * valid, according to wqe->wr_status
 	 */
 	struct siw_wqe		wqe_active;
+	hash_desc_t	mpa_crc_hd;
 
-	struct hash_desc	mpa_crc_hd;
 	/*
 	 * Next expected DDP MSN for each QN +
 	 * expected steering tag +
@@ -516,8 +527,11 @@ struct siw_iwarp_tx {
 	
 	int			bytes_unsent;	/* ddp payload bytes */
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+	struct shash_desc mpa_crc_hd;
+#else
 	struct hash_desc	mpa_crc_hd;
-
+#endif
 	atomic_t		in_use;		/* tx currently under way */
 
 	u8			crc_enabled:1,	/* compute and ship crc */
@@ -742,8 +756,8 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 		    unsigned int off, size_t len);
 
 /* MPA utilities */
-int siw_crc_array(struct hash_desc *, u8 *, size_t);
-int siw_crc_page(struct hash_desc *, struct page *, int, int);
+int siw_crc_array(hash_desc_t *, u8 *, size_t);
+int siw_crc_page(hash_desc_t *, struct page *, int, int);
 
 
 /* Varia */
