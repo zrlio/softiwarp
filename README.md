@@ -25,6 +25,19 @@ common/:	common include file(s)
 
 ## Build and install 
 
+### Linux kernel versions
+
+SoftiWARP code tries to stay up to date with recent Linux kernels.
+Git `master` is supposed to run on the newest stable kernel.
+To ease code maintenance and to allow for back porting
+of any new features, old versions of SoftiWARP will be branched
+off with discriptive names. `master` is always tagged with the kernel
+version it matches. 
+
+Re-installing a newer SoftiWARP version after a kernel upgrade shall include
+making and re-installing both user library and kernel module
+(see below).
+
 ### User-space library
  
 ```bash

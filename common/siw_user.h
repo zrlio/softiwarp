@@ -107,14 +107,13 @@ enum siw_opcode {
 	SIW_OP_FETCH_AND_ADD	= 4,
 	SIW_OP_COMP_AND_SWAP	= 5,
 	SIW_OP_INVAL_STAG	= 6,
-	SIW_OP_FASTREG		= 7,
 
-	SIW_OP_RECEIVE		= 8,
+	SIW_OP_RECEIVE		= 7,
 #ifdef __KERNEL__
-	SIW_OP_READ_RESPONSE	= 9,	/* provider internal */
-	SIW_NUM_OPCODES		= 10,
-#else
+	SIW_OP_READ_RESPONSE	= 8,	/* provider internal */
 	SIW_NUM_OPCODES		= 9,
+#else
+	SIW_NUM_OPCODES		= 8,
 #endif
 	SIW_OP_INVALID		= SIW_NUM_OPCODES + 1
 };

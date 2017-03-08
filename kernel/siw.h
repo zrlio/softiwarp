@@ -46,7 +46,7 @@
 #include <linux/in.h>
 #include <linux/fs.h>
 #include <linux/netdevice.h>
-#include <linux/crypto.h>
+#include <crypto/hash.h>
 #include <linux/resource.h>	/* MLOCK_LIMIT */
 #include <linux/module.h>
 #include <linux/version.h>
@@ -416,7 +416,7 @@ struct siw_iwarp_rx {
 	 */
 	struct siw_wqe		wqe_active;
 
-	struct hash_desc	mpa_crc_hd;
+	struct shash_desc	mpa_crc_hd;
 	/*
 	 * Next expected DDP MSN for each QN +
 	 * expected steering tag +
@@ -516,7 +516,7 @@ struct siw_iwarp_tx {
 	
 	int			bytes_unsent;	/* ddp payload bytes */
 
-	struct hash_desc	mpa_crc_hd;
+	struct shash_desc	mpa_crc_hd;
 
 	atomic_t		in_use;		/* tx currently under way */
 
@@ -742,8 +742,8 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 		    unsigned int off, size_t len);
 
 /* MPA utilities */
-int siw_crc_array(struct hash_desc *, u8 *, size_t);
-int siw_crc_page(struct hash_desc *, struct page *, int, int);
+int siw_crc_array(struct shash_desc *, u8 *, size_t);
+int siw_crc_page(struct shash_desc *, struct page *, int, int);
 
 
 /* Varia */

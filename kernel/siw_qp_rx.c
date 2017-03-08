@@ -103,7 +103,7 @@
 
 static inline int siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
 {
-	crypto_hash_init(&ctx->mpa_crc_hd);
+	crypto_shash_init(&ctx->mpa_crc_hd);
 
 	return siw_crc_array(&ctx->mpa_crc_hd, (u8 *)&ctx->hdr,
 			     ctx->fpdu_part_rcvd);
@@ -410,7 +410,8 @@ static struct siw_wqe *siw_rqe_get(struct siw_qp *qp)
 				wqe->mem[i].obj = NULL;
 				i++;
 			}
-			set_mb(rqe->flags, 0);	/* can be re-used by appl */
+			/* can be re-used by appl */
+			smp_store_mb(rqe->flags, 0);
 		} else {
 			pr_info("RQE: too many SGE's: %d\n", rqe->num_sge);
 			goto out;
@@ -702,7 +703,7 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		resp->rkey = rkey;
 		resp->num_sge = length ? 1 : 0;
 
-		set_mb(resp->flags, SIW_WQE_VALID);
+		smp_store_mb(resp->flags, SIW_WQE_VALID);
 	} else {
 		dprint(DBG_RX|DBG_ON, ": QP[%d]: IRQ %d exceeded %d!\n",
 			QP_ID(qp), qp->irq_put % qp->attrs.irq_size,
@@ -905,7 +906,7 @@ static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 					       tbuf, rctx->pad) != 0)
 			return -EINVAL;
 
-		crypto_hash_final(&rctx->mpa_crc_hd, (u8 *)&crc_own);
+		crypto_shash_final(&rctx->mpa_crc_hd, (u8 *)&crc_own);
 
 		/*
 		 * CRC32 is computed, transmitted and received directly in NBO,
@@ -1049,7 +1050,7 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 
 	if (qp->tx_ctx.orq_fence == 0) {
 		rreq = &qp->orq[qp->orq_get % qp->attrs.orq_size];
-		set_mb(rreq->flags, 0); /* One new free ORQ entry */
+		smp_store_mb(rreq->flags, 0); /* One new free ORQ entry */
 	} else {
 		if (unlikely(tx_waiting->wr_status != SR_WR_QUEUED)) {
 			pr_warn("QP[%d]: Resume from fence: status %d wrong\n",
