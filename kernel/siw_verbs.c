@@ -1389,7 +1389,7 @@ struct ib_cq *siw_create_cq(struct ib_device *ofa_dev, int size,
 
 	spin_lock_init(&cq->lock);
 
-	cq->notify = &((struct siw_cq_ctrl *)&cq->queue[size + 1])->notify;
+	cq->notify = &((struct siw_cq_ctrl *)&cq->queue[size])->notify;
 
 	if (!cq->kernel_verbs) {
 		struct siw_ucontext *ctx = siw_ctx_ofa2siw(ib_context);
