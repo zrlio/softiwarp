@@ -202,7 +202,7 @@ struct ibv_cq *siw_create_cq(struct ibv_context *ctx, int num_cqe,
 		if (cq->queue == MAP_FAILED)
 			goto fail;
 
-		cq->ctrl = (struct siw_cq_ctrl *)&cq->queue[cq->num_cqe + 1];
+		cq->ctrl = (struct siw_cq_ctrl *)&cq->queue[cq->num_cqe];
 		cq->ctrl->notify = SIW_NOTIFY_NOT;
 	} else
 		goto fail;
