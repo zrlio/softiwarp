@@ -82,6 +82,7 @@ void siw_umem_release(struct siw_umem *umem)
 	for (i = 0; num_pages; i++) {
 		int to_free = min_t(int, PAGES_PER_CHUNK, num_pages);
 		siw_free_chunk(&umem->page_chunk[i], to_free);
+		kfree(umem->page_chunk[i].p);
 		num_pages -= to_free;
 	}
 	put_pid(umem->pid);
