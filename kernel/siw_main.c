@@ -338,6 +338,14 @@ static int siw_dev_qualified(struct net_device *netdev)
 	return 0;
 }
 
+static void siw_sq_flush_ofa(struct ib_qp *ofa_qp) {
+	 siw_sq_flush(siw_qp_ofa2siw(ofa_qp));
+}
+
+static void siw_rq_flush_ofa(struct ib_qp *ofa_qp) {
+	 siw_rq_flush(siw_qp_ofa2siw(ofa_qp));
+}
+
 static struct siw_dev *siw_device_create(struct net_device *netdev)
 {
 	struct siw_dev *sdev = (struct siw_dev *)ib_alloc_device(sizeof *sdev);
@@ -398,6 +406,8 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	    (1ull << IB_USER_VERBS_CMD_MODIFY_SRQ) |
 	    (1ull << IB_USER_VERBS_CMD_QUERY_SRQ) |
 	    (1ull << IB_USER_VERBS_CMD_DESTROY_SRQ) |
+	    (1ull << IB_USER_VERBS_CMD_REG_MR) |
+	    (1ull << IB_USER_VERBS_CMD_DEREG_MR) |
 	    (1ull << IB_USER_VERBS_CMD_POST_SRQ_RECV);
 
 	ofa_dev->node_type = RDMA_NODE_RNIC;
@@ -438,7 +448,8 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->get_dma_mr = siw_get_dma_mr;
 	ofa_dev->reg_user_mr = siw_reg_user_mr;
 	ofa_dev->dereg_mr = siw_dereg_mr;
-	ofa_dev->alloc_mw = NULL;
+	ofa_dev->alloc_mr = siw_alloc_mr;
+	ofa_dev->map_mr_sg = siw_map_mr_sg;
 	ofa_dev->dealloc_mw = NULL;
 
 	ofa_dev->create_srq = siw_create_srq;
@@ -454,6 +465,9 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->req_notify_cq = siw_req_notify_cq;
 	ofa_dev->post_send = siw_post_send;
 	ofa_dev->post_recv = siw_post_receive;
+
+	ofa_dev->drain_sq = siw_sq_flush_ofa;
+	ofa_dev->drain_rq = siw_rq_flush_ofa;
 
 	ofa_dev->dma_ops = &siw_dma_mapping_ops;
 
@@ -478,7 +492,7 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	sdev->attrs.max_qp_wr = SIW_MAX_QP_WR;
 	sdev->attrs.max_ord = SIW_MAX_ORD;
 	sdev->attrs.max_ird = SIW_MAX_IRD;
-	sdev->attrs.cap_flags = 0;
+	sdev->attrs.cap_flags = IB_DEVICE_MEM_MGT_EXTENSIONS;
 	sdev->attrs.max_sge = SIW_MAX_SGE;
 	sdev->attrs.max_sge_rd = SIW_MAX_SGE_RD;
 	sdev->attrs.max_cq = SIW_MAX_CQ;

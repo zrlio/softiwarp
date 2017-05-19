@@ -169,7 +169,11 @@ static inline int push_send_wqe(struct ibv_send_wr *ofa_wr,
 	siw_sqe->rkey		= ofa_wr->wr.rdma.rkey;
 
 	siw_sqe->opcode = map_send_opcode(ofa_wr->opcode);
-
+	if (siw_sqe->opcode > SIW_NUM_OPCODES) {
+		if (siw_debug)
+			printf("opcode %d unsupported\n", ofa_wr->opcode);
+		return -EINVAL;
+	}
 	if (sig_all)
 		flags |= SIW_WQE_SIGNALLED;
 
@@ -180,7 +184,7 @@ static inline int push_send_wqe(struct ibv_send_wr *ofa_wr,
 		if (ofa_wr->num_sge > SIW_MAX_SGE) {
 			if (siw_debug)
 				printf("too many SGEs: %d\n", ofa_wr->num_sge);
-				return -EINVAL;
+			return -EINVAL;
 		}
 		while (i < ofa_wr->num_sge) {
 
@@ -189,7 +193,7 @@ static inline int push_send_wqe(struct ibv_send_wr *ofa_wr,
 				if (siw_debug)
 					printf("inline data to long: %d:%d\n",
 						bytes, (int)SIW_MAX_INLINE);
-				return EINVAL;
+				return -EINVAL;
 			}
 			memcpy(db, (void *)ofa_wr->sg_list[i].addr,
 				ofa_wr->sg_list[i].length);
@@ -206,7 +210,7 @@ static inline int push_send_wqe(struct ibv_send_wr *ofa_wr,
 		memcpy(siw_sqe->sge, ofa_wr->sg_list,
 		       siw_sqe->num_sge * sizeof(struct ibv_sge));
 	else
-		return 1;
+		return -EINVAL;
 
 	/* TODO: handle inline data */
 
@@ -268,8 +272,8 @@ int siw_post_send_mapped(struct ibv_qp *ofa_qp, struct ibv_send_wr *wr,
 		rmb();
 
 		if (!(sqe_flags & SIW_WQE_VALID)) {
-			if (push_send_wqe(wr, sqe, qp->sq_sig_all)) {
-				rv = -ENOMEM;
+			rv = push_send_wqe(wr, sqe, qp->sq_sig_all);
+			if (rv) {
 				*bad_wr = wr;
 				break;
 			}
@@ -416,15 +420,16 @@ static struct {
 	enum siw_opcode   siw;
         enum ibv_wc_opcode ofa;
 } map_cqe_opcode [SIW_NUM_OPCODES] = {
-        {SIW_OP_WRITE,          IBV_WC_RDMA_WRITE},
-        {SIW_OP_READ,           IBV_WC_RDMA_READ},
-        {SIW_OP_SEND,           IBV_WC_SEND},
-	{SIW_OP_SEND_WITH_IMM,	-1},
+        {SIW_OP_WRITE,		IBV_WC_RDMA_WRITE},
+        {SIW_OP_READ,		IBV_WC_RDMA_READ},
+        {SIW_OP_READ_LOCAL_INV, IBV_WC_RDMA_READ},
+        {SIW_OP_SEND,		IBV_WC_SEND},
+	{SIW_OP_SEND_WITH_IMM,	IBV_WC_SEND},
+	{SIW_OP_SEND_REMOTE_INV,IBV_WC_SEND},
 	/* Unsupported */
 	{SIW_OP_FETCH_AND_ADD,	IBV_WC_FETCH_ADD},
 	{SIW_OP_COMP_AND_SWAP,	IBV_WC_COMP_SWAP},
-	{SIW_OP_INVAL_STAG,	-1},
-        {SIW_OP_RECEIVE,        IBV_WC_RECV}
+        {SIW_OP_RECEIVE,	IBV_WC_RECV}
 };
 
 static struct {
@@ -439,6 +444,7 @@ static struct {
 	{SIW_WC_BAD_RESP_ERR,	IBV_WC_BAD_RESP_ERR},
 	{SIW_WC_LOC_ACCESS_ERR,	IBV_WC_LOC_ACCESS_ERR},
 	{SIW_WC_REM_ACCESS_ERR,	IBV_WC_REM_ACCESS_ERR},
+	{SIW_WC_REM_INV_REQ_ERR,IBV_WC_REM_INV_REQ_ERR},
 	{SIW_WC_GENERAL_ERR,	IBV_WC_GENERAL_ERR}
 };
 

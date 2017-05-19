@@ -120,42 +120,24 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 
 			BUG_ON(!p);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
-			buffer = kmap_atomic(p, KM_SOFTIRQ0);
-#else
 			buffer = kmap_atomic(p);
-#endif
 
 			if (likely(PAGE_SIZE - off >= bytes)) {
 				memcpy(payload, buffer + off, bytes);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
-				kunmap_atomic(buffer, KM_SOFTIRQ0);
-#else
 				kunmap_atomic(buffer);
-#endif
 			} else {
 				unsigned long part = bytes - (PAGE_SIZE - off);
 
 				memcpy(payload, buffer + off, part);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
-				kunmap_atomic(buffer, KM_SOFTIRQ0);
-#else
 				kunmap_atomic(buffer);
-#endif
 				payload += part;
 
 				p = siw_get_upage(mr->umem, sge->laddr + part);
 				BUG_ON(!p);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
-				buffer = kmap_atomic(p, KM_SOFTIRQ0);
-				memcpy(payload, buffer, bytes - part);
-				kunmap_atomic(buffer, KM_SOFTIRQ0);
-#else
 				buffer = kmap_atomic(p);
 				memcpy(payload, buffer, bytes - part);
 				kunmap_atomic(buffer);
-#endif
 			}
 		}
 	}
@@ -184,6 +166,7 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 	switch (tx_type(wqe)) {
 
 	case SIW_OP_READ:
+	case SIW_OP_READ_LOCAL_INV:
 		memcpy(&c_tx->pkt.ctrl,
 		       &iwarp_pktinfo[RDMAP_RDMA_READ_REQ].ctrl,
 		       sizeof(struct iwarp_ctrl));
@@ -221,9 +204,33 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 		c_tx->pkt.send.ddp_msn =
 			htonl(++c_tx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]);
 		c_tx->pkt.send.ddp_mo = 0;
-		c_tx->pkt.send.rsvd = 0;
+
+		c_tx->pkt.send_inv.inval_stag = 0;
 
 		c_tx->ctrl_len = sizeof(struct iwarp_send);
+
+		crc = (char *)&c_tx->pkt.send_pkt.crc;
+		data = siw_try_1seg(c_tx, crc);
+		break;
+
+	case SIW_OP_SEND_REMOTE_INV:
+		if (tx_flags(wqe) & SIW_WQE_SOLICITED)
+			memcpy(&c_tx->pkt.ctrl,
+			       &iwarp_pktinfo[RDMAP_SEND_SE_INVAL].ctrl,
+			       sizeof(struct iwarp_ctrl));
+		else
+			memcpy(&c_tx->pkt.ctrl,
+			       &iwarp_pktinfo[RDMAP_SEND_INVAL].ctrl,
+			       sizeof(struct iwarp_ctrl));
+
+		c_tx->pkt.send.ddp_qn = RDMAP_UNTAGGED_QN_SEND;
+		c_tx->pkt.send.ddp_msn =
+			htonl(++c_tx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]);
+		c_tx->pkt.send.ddp_mo = 0;
+
+		c_tx->pkt.send_inv.inval_stag = cpu_to_be32(wqe->sqe.rkey);
+
+		c_tx->ctrl_len = sizeof(struct iwarp_send_inv);
 
 		crc = (char *)&c_tx->pkt.send_pkt.crc;
 		data = siw_try_1seg(c_tx, crc);
@@ -524,7 +531,7 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 
 		if (!(tx_flags(wqe) & SIW_WQE_INLINE)) {
 			mr = siw_mem2mr(mem->obj);
-			if (!mr->umem)
+			if (!mr->mem_obj || mr->mem.is_pbl)
 				is_kva = 1;
 		} else
 			is_kva = 1;
@@ -555,7 +562,6 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 					siw_get_upage(mr->umem,
 						      sge->laddr + sge_off);
 				BUG_ON(!p);
-
 				page_array[seg] = p;
 
 				if (!c_tx->use_sendpage) {
@@ -1001,12 +1007,61 @@ tx_done:
 	return rv;
 }
 
+static int siw_fastreg_mr(struct siw_pd *pd, struct siw_sqe *sqe)
+{
+	struct siw_mem *mem = siw_mem_id2obj(pd->hdr.sdev, sqe->rkey >> 8);
+	struct siw_mr *mr;
+	int rv = 0;
+
+	dprint(DBG_MM, ": STag %u (%x) Enter\n", sqe->rkey >> 8, sqe->rkey);
+
+	if (!mem) {
+		dprint(DBG_MM, ": STag %u unknown\n", sqe->rkey >> 8);
+		return -EINVAL;
+	}
+	mr = siw_mem2mr(mem);
+	if (&mr->ofa_mr != (void *)sqe->ofa_mr) {
+		dprint(DBG_MM, ": STag %u: unexpected MR\n", sqe->rkey >> 8);
+		rv = -EINVAL;
+		goto out;
+	}
+	if (mr->pd != pd) {
+		dprint(DBG_MM, ": PD mismatch: %p != %p\n", mr->pd, pd);
+		rv = -EINVAL;
+		goto out;
+	}
+	if (mem->stag_valid) {
+		dprint(DBG_MM, ": STag already valid: %u\n",
+			sqe->rkey >> 8);
+		rv = -EINVAL;
+		goto out;
+	}
+	mem->perms = sqe->access;
+	mem->stag_valid = 1;
+	dprint(DBG_MM, ": STag now valid: %u\n", sqe->rkey >> 8);
+out:
+	siw_mem_put(mem);
+	return rv;
+}
 
 static int siw_qp_sq_proc_local(struct siw_qp *qp, struct siw_wqe *wqe)
 {
-	pr_info("local WR's not yet implemented\n");
-	BUG();
-	return 0;
+	int rv;
+
+	switch (tx_type(wqe)) {
+
+	case SIW_OP_REG_MR:
+		rv = siw_fastreg_mr(qp->pd, &wqe->sqe);
+		break;
+
+	case SIW_OP_INVAL_STAG:
+		rv = siw_invalidate_stag(qp->pd, wqe->sqe.rkey);
+		break;
+
+	default:
+		rv = -EINVAL;
+	}
+	return rv;
 }
 
 
@@ -1065,7 +1120,7 @@ next_wqe:
 	}
 	tx_type = tx_type(wqe);
 
-	if (SIW_WQE_IS_TX(wqe))
+	if (tx_type <= SIW_OP_READ_RESPONSE)
 		rv = siw_qp_sq_proc_tx(qp, wqe);
 	else
 		rv = siw_qp_sq_proc_local(qp, wqe);
@@ -1077,14 +1132,18 @@ next_wqe:
 		switch (tx_type) {
 
 		case SIW_OP_SEND:
+		case SIW_OP_SEND_REMOTE_INV:
 		case SIW_OP_WRITE:
 			siw_wqe_put_mem(wqe, tx_type);
+		case SIW_OP_INVAL_STAG:
+		case SIW_OP_REG_MR:
 			if (tx_flags(wqe) & SIW_WQE_SIGNALLED)
 				siw_sqe_complete(qp, &wqe->sqe, wqe->bytes,
 						 SIW_WC_SUCCESS);
 			break;
 
 		case SIW_OP_READ:
+		case SIW_OP_READ_LOCAL_INV:
 			/*
 			 * already enqueued to ORQ queue
 			 */
@@ -1154,9 +1213,12 @@ next_wqe:
 		switch (tx_type) {
 
 		case SIW_OP_SEND:
+		case SIW_OP_SEND_REMOTE_INV:
 		case SIW_OP_WRITE:
 		case SIW_OP_READ:
 			siw_wqe_put_mem(wqe, tx_type);
+		case SIW_OP_INVAL_STAG:
+		case SIW_OP_REG_MR:
 			siw_sqe_complete(qp, &wqe->sqe, wqe->bytes,
 					 SIW_WC_LOC_QP_OP_ERR);
 

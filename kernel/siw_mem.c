@@ -64,7 +64,7 @@ static void siw_umem_update_stats(struct work_struct *work)
 	kfree(umem);
 }
 
-static void siw_free_chunk(struct siw_page_chunk *chunk, int num_pages)
+static void siw_free_plist(struct siw_page_chunk *chunk, int num_pages)
 {
 	struct page **p = chunk->p;
 
@@ -81,7 +81,7 @@ void siw_umem_release(struct siw_umem *umem)
 
 	for (i = 0; num_pages; i++) {
 		int to_free = min_t(int, PAGES_PER_CHUNK, num_pages);
-		siw_free_chunk(&umem->page_chunk[i], to_free);
+		siw_free_plist(&umem->page_chunk[i], to_free);
 		kfree(umem->page_chunk[i].p);
 		num_pages -= to_free;
 	}
@@ -109,6 +109,30 @@ void siw_umem_release(struct siw_umem *umem)
 	}
 	kfree(umem->page_chunk);
 	kfree(umem);
+}
+
+void siw_pbl_free(struct siw_pbl *pbl)
+{
+	kfree(pbl);
+}
+
+struct siw_pbl *siw_pbl_alloc(u32 num_buf)
+{
+	struct siw_pbl *pbl;
+	int buf_size = sizeof(struct siw_pbl);
+
+	if (num_buf == 0)
+		return ERR_PTR(-EINVAL);
+
+	buf_size += ((num_buf - 1) * sizeof(struct siw_pble));
+
+	pbl = kzalloc(buf_size, GFP_KERNEL);
+	if (!pbl)
+		return ERR_PTR(-ENOMEM);
+
+	pbl->max_buf = num_buf;
+
+	return pbl;
 }
 
 struct siw_umem *siw_umem_get(u64 start, u64 len)
@@ -157,6 +181,10 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 		int got, nents = min_t(int, num_pages, PAGES_PER_CHUNK);
 		umem->page_chunk[i].p = kzalloc(nents * sizeof(struct page *),
 						GFP_KERNEL);
+		if (!umem->page_chunk[i].p) {
+			rv = -ENOMEM;
+			goto out;
+		}
 		got = 0;
 		while (nents) {
 			struct page **plist = &umem->page_chunk[i].p[got];

@@ -61,11 +61,6 @@ static int ib_qp_state_to_siw_qp_state[IB_QPS_ERR+1] = {
 	[IB_QPS_ERR]	= SIW_QP_STATE_ERROR
 };
 
-static inline struct siw_mr *siw_mr_ofa2siw(struct ib_mr *ofa_mr)
-{
-	return container_of(ofa_mr, struct siw_mr, ofa_mr);
-}
-
 static inline struct siw_pd *siw_pd_ofa2siw(struct ib_pd *ofa_pd)
 {
 	return container_of(ofa_pd, struct siw_pd, ofa_pd);
@@ -74,11 +69,6 @@ static inline struct siw_pd *siw_pd_ofa2siw(struct ib_pd *ofa_pd)
 static inline struct siw_ucontext *siw_ctx_ofa2siw(struct ib_ucontext *ofa_ctx)
 {
 	return container_of(ofa_ctx, struct siw_ucontext, ib_ucontext);
-}
-
-static inline struct siw_qp *siw_qp_ofa2siw(struct ib_qp *ofa_qp)
-{
-	return container_of(ofa_qp, struct siw_qp, ofa_qp);
 }
 
 static inline struct siw_cq *siw_cq_ofa2siw(struct ib_cq *ofa_cq)
@@ -239,12 +229,8 @@ int siw_dealloc_ucontext(struct ib_ucontext *ofa_ctx)
 	return 0;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0) || defined(IS_RH_7_2)
 int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr,
 		     struct ib_udata *unused)
-#else
-int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr)
-#endif
 {
 	struct siw_dev *sdev = siw_dev_ofa2siw(ofa_dev);
 	/*
@@ -281,6 +267,7 @@ int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr)
 	attr->max_srq = sdev->attrs.max_srq;
 	attr->max_srq_wr = sdev->attrs.max_srq_wr;
 	attr->max_srq_sge = sdev->attrs.max_srq_sge;
+	attr->max_fast_reg_page_list_len = SIW_MAX_SGE_PBL;
 
 	memcpy(&attr->sys_image_guid, sdev->netdev->dev_addr, 6);
 
@@ -1064,13 +1051,6 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			rv = -ENOMEM;
 			break;
 		}
-		if (sqe->opcode >= SIW_OP_INVALID) {
-			dprint(DBG_WR|DBG_TX|DBG_ON,
-				"(QP%d): Opcode %d not implemented\n",
-				QP_ID(qp), wr->opcode);
-			rv = -EINVAL;
-			break;
-		}
 		if (wr->num_sge > qp->attrs.sq_max_sges) {
 			/*
 			 * NOTE: we allow for zero length wr's here.
@@ -1093,6 +1073,10 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 		switch (wr->opcode) {
 
 		case IB_WR_SEND:
+		case IB_WR_SEND_WITH_INV:
+			if (wr->send_flags & IB_SEND_SOLICITED)
+				sqe->flags |= SIW_WQE_SOLICITED;
+
 			if (!(wr->send_flags & IB_SEND_INLINE)) {
 				siw_copy_sgl(wr->sg_list, sqe->sge,
 					     wr->num_sge);
@@ -1106,10 +1090,15 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 				sqe->flags |= SIW_WQE_INLINE;
 				sqe->num_sge = 1;
 			}
-			sqe->opcode = SIW_OP_SEND;
-
+			if (wr->opcode == IB_WR_SEND)
+				sqe->opcode = SIW_OP_SEND;
+			else {
+				sqe->opcode = SIW_OP_SEND_REMOTE_INV;
+				sqe->rkey = wr->ex.invalidate_rkey;
+			}
 			break;
 
+		case IB_WR_RDMA_READ_WITH_INV:
 		case IB_WR_RDMA_READ:
 			/*
 			 * OFED WR restricts RREAD sink to SGL containing
@@ -1130,8 +1119,11 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 			sqe->raddr	= rdma_wr(wr)->remote_addr;
 			sqe->rkey	= rdma_wr(wr)->rkey;
 			sqe->num_sge	= 1;
-			sqe->opcode	= SIW_OP_READ;
 
+			if (wr->opcode == IB_WR_RDMA_READ)
+				sqe->opcode = SIW_OP_READ;
+			else
+				sqe->opcode = SIW_OP_READ_LOCAL_INV;
 			break;
 
 		case IB_WR_RDMA_WRITE:
@@ -1154,9 +1146,29 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 
 			break;
 
+		case IB_WR_REG_MR:
+			sqe->ofa_mr = (uint64_t)reg_wr(wr)->mr;
+			sqe->rkey = reg_wr(wr)->key;
+			sqe->access = SR_MEM_LREAD;
+			if (reg_wr(wr)->access & IB_ACCESS_LOCAL_WRITE)
+				sqe->access |= SR_MEM_LWRITE;
+			if (reg_wr(wr)->access & IB_ACCESS_REMOTE_WRITE)
+				sqe->access |= SR_MEM_RWRITE;
+			if (reg_wr(wr)->access & IB_ACCESS_REMOTE_READ)
+				sqe->access |= SR_MEM_RREAD;
+			sqe->opcode = SIW_OP_REG_MR;
+
+			break;
+
+		case IB_WR_LOCAL_INV:
+			sqe->rkey = wr->ex.invalidate_rkey;
+			sqe->opcode = SIW_OP_INVAL_STAG;
+
+			break;
+
 		default:
 			dprint(DBG_WR|DBG_TX|DBG_ON,
-				"(QP%d): Opcode %d not yet implemented\n",
+				"(QP%d): IB_WR %d not supported\n",
 				QP_ID(qp), wr->opcode);
 			rv = -EINVAL;
 			break;
@@ -1499,11 +1511,11 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 
 	mr = siw_mr_ofa2siw(ofa_mr);
 
-	dprint(DBG_OBJ|DBG_MM, "(MEM%d): Release UMem %p, #ref's: %d\n",
+	dprint(DBG_OBJ|DBG_MM, "(MEM%d): Release memory obj %p, #ref's: %d\n",
 		mr->mem.hdr.id, mr->umem,
 		atomic_read(&mr->mem.hdr.ref.refcount));
 
-	mr->mem.stag_state = STAG_INVALID;
+	mr->mem.stag_valid = 0;
 
 	siw_pd_put(mr->pd);
 	siw_remove_obj(&sdev->idr_lock, &sdev->mem_idr, &mr->mem.hdr);
@@ -1512,14 +1524,14 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 	return 0;
 }
 
-static struct siw_mr *siw_alloc_mr(struct siw_dev *sdev, struct siw_umem *umem,
-				   u64 start, u64 len, int rights)
+static struct siw_mr *siw_create_mr(struct siw_dev *sdev, void *mem_obj,
+				    u64 start, u64 len, int rights)
 {
 	struct siw_mr *mr = kzalloc(sizeof *mr, GFP_KERNEL);
 	if (!mr)
 		return NULL;
 
-	mr->mem.stag_state = STAG_INVALID;
+	mr->mem.stag_valid = 0;
 
 	if (siw_mem_add(sdev, &mr->mem) < 0) {
 		dprint(DBG_ON, ": siw_mem_add\n");
@@ -1527,7 +1539,7 @@ static struct siw_mr *siw_alloc_mr(struct siw_dev *sdev, struct siw_umem *umem,
 		return NULL;
 	}
 	dprint(DBG_OBJ|DBG_MM, "(MEM%d): New Object, UMEM %p\n",
-		mr->mem.hdr.id, umem);
+		mr->mem.hdr.id, mem_obj);
 
 	mr->ofa_mr.lkey = mr->ofa_mr.rkey = mr->mem.hdr.id << 8;
 
@@ -1539,7 +1551,7 @@ static struct siw_mr *siw_alloc_mr(struct siw_dev *sdev, struct siw_umem *umem,
 			(rights & IB_ACCESS_LOCAL_WRITE  ? SR_MEM_LWRITE : 0) |
 			(rights & IB_ACCESS_REMOTE_WRITE ? SR_MEM_RWRITE : 0);
 
-	mr->umem = umem;
+	mr->mem_obj = mem_obj;
 
 	return mr;
 }
@@ -1608,7 +1620,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		umem = NULL;
 		goto err_out;
 	}
-	mr = siw_alloc_mr(sdev, umem, start, len, rights);
+	mr = siw_create_mr(sdev, umem, start, len, rights);
 	if (!mr) {
 		rv = -ENOMEM;
 		goto err_out;
@@ -1630,7 +1642,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 	mr->pd = pd;
 	siw_pd_get(pd);
 
-	mr->mem.stag_state = STAG_VALID;
+	mr->mem.stag_valid = 1;
 
 	return &mr->ofa_mr;
 
@@ -1647,6 +1659,117 @@ err_out:
 	return ERR_PTR(rv);
 }
 
+struct ib_mr *siw_alloc_mr(struct ib_pd *ofa_pd, enum ib_mr_type mr_type,
+			   u32 max_sge)
+{
+	struct siw_mr	*mr;
+	struct siw_pd	*pd = siw_pd_ofa2siw(ofa_pd);
+	struct siw_dev	*sdev = pd->hdr.sdev;
+	struct siw_pbl	*pbl = NULL;
+	int rv;
+
+	if (atomic_inc_return(&sdev->num_mem) > SIW_MAX_MR) {
+		dprint(DBG_ON, ": Out of MRs: %d\n",
+			atomic_read(&sdev->num_mem));
+		rv = -ENOMEM;
+		goto err_out;
+	}
+	if (mr_type != IB_MR_TYPE_MEM_REG) {
+		dprint(DBG_ON, ": Unsupported MR type's: %d\n", mr_type);
+		rv = -ENOSYS;
+		goto err_out;
+	}
+	if (max_sge > SIW_MAX_SGE_PBL) {
+		dprint(DBG_ON, ": Too many SGE's: %d\n", max_sge);
+		rv = -ENOMEM;
+		goto err_out;
+	}
+	pbl = siw_pbl_alloc(max_sge);
+	if (IS_ERR(pbl)) {
+		rv = PTR_ERR(pbl);
+		dprint(DBG_ON, ": siw_pbl_alloc failed: %d\n", rv);
+		pbl = NULL;
+		goto err_out;
+	}
+	mr = siw_create_mr(sdev, pbl, 0, max_sge * PAGE_SIZE, 0);
+	if (!mr) {
+		rv = -ENOMEM;
+		goto err_out;
+	}
+	mr->mem.is_pbl = 1;
+	mr->pd = pd;
+	siw_pd_get(pd);
+
+//	mr->mem.stag_valid = 1;
+
+	dprint(DBG_MM, " MEM(%d): Created with %u SGEs\n", OBJ_ID(&mr->mem),
+		max_sge);
+
+	return &mr->ofa_mr;
+
+err_out:
+	if (pbl)
+		siw_pbl_free(pbl);
+
+	dprint(DBG_ON, ": failed: %d\n", rv);
+		
+	atomic_dec(&sdev->num_mem);
+
+	return ERR_PTR(rv);
+}
+
+static int siw_set_pbl_page(struct ib_mr *ofa_mr, u64 buf_addr)
+{
+	struct siw_mr *mr = siw_mr_ofa2siw(ofa_mr);
+	struct siw_pbl *pbl = mr->pbl;
+	struct siw_pble *new = &pbl->pbe[pbl->num_buf];
+
+	dprint(DBG_MM, " MEM(%d): Enter\n", OBJ_ID(&mr->mem));
+
+	if (unlikely(pbl->num_buf >= pbl->max_buf)) {
+		dprint(DBG_MM, " MEM(%d): failed: %d >= %d\n", OBJ_ID(&mr->mem),
+			pbl->num_buf, pbl->max_buf);
+		return -ENOMEM;
+	}
+	if (pbl->num_buf) {
+		struct siw_pble *last = &pbl->pbe[pbl->num_buf - 1];
+		if (last->addr + last->off + last->size != buf_addr) {
+			dprint(DBG_MM, ": SGE gap unsupported\n");
+			return -EINVAL;
+		}
+	}
+	new->addr = buf_addr;
+	new->size = ofa_mr->page_size;
+	new->off = 0;
+	pbl->num_buf++;
+
+	return 0;
+}
+
+int siw_map_mr_sg(struct ib_mr *ofa_mr, struct scatterlist *sl, int num_sge,
+		  unsigned int *sg_off)
+{
+	struct siw_mr *mr = siw_mr_ofa2siw(ofa_mr);
+	unsigned int off = (sg_off != NULL) ? *sg_off : 0;
+	int rv;
+
+	dprint(DBG_MM, " MEM(%d): Enter with %u SGEs\n", OBJ_ID(&mr->mem),
+		num_sge);
+
+	if (!mr->pbl) {
+		dprint(DBG_ON, ": No PBL allocated\n");
+		return -EINVAL;
+	}
+	mr->pbl->num_buf = 0;
+	mr->mem.len = 0;
+	mr->mem.va = sg_dma_address(&sl[0]) + off;
+
+	rv = ib_sg_to_pages(ofa_mr, sl, num_sge, sg_off, siw_set_pbl_page);
+	if (rv > 0)
+		mr->mem.len = ofa_mr->length;
+
+	return rv;
+}
 
 /*
  * siw_get_dma_mr()
@@ -1669,15 +1792,17 @@ struct ib_mr *siw_get_dma_mr(struct ib_pd *ofa_pd, int rights)
 		rv = -ENOMEM;
 		goto err_out;
 	}
-	mr = siw_alloc_mr(sdev, NULL, 0, ULONG_MAX, rights);
+	mr = siw_create_mr(sdev, NULL, 0, ULONG_MAX, rights);
 	if (!mr) {
 		rv = -ENOMEM;
 		goto err_out;
 	}
-	mr->mem.stag_state = STAG_VALID;
+	mr->mem.stag_valid = 1;
 
 	mr->pd = pd;
 	siw_pd_get(pd);
+
+	dprint(DBG_MM, ": MEM(%d): created DMA MR\n", OBJ_ID(&mr->mem));
 
 	return &mr->ofa_mr;
 

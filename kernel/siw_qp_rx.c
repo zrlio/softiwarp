@@ -119,8 +119,8 @@ static inline int siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
  * currently receiving
  *
  * @rctx:	Receive Context
- * @len:	Number of bytes to place
- * @umen_ends:	1, if rctx chunk pointer should not be updated after len.
+ * @umem:	siw representation of target memory
+ * @dest_addr:	1, if rctx chunk pointer should not be updated after len.
  */
 static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 		       u64 dest_addr, int len)
@@ -147,12 +147,8 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 		}
 
 		bytes  = min(len, (int)PAGE_SIZE - pg_off);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
-		dest = kmap_atomic(p, KM_SOFTIRQ0);
-#else
 		dest = kmap_atomic(p);
-#endif
+
 		rv = skb_copy_bits(rctx->skb, rctx->skb_offset, dest + pg_off,
 				   bytes);
 
@@ -171,12 +167,7 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 			dest_addr += bytes;
 			pg_off = 0;
 		}
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
-		kunmap_atomic(dest, KM_SOFTIRQ0);
-#else
 		kunmap_atomic(dest);
-#endif
 
 		if (unlikely(rv)) {
 			rctx->skb_copied += copied;
@@ -206,7 +197,6 @@ static inline int siw_rx_kva(struct siw_iwarp_rx *rctx, void *kva, int len)
 		len, kva);
 
 	rv = skb_copy_bits(rctx->skb, rctx->skb_offset, kva, len);
-
 	if (likely(!rv)) {
 		rctx->skb_offset += len;
 		rctx->skb_copied += len;
@@ -333,7 +323,7 @@ static inline int siw_write_check_ntoh(struct siw_iwarp_rx *rctx)
  */
 static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 {
-	struct iwarp_send	*send = &rctx->hdr.send;
+	struct iwarp_send_inv	*send = &rctx->hdr.send_inv;
 	struct siw_wqe		*wqe = &rctx->wqe_active;
 
 	u32 ddp_msn = be32_to_cpu(send->ddp_msn);
@@ -367,6 +357,8 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		/* initialize user memory write position */
 		rctx->sge_idx = 0;
 		rctx->sge_off = 0;
+		/* only valid for SEND_INV and SEND_SE_INV operations */
+		rctx->inval_stag = be32_to_cpu(send->inval_stag);
 	}
 	if (unlikely(wqe->bytes < wqe->processed + rctx->fpdu_part_rem)) {
 		dprint(DBG_RX|DBG_ON, " Receive space short: (%d - %d) < %d\n",
@@ -518,7 +510,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			break;
 		}
 		mr = siw_mem2mr(mem->obj);
-		if (mr->umem)
+		if (mr->mem_obj && !mr->mem.is_pbl)
 			rv = siw_rx_umem(rctx, mr->umem,
 					 sge->laddr + rctx->sge_off, sge_bytes);
 		else
@@ -613,7 +605,7 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	}
 
 	mr = siw_mem2mr(mem);
-	if (mr->umem)
+	if (mr->mem_obj && !mr->mem.is_pbl)
 		rv = siw_rx_umem(rctx, mr->umem,
 				 rctx->ddp_to + rctx->fpdu_part_rcvd, bytes);
 	else
@@ -737,7 +729,7 @@ static struct siw_wqe *siw_orqe_get(struct siw_qp *qp)
 	if (_load_shared(orqe->flags) & SIW_WQE_VALID) {
 		wqe = rx_wqe(qp);
 		wqe->sqe.id = orqe->id;
-		wqe->sqe.opcode = SIW_OP_READ;
+		wqe->sqe.opcode = orqe->opcode;
 		wqe->sqe.sge[0].laddr = orqe->sge[0].laddr;
 		wqe->sqe.sge[0].lkey = orqe->sge[0].lkey;
 		wqe->sqe.sge[0].length = orqe->sge[0].length;
@@ -827,7 +819,7 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	bytes = min(rctx->fpdu_part_rem, rctx->skb_new);
 
 	mr = siw_mem2mr(mem->obj);
-	if (mr->umem)
+	if (mr->mem_obj && !mr->mem.is_pbl)
 		rv = siw_rx_umem(rctx, mr->umem, sge->laddr + wqe->processed,
 				 bytes);
 	else
@@ -1048,17 +1040,19 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 
 	lock_sq(qp);
 
-	if (qp->tx_ctx.orq_fence == 0) {
-		rreq = &qp->orq[qp->orq_get % qp->attrs.orq_size];
-		smp_store_mb(rreq->flags, 0); /* One new free ORQ entry */
-	} else {
+	/* free current orq entry */
+	rreq = orq_get_current(qp);
+	smp_store_mb(rreq->flags, 0);
+
+	if (qp->tx_ctx.orq_fence) {
 		if (unlikely(tx_waiting->wr_status != SR_WR_QUEUED)) {
 			pr_warn("QP[%d]: Resume from fence: status %d wrong\n",
 				QP_ID(qp), tx_waiting->wr_status);
 			goto out;
 		}
 		/* resume SQ processing */
-		if (tx_waiting->sqe.opcode == SIW_OP_READ) {
+		if (tx_waiting->sqe.opcode == SIW_OP_READ ||
+		    tx_waiting->sqe.opcode == SIW_OP_READ_LOCAL_INV) {
 
 			rreq = orq_get_tail(qp);
 			if (unlikely(!rreq))
@@ -1112,8 +1106,10 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 	switch (opcode) {
 
 	case RDMAP_SEND_SE:
+	case RDMAP_SEND_SE_INVAL:
 		wqe->rqe.flags |= SIW_WQE_SOLICITED;
 	case RDMAP_SEND:
+	case RDMAP_SEND_INVAL:
 		if (wqe->wr_status == SR_WR_IDLE)
 			break;
 
@@ -1122,6 +1118,16 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 		if (error != 0 && wc_status == SIW_WC_SUCCESS)
 			wc_status = SIW_WC_GENERAL_ERR;
 
+		/*
+		 * Handle STag invalidation request
+		 */
+		if (wc_status == SIW_WC_SUCCESS &&
+		    (opcode == RDMAP_SEND_INVAL ||
+		     opcode == RDMAP_SEND_SE_INVAL)) {
+			rv = siw_invalidate_stag(qp->pd, rctx->inval_stag);
+			if (rv)
+				wc_status = SIW_WC_REM_INV_REQ_ERR;
+		}
 		rv = siw_rqe_complete(qp, &wqe->rqe, wqe->processed,
 				      wc_status);
 		siw_wqe_put_mem(wqe, SIW_OP_RECEIVE);
@@ -1141,6 +1147,20 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 
 			if (wc_status == SIW_WC_SUCCESS)
 				wc_status = SIW_WC_GENERAL_ERR;
+		} else if (qp->kernel_verbs) {
+			/*
+			 * Handle any STag invalidation request
+			 */
+			struct siw_sqe *req = orq_get_current(qp);
+
+			if (req->opcode == SIW_OP_READ_LOCAL_INV) {
+				rv = siw_invalidate_stag(qp->pd,
+							 req->sge[0].lkey);
+				if (rv && wc_status == SIW_WC_SUCCESS) {
+					wc_status = SIW_WC_GENERAL_ERR;
+					error = rv;
+				}
+			}
 		}
 		/*
 		 * All errors turn the wqe into signalled.
