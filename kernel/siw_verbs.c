@@ -1511,8 +1511,8 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 
 	mr = siw_mr_ofa2siw(ofa_mr);
 
-	dprint(DBG_OBJ|DBG_MM, "(MEM%d): Release memory obj %p, #ref's: %d\n",
-		mr->mem.hdr.id, mr->umem,
+	dprint(DBG_OBJ|DBG_MM, "(MEM%d): Dereg MR, object %p, #ref's: %d\n",
+		mr->mem.hdr.id, mr->mem_obj,
 		atomic_read(&mr->mem.hdr.ref.refcount));
 
 	mr->mem.stag_valid = 0;
@@ -1538,7 +1538,7 @@ static struct siw_mr *siw_create_mr(struct siw_dev *sdev, void *mem_obj,
 		kfree(mr);
 		return NULL;
 	}
-	dprint(DBG_OBJ|DBG_MM, "(MEM%d): New Object, UMEM %p\n",
+	dprint(DBG_OBJ|DBG_MM, "(MEM%d): New MR, object %p\n",
 		mr->mem.hdr.id, mem_obj);
 
 	mr->ofa_mr.lkey = mr->ofa_mr.rkey = mr->mem.hdr.id << 8;
@@ -1700,8 +1700,6 @@ struct ib_mr *siw_alloc_mr(struct ib_pd *ofa_pd, enum ib_mr_type mr_type,
 	mr->pd = pd;
 	siw_pd_get(pd);
 
-//	mr->mem.stag_valid = 1;
-
 	dprint(DBG_MM, " MEM(%d): Created with %u SGEs\n", OBJ_ID(&mr->mem),
 		max_sge);
 
@@ -1724,8 +1722,6 @@ static int siw_set_pbl_page(struct ib_mr *ofa_mr, u64 buf_addr)
 	struct siw_pbl *pbl = mr->pbl;
 	struct siw_pble *new = &pbl->pbe[pbl->num_buf];
 
-	dprint(DBG_MM, " MEM(%d): Enter\n", OBJ_ID(&mr->mem));
-
 	if (unlikely(pbl->num_buf >= pbl->max_buf)) {
 		dprint(DBG_MM, " MEM(%d): failed: %d >= %d\n", OBJ_ID(&mr->mem),
 			pbl->num_buf, pbl->max_buf);
@@ -1734,14 +1730,21 @@ static int siw_set_pbl_page(struct ib_mr *ofa_mr, u64 buf_addr)
 	if (pbl->num_buf) {
 		struct siw_pble *last = &pbl->pbe[pbl->num_buf - 1];
 		if (last->addr + last->off + last->size != buf_addr) {
-			dprint(DBG_MM, ": SGE gap unsupported\n");
+			dprint(DBG_MM, " MEM(%d): SGE gap unsupported\n",
+				OBJ_ID(&mr->mem));
 			return -EINVAL;
 		}
 	}
+
 	new->addr = buf_addr;
 	new->size = ofa_mr->page_size;
 	new->off = 0;
 	pbl->num_buf++;
+
+	dprint(DBG_MM, " MEM(%d): Mapped %u bytes, paddr %p, "
+		"num PBL's %d\n",
+		OBJ_ID(&mr->mem), new->size, (void *)buf_addr,
+		pbl->num_buf);
 
 	return 0;
 }
@@ -1753,21 +1756,19 @@ int siw_map_mr_sg(struct ib_mr *ofa_mr, struct scatterlist *sl, int num_sge,
 	unsigned int off = (sg_off != NULL) ? *sg_off : 0;
 	int rv;
 
-	dprint(DBG_MM, " MEM(%d): Enter with %u SGEs\n", OBJ_ID(&mr->mem),
-		num_sge);
-
 	if (!mr->pbl) {
 		dprint(DBG_ON, ": No PBL allocated\n");
 		return -EINVAL;
 	}
 	mr->pbl->num_buf = 0;
-	mr->mem.len = 0;
 	mr->mem.va = sg_dma_address(&sl[0]) + off;
 
 	rv = ib_sg_to_pages(ofa_mr, sl, num_sge, sg_off, siw_set_pbl_page);
-	if (rv > 0)
+	if (rv > 0) {
 		mr->mem.len = ofa_mr->length;
-
+		dprint(DBG_MM, " MEM(%d): Mapped %llu byte, %u SGEs, off %u\n",
+			OBJ_ID(&mr->mem), mr->mem.len, num_sge, off);
+	}
 	return rv;
 }
 

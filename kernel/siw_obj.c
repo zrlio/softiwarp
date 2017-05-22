@@ -390,7 +390,7 @@ static void siw_free_mem(struct kref *ref)
 	m = container_of(container_of(ref, struct siw_objhdr, ref),
 			 struct siw_mem, hdr);
 
-	dprint(DBG_MM|DBG_OBJ, "(MEM%d): Free Object\n", OBJ_ID(m));
+	dprint(DBG_MM|DBG_OBJ, "(MEM%d): Free\n", OBJ_ID(m));
 
 	atomic_dec(&m->hdr.sdev->num_mem);
 
@@ -399,8 +399,8 @@ static void siw_free_mem(struct kref *ref)
 		kfree_rcu(mw, rcu);
 	} else {
 		struct siw_mr *mr = container_of(m, struct siw_mr, mem);
-		dprint(DBG_MM|DBG_OBJ, "(MEM%d): Release memory obj\n",
-			OBJ_ID(m));
+		dprint(DBG_MM|DBG_OBJ, "(MEM%d): Release obj %p, (PBL %d)\n",
+			OBJ_ID(m), mr->mem_obj, mr->mem.is_pbl ? 1 : 0);
 		if (mr->mem_obj) {
 			if (mr->mem.is_pbl == 0)
 				siw_umem_release(mr->umem);

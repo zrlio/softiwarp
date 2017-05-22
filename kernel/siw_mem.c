@@ -246,7 +246,8 @@ static u64 siw_dma_map_page(struct ib_device *dev, struct page *page,
 
 	BUG_ON(!valid_dma_direction(dir));
 
-	if (offset + size <= PAGE_SIZE) {
+	/* XXX Allow for multiple pages to be mapped */
+	if (1 || offset + size <= PAGE_SIZE) {
 		kva = (u64) page_address(page);
 		if (kva)
 			kva += offset;

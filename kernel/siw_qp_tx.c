@@ -321,7 +321,8 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 	if (zcopy_tx
 	    && wqe->bytes > SENDPAGE_THRESH
 	    && !(tx_flags(wqe) & SIW_WQE_SIGNALLED)
-	    && tx_type(wqe) != SIW_OP_READ)
+	    && tx_type(wqe) != SIW_OP_READ
+	    && tx_type(wqe) != SIW_OP_READ_LOCAL_INV)
 		c_tx->use_sendpage = 1;
 	else
 		c_tx->use_sendpage = 0;
@@ -912,7 +913,8 @@ static int siw_qp_sq_proc_tx(struct siw_qp *qp, struct siw_wqe *wqe)
 			if (tx_type(wqe) == SIW_OP_READ_RESPONSE)
 				wqe->sqe.num_sge = 1;
 
-			if (tx_type(wqe) != SIW_OP_READ) {
+			if (tx_type(wqe) != SIW_OP_READ &&
+			    tx_type(wqe) != SIW_OP_READ_LOCAL_INV) {
 				/*
 				 * Reference memory to be tx'd
 				 */
@@ -972,7 +974,8 @@ next_segment:
 		 */
 		rv = siw_tx_ctrl(c_tx, s, MSG_DONTWAIT);
 
-		if (!rv && tx_type != SIW_OP_READ)
+		if (!rv && tx_type != SIW_OP_READ &&
+		    tx_type != SIW_OP_READ_LOCAL_INV)
 			wqe->processed = wqe->bytes;
 
 		goto tx_done;
@@ -1198,7 +1201,8 @@ next_wqe:
 		/*
 		 * RREQ may have already been completed by inbound RRESP!
 		 */
-		if (tx_type == SIW_OP_READ) {
+		if (tx_type == SIW_OP_READ ||
+		    tx_type == SIW_OP_READ_LOCAL_INV) {
 			/* Cleanup pending entry in ORQ */
 			qp->orq_put--;
 			qp->orq[qp->orq_put % qp->attrs.orq_size].flags = 0;
@@ -1214,8 +1218,10 @@ next_wqe:
 
 		case SIW_OP_SEND:
 		case SIW_OP_SEND_REMOTE_INV:
+		case SIW_OP_SEND_WITH_IMM:
 		case SIW_OP_WRITE:
 		case SIW_OP_READ:
+		case SIW_OP_READ_LOCAL_INV:
 			siw_wqe_put_mem(wqe, tx_type);
 		case SIW_OP_INVAL_STAG:
 		case SIW_OP_REG_MR:
