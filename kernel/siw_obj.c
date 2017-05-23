@@ -464,6 +464,7 @@ void siw_wqe_put_mem(struct siw_wqe *wqe, enum siw_opcode op)
 	case SIW_OP_SEND_WITH_IMM:
 	case SIW_OP_SEND_REMOTE_INV:
 	case SIW_OP_READ:
+	case SIW_OP_READ_LOCAL_INV:
 		if (!(wqe->sqe.flags & SIW_WQE_INLINE))
 			siw_unref_mem_sgl(wqe->mem, wqe->sqe.num_sge);
 		break;
