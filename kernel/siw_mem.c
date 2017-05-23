@@ -276,7 +276,8 @@ static int siw_dma_map_sg(struct ib_device *dev, struct scatterlist *sgl,
 			n_sge = 0;
 			break;
 		}
-		sg->dma_address = (dma_addr_t) page_address(sg_page(sg));
+		sg->dma_address =
+			(dma_addr_t) (page_address(sg_page(sg)) + sg->offset);
 		sg_dma_len(sg) = sg->length;
 	}
 	return n_sge;

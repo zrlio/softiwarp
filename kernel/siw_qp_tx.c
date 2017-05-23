@@ -104,7 +104,7 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 	else {
 		struct siw_mr *mr = siw_mem2mr(wqe->mem[0].obj);
 
-		if (mr->umem == NULL) /* Kernel client */
+		if (!mr->mem_obj || mr->mem.is_pbl) /* Kernel client */
 			memcpy(payload, (void *)sge->laddr, bytes);
 		else if (c_tx->in_syscall) {
 			if (copy_from_user(payload,

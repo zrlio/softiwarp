@@ -1723,19 +1723,22 @@ static int siw_set_pbl_page(struct ib_mr *ofa_mr, u64 buf_addr)
 	struct siw_pble *new = &pbl->pbe[pbl->num_buf];
 
 	if (unlikely(pbl->num_buf >= pbl->max_buf)) {
-		dprint(DBG_MM, " MEM(%d): failed: %d >= %d\n", OBJ_ID(&mr->mem),
-			pbl->num_buf, pbl->max_buf);
+		dprint(DBG_ON|DBG_MM, " MEM(%d): failed: %d >= %d\n",
+			OBJ_ID(&mr->mem), pbl->num_buf, pbl->max_buf);
 		return -ENOMEM;
 	}
 	if (pbl->num_buf) {
 		struct siw_pble *last = &pbl->pbe[pbl->num_buf - 1];
 		if (last->addr + last->off + last->size != buf_addr) {
-			dprint(DBG_MM, " MEM(%d): SGE gap unsupported\n",
-				OBJ_ID(&mr->mem));
+			dprint(DBG_ON|DBG_MM, " MEM(%d): SGE gap detected "
+				"%p -- %p (buf %u, size %u)\n", 
+				OBJ_ID(&mr->mem),
+				(void *)(last->addr + last->off + last->size),
+				(void *)buf_addr, pbl->num_buf,
+				ofa_mr->page_size);
 			return -EINVAL;
 		}
 	}
-
 	new->addr = buf_addr;
 	new->size = ofa_mr->page_size;
 	new->off = 0;
