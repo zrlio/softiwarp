@@ -82,6 +82,17 @@ static inline int siw_crc_txhdr(struct siw_iwarp_tx *ctx)
 	(((uint32_t)(sizeof(struct siw_rreq_pkt) -	\
 	sizeof(struct iwarp_send))) & 0xF8)
 
+static inline struct page *siw_get_pblpage(struct siw_mr *mr,
+					   u64 addr, int *idx)
+{
+	struct siw_pbl *pbl = mr->pbl;
+	u64 offset = addr - mr->mem.va;
+	u64 paddr = siw_pbl_get_buffer(pbl, offset, NULL, idx);
+	if (paddr)
+		return virt_to_page(paddr);
+	return NULL;
+}
+
 /*
  * Copy short payload at provided destination address and
  * update address pointer to the address behind data
@@ -104,7 +115,7 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 	else {
 		struct siw_mr *mr = siw_mem2mr(wqe->mem[0].obj);
 
-		if (!mr->mem_obj || mr->mem.is_pbl) /* Kernel client */
+		if (!mr->mem_obj) /* Kernel client using kva */
 			memcpy(payload, (void *)sge->laddr, bytes);
 		else if (c_tx->in_syscall) {
 			if (copy_from_user(payload,
@@ -115,8 +126,13 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 			}
 		} else {
 			unsigned int off =  sge->laddr & ~PAGE_MASK;
-			struct page *p = siw_get_upage(mr->umem, sge->laddr);
+			struct page *p;
 			char *buffer;
+
+			if (!mr->mem.is_pbl)
+				p = siw_get_upage(mr->umem, sge->laddr);
+			else
+				p = siw_get_pblpage(mr, sge->laddr, NULL);
 
 			BUG_ON(!p);
 
@@ -132,7 +148,13 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 				kunmap_atomic(buffer);
 				payload += part;
 
-				p = siw_get_upage(mr->umem, sge->laddr + part);
+				if (!mr->mem.is_pbl)
+					p = siw_get_upage(mr->umem,
+							  sge->laddr + part);
+				else
+					p = siw_get_pblpage(mr,
+							    sge->laddr + part,
+							    NULL);
 				BUG_ON(!p);
 
 				buffer = kmap_atomic(p);
@@ -527,12 +549,13 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 	while (data_len) { /* walk the list of SGE's */
 		unsigned int	sge_len = min(sge->length - sge_off, data_len);
 		unsigned int	fp_off = (sge->laddr + sge_off) & ~PAGE_MASK;
+		int pbl_idx = 0;
 
 		BUG_ON(!sge_len);
 
 		if (!(tx_flags(wqe) & SIW_WQE_INLINE)) {
 			mr = siw_mem2mr(mem->obj);
-			if (!mr->mem_obj || mr->mem.is_pbl)
+			if (!mr->mem_obj)
 				is_kva = 1;
 		} else
 			is_kva = 1;
@@ -559,9 +582,14 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 
 			BUG_ON(plen <= 0);
 			if (!is_kva) {
-				struct page *p =
-					siw_get_upage(mr->umem,
-						      sge->laddr + sge_off);
+				struct page *p;
+				if (mr->mem.is_pbl)
+					p = siw_get_pblpage(mr,
+						sge->laddr + sge_off,
+						&pbl_idx);
+				else
+					p = siw_get_upage(mr->umem, sge->laddr
+							  + sge_off);
 				BUG_ON(!p);
 				page_array[seg] = p;
 

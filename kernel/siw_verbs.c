@@ -1716,61 +1716,53 @@ err_out:
 	return ERR_PTR(rv);
 }
 
+/* Just used to count number of pages being mapped */
 static int siw_set_pbl_page(struct ib_mr *ofa_mr, u64 buf_addr)
 {
-	struct siw_mr *mr = siw_mr_ofa2siw(ofa_mr);
-	struct siw_pbl *pbl = mr->pbl;
-	struct siw_pble *new = &pbl->pbe[pbl->num_buf];
-
-	if (unlikely(pbl->num_buf >= pbl->max_buf)) {
-		dprint(DBG_ON|DBG_MM, " MEM(%d): failed: %d >= %d\n",
-			OBJ_ID(&mr->mem), pbl->num_buf, pbl->max_buf);
-		return -ENOMEM;
-	}
-	if (pbl->num_buf) {
-		struct siw_pble *last = &pbl->pbe[pbl->num_buf - 1];
-		if (last->addr + last->off + last->size != buf_addr) {
-			dprint(DBG_ON|DBG_MM, " MEM(%d): SGE gap detected "
-				"%p -- %p (buf %u, size %u)\n", 
-				OBJ_ID(&mr->mem),
-				(void *)(last->addr + last->off + last->size),
-				(void *)buf_addr, pbl->num_buf,
-				ofa_mr->page_size);
-			return -EINVAL;
-		}
-	}
-	new->addr = buf_addr;
-	new->size = ofa_mr->page_size;
-	new->off = 0;
-	pbl->num_buf++;
-
-	dprint(DBG_MM, " MEM(%d): Mapped %u bytes, paddr %p, "
-		"num PBL's %d\n",
-		OBJ_ID(&mr->mem), new->size, (void *)buf_addr,
-		pbl->num_buf);
-
 	return 0;
 }
 
 int siw_map_mr_sg(struct ib_mr *ofa_mr, struct scatterlist *sl, int num_sge,
 		  unsigned int *sg_off)
 {
+	struct scatterlist *slp;
 	struct siw_mr *mr = siw_mr_ofa2siw(ofa_mr);
-	unsigned int off = (sg_off != NULL) ? *sg_off : 0;
-	int rv;
+	struct siw_pbl *pbl = mr->pbl;
+	u64 pbl_size = 0;
+	int i, rv;
 
-	if (!mr->pbl) {
+	if (!pbl) {
 		dprint(DBG_ON, ": No PBL allocated\n");
 		return -EINVAL;
 	}
-	mr->pbl->num_buf = 0;
-	mr->mem.va = sg_dma_address(&sl[0]) + off;
+	if (pbl->max_buf < num_sge) {
+		dprint(DBG_ON, ": Too many SG entries: %u : %u\n",
+			mr->pbl->max_buf, num_sge);
+		return -ENOMEM;
+	}
+	pbl->num_buf = num_sge;
 
+	for_each_sg(sl, slp, num_sge, i) {
+		struct siw_pble *pble = &pbl->pbe[i];
+
+		pble->addr = sg_dma_address(slp);
+		pble->size = sg_dma_len(slp);
+		pble->pbl_off = pbl_size;
+		pbl_size += sg_dma_len(slp);
+
+		dprint(DBG_MM, " MEM(%d): SGE[%d], reg. %llu byte, "
+			"addr %p, total %llu\n",
+			OBJ_ID(&mr->mem), i, pble->size, (void *)pble->addr,
+			pbl_size);
+	}
 	rv = ib_sg_to_pages(ofa_mr, sl, num_sge, sg_off, siw_set_pbl_page);
 	if (rv > 0) {
 		mr->mem.len = ofa_mr->length;
-		dprint(DBG_MM, " MEM(%d): Mapped %llu byte, %u SGEs, off %u\n",
-			OBJ_ID(&mr->mem), mr->mem.len, num_sge, off);
+		mr->mem.va = ofa_mr->iova;
+		dprint(DBG_MM, " MEM(%d): Mapped %llu byte, %u SGEs, "
+			"%u entries\n",
+			OBJ_ID(&mr->mem), mr->mem.len, num_sge,
+			mr->pbl->num_buf);
 	}
 	return rv;
 }

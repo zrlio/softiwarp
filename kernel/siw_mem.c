@@ -116,6 +116,26 @@ void siw_pbl_free(struct siw_pbl *pbl)
 	kfree(pbl);
 }
 
+u64 siw_pbl_get_buffer(struct siw_pbl *pbl, u64 off, int *len, int *idx)
+{
+	int i = idx ? *idx : 0;
+
+	while (i < pbl->num_buf) {
+		struct siw_pble *pble = &pbl->pbe[i];
+		if (pble->pbl_off + pble->size > off) {
+			u64 pble_off = off - pble->pbl_off;
+			if (len)
+				*len = pble->size - pble_off;
+			if (idx)
+				*idx = i;
+
+			return pble->addr + pble_off;
+		}
+		i++;
+	}
+	return 0;
+}
+
 struct siw_pbl *siw_pbl_alloc(u32 num_buf)
 {
 	struct siw_pbl *pbl;

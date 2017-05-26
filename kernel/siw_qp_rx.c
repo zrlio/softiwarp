@@ -204,12 +204,37 @@ static inline int siw_rx_kva(struct siw_iwarp_rx *rctx, void *kva, int len)
 		if (rctx->crc_enabled) {
 			rv = siw_crc_array(&rctx->mpa_crc_hd, kva, len);
 			if (rv)
-				goto done;
+				goto error;
 		}
-		rv = len;
+		return len;
 	}
-done:
+	dprint(DBG_ON, "(QP%d): failed: len %d, addr %p, rv %d\n",
+		RX_QPID(rctx), len, kva, rv);
+error:
 	return rv;
+}
+
+static int siw_rx_pbl(struct siw_iwarp_rx *rctx, struct siw_mr *mr,
+		      u64 addr, int len)
+{
+	struct siw_pbl *pbl = mr->pbl;
+	u64 offset = addr - mr->mem.va;
+	int copied = 0, idx = 0;
+
+	while (len) {
+		int bytes;
+		u64 buf_addr = siw_pbl_get_buffer(pbl, offset, &bytes, &idx);
+		if (buf_addr == 0)
+			break;
+		bytes = min(bytes, len);
+		if (siw_rx_kva(rctx, (void *)buf_addr, bytes) == bytes) {
+			copied += bytes;
+			offset += bytes;
+			len -= bytes;
+		} else
+			break;
+	}
+	return copied;
 }
 
 /*
@@ -510,13 +535,16 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			break;
 		}
 		mr = siw_mem2mr(mem->obj);
-		if (mr->mem_obj && !mr->mem.is_pbl)
-			rv = siw_rx_umem(rctx, mr->umem,
-					 sge->laddr + rctx->sge_off, sge_bytes);
-		else
+		if (mr->mem_obj == NULL)
 			rv = siw_rx_kva(rctx,
 					(void *)(sge->laddr + rctx->sge_off),
 					sge_bytes);
+		else if (!mr->mem.is_pbl)
+			rv = siw_rx_umem(rctx, mr->umem,
+					 sge->laddr + rctx->sge_off, sge_bytes);
+		else
+			rv = siw_rx_pbl(rctx, mr,
+					sge->laddr + rctx->sge_off, sge_bytes);
 
 		if (unlikely(rv != sge_bytes)) {
 			wqe->processed += rcvd_bytes;
@@ -605,15 +633,18 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	}
 
 	mr = siw_mem2mr(mem);
-	if (mr->mem_obj && !mr->mem.is_pbl)
-		rv = siw_rx_umem(rctx, mr->umem,
-				 rctx->ddp_to + rctx->fpdu_part_rcvd, bytes);
-	else
+	if (mr->mem_obj == NULL)
 		rv = siw_rx_kva(rctx,
 				(void *)(rctx->ddp_to + rctx->fpdu_part_rcvd),
 				bytes);
+	else if (!mr->mem.is_pbl)
+		rv = siw_rx_umem(rctx, mr->umem,
+				 rctx->ddp_to + rctx->fpdu_part_rcvd, bytes);
+	else
+		rv = siw_rx_pbl(rctx, mr,
+				rctx->ddp_to + rctx->fpdu_part_rcvd, bytes);
 
-	if(unlikely(rv != bytes))
+	if (unlikely(rv != bytes))
 		return -EINVAL;
 
 	rctx->fpdu_part_rem -= rv;
@@ -819,12 +850,15 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	bytes = min(rctx->fpdu_part_rem, rctx->skb_new);
 
 	mr = siw_mem2mr(mem->obj);
-	if (mr->mem_obj && !mr->mem.is_pbl)
+	if (mr->mem_obj == NULL)
+		rv = siw_rx_kva(rctx, (void *)(sge->laddr + wqe->processed),
+				bytes);
+	else if (!mr->mem.is_pbl)
 		rv = siw_rx_umem(rctx, mr->umem, sge->laddr + wqe->processed,
 				 bytes);
 	else
-		rv = siw_rx_kva(rctx, (void *)(sge->laddr + wqe->processed),
-				bytes);
+		rv = siw_rx_pbl(rctx, mr, sge->laddr + wqe->processed,
+				 bytes);
 	if (rv != bytes) {
 		wqe->wc_status = SIW_WC_GENERAL_ERR;
 		rv = -EINVAL;

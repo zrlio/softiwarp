@@ -213,9 +213,9 @@ struct siw_umem {
 };
 
 struct siw_pble {
-	u64	addr;
-	u32	size;
-	u32	off;
+	u64	addr;		/* Address of assigned user buffer */
+	u64	size;		/* Size of this entry */
+	u64	pbl_off;	/* Total offset form start of PBL */
 };
 
 struct siw_pbl {
@@ -736,9 +736,10 @@ static inline struct page *siw_get_upage(struct siw_umem *umem, u64 addr)
 }
 
 extern struct siw_umem *siw_umem_get(u64, u64);
-extern struct siw_umem *siw_umem_alloc(u32 num_pages);
+extern struct siw_umem *siw_umem_alloc(u32);
 extern void siw_umem_release(struct siw_umem *);
-extern struct siw_pbl *siw_pbl_alloc(u32 max_sge);
+extern struct siw_pbl *siw_pbl_alloc(u32);
+extern u64 siw_pbl_get_buffer(struct siw_pbl *, u64, int *, int *);
 extern void siw_pbl_free(struct siw_pbl *);
 
 
