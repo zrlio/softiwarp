@@ -351,26 +351,48 @@ static int siw_qp_enable_crc(struct siw_qp *qp)
 {
 	struct siw_iwarp_rx *c_rx = &qp->rx_ctx;
 	struct siw_iwarp_tx *c_tx = &qp->tx_ctx;
+	struct crypto_shash *txsh, *rxsh;
 	int rv = 0;
 
-	c_tx->mpa_crc_hd.tfm = crypto_alloc_shash("crc32c", 0,
-						  CRYPTO_ALG_ASYNC);
-	if (IS_ERR(c_tx->mpa_crc_hd.tfm)) {
-		rv = -PTR_ERR(c_tx->mpa_crc_hd.tfm);
-		goto out;
+	txsh = crypto_alloc_shash("crc32c", 0, 0);
+	if (IS_ERR(txsh))
+		return -PTR_ERR(txsh);
+
+	rxsh = crypto_alloc_shash("crc32c", 0, 0);
+	if (IS_ERR(rxsh)) {
+		rv = -PTR_ERR(rxsh);
+		rxsh = NULL;
+	 	goto error;
 	}
-	c_rx->mpa_crc_hd.tfm = crypto_alloc_shash("crc32c", 0,
-						  CRYPTO_ALG_ASYNC);
-	if (IS_ERR(c_rx->mpa_crc_hd.tfm)) {
-		rv = -PTR_ERR(c_rx->mpa_crc_hd.tfm);
-		crypto_free_shash(c_tx->mpa_crc_hd.tfm);
+
+	c_tx->mpa_crc_hd = kzalloc(sizeof(struct shash_desc) +
+				   crypto_shash_descsize(txsh),
+				   GFP_KERNEL);
+	c_rx->mpa_crc_hd = kzalloc(sizeof(struct shash_desc) +
+				   crypto_shash_descsize(rxsh),
+				   GFP_KERNEL);
+	if (!c_tx->mpa_crc_hd || !c_rx->mpa_crc_hd) {
+		rv = -ENOMEM;
+		goto error;
 	}
-out:
-	if (rv)
-		dprint(DBG_ON, "(QP%d): Failed loading crc32c: error=%d.",
+		
+	c_tx->mpa_crc_hd->tfm = txsh;
+	c_rx->mpa_crc_hd->tfm = rxsh;
+
+	return 0;
+error:
+	dprint(DBG_ON, "(QP%d): Failed loading crc32c: error=%d.",
 			QP_ID(qp), rv);
-	else
-		c_tx->crc_enabled = c_rx->crc_enabled = 1;
+
+	kfree(c_tx->mpa_crc_hd);
+	kfree(c_rx->mpa_crc_hd);
+
+	c_tx->mpa_crc_hd = c_rx->mpa_crc_hd = NULL;
+
+	if (txsh)
+		crypto_free_shash(txsh);
+	if (rxsh)
+		crypto_free_shash(rxsh);
 
 	return rv;
 }

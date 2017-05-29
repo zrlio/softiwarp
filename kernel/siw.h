@@ -429,7 +429,7 @@ struct siw_iwarp_rx {
 	 */
 	struct siw_wqe		wqe_active;
 
-	struct shash_desc	mpa_crc_hd;
+	struct shash_desc	*mpa_crc_hd;
 	/*
 	 * Next expected DDP MSN for each QN +
 	 * expected steering tag +
@@ -460,10 +460,10 @@ struct siw_iwarp_rx {
 
 	u32			inval_stag;
 
-	u8			crc_enabled:1,
-				first_ddp_seg:1,   /* this is first DDP seg */
+	u8			first_ddp_seg:1,   /* this is first DDP seg */
 				more_ddp_segs:1,   /* more DDP segs expected */
 				rx_suspend:1,	   /* stop rcv DDP segs. */
+				unused:1,
 				prev_rdmap_opcode:4; /* opcode of prev msg */
 	char			pad;		/* # of pad bytes expected */
 };
@@ -531,17 +531,17 @@ struct siw_iwarp_tx {
 	
 	int			bytes_unsent;	/* ddp payload bytes */
 
-	struct shash_desc	mpa_crc_hd;
+	struct shash_desc	*mpa_crc_hd;
 
 	atomic_t		in_use;		/* tx currently under way */
 
-	u8			crc_enabled:1,	/* compute and ship crc */
-				do_crc:1,	/* do crc for segment */
+	u8			do_crc:1,	/* do crc for segment */
 				use_sendpage:1,	/* send w/o copy */
 				new_tcpseg:1,	/* start new tcp segment */
 				tx_suspend:1,	/* stop sending DDP segs. */
 				pad:2,		/* # pad in current fpdu */
-				orq_fence:1;	/* ORQ full or Send fenced */
+				orq_fence:1,	/* ORQ full or Send fenced */
+				unused:1;
 
 	u16			fpdu_len;	/* len of FPDU to tx */
 

@@ -73,8 +73,8 @@ MODULE_PARM_DESC(low_delay_tx, "Run tight transmit thread loop if activated\n");
 
 static inline int siw_crc_txhdr(struct siw_iwarp_tx *ctx)
 {
-	crypto_shash_init(&ctx->mpa_crc_hd);
-	return siw_crc_array(&ctx->mpa_crc_hd, (u8 *)&ctx->pkt,
+	crypto_shash_init(ctx->mpa_crc_hd);
+	return siw_crc_array(ctx->mpa_crc_hd, (u8 *)&ctx->pkt,
 			     ctx->ctrl_len);
 }
 
@@ -306,25 +306,26 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 			data += -(int)data & 0x3;
 			/* point CRC after data or pad */
 			crc += data;
-			c_tx->ctrl_len += data + MPA_CRC_SIZE;
+			c_tx->ctrl_len += data;
 
 			if (!(c_tx->pkt.ctrl.ddp_rdmap_ctrl & DDP_FLAG_TAGGED))
 				c_tx->pkt.c_untagged.ddp_mo = 0;
 			else
 				c_tx->pkt.c_tagged.ddp_to =
 				    cpu_to_be64(wqe->sqe.raddr);
-		} else
-			c_tx->ctrl_len += MPA_CRC_SIZE;
+		}
 
 		*(u32 *)crc = 0;
 		/*
 		 * Do complete CRC if enabled and short packet
 		 */
-		if (c_tx->crc_enabled) {
+		if (c_tx->mpa_crc_hd) {
 			if (siw_crc_txhdr(c_tx) != 0)
 				return -EINVAL;
-			crypto_shash_final(&c_tx->mpa_crc_hd, (u8 *)crc);
+			crypto_shash_final(c_tx->mpa_crc_hd, (u8 *)crc);
 		}
+		c_tx->ctrl_len += MPA_CRC_SIZE;
+
 		return PKT_COMPLETE;
 	}
 	c_tx->ctrl_len += MPA_CRC_SIZE;
@@ -569,7 +570,7 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 			iov[seg].iov_len = sge_len;
 
 			if (do_crc)
-				siw_crc_array(&c_tx->mpa_crc_hd,
+				siw_crc_array(c_tx->mpa_crc_hd,
 					      iov[seg].iov_base, sge_len);
 			sge_off += sge_len;
 			data_len -= sge_len;
@@ -598,13 +599,13 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 					iov[seg].iov_len = plen;
 				}
 				if (do_crc)
-					siw_crc_page(&c_tx->mpa_crc_hd, p,
+					siw_crc_page(c_tx->mpa_crc_hd, p,
 						     fp_off, plen);
 			} else {
 				u64 pa = ((sge->laddr + sge_off) & PAGE_MASK);
 				page_array[seg] = virt_to_page(pa);
 				if (do_crc)
-					siw_crc_array(&c_tx->mpa_crc_hd,
+					siw_crc_array(c_tx->mpa_crc_hd,
 						(void *)(sge->laddr + sge_off),
 						plen);
 			}
@@ -650,14 +651,14 @@ sge_done:
 	if (c_tx->pad) {
 		*(u32 *)c_tx->trailer.pad = 0;
 		if (do_crc)
-			siw_crc_array(&c_tx->mpa_crc_hd,
+			siw_crc_array(c_tx->mpa_crc_hd,
 				      (u8 *)&c_tx->trailer.crc - c_tx->pad,
 				      c_tx->pad);
 	}
-	if (!c_tx->crc_enabled)
+	if (!c_tx->mpa_crc_hd)
 		c_tx->trailer.crc = 0;
 	else if (do_crc)
-		crypto_shash_final(&c_tx->mpa_crc_hd,
+		crypto_shash_final(c_tx->mpa_crc_hd,
 				   (u8 *)&c_tx->trailer.crc);
 
 	data_len = c_tx->bytes_unsent;
@@ -844,7 +845,7 @@ static void siw_prepare_fpdu(struct siw_qp *qp, struct siw_wqe *wqe)
 	/*
 	 * Init MPA CRC computation
 	 */
-	if (c_tx->crc_enabled) {
+	if (c_tx->mpa_crc_hd) {
 		siw_crc_txhdr(c_tx);
 		c_tx->do_crc = 1;
 	}

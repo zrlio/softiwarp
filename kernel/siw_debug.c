@@ -444,7 +444,7 @@ void siw_print_rctx(struct siw_iwarp_rx *rctx)
 		"more_segs:%d\n", rctx->prev_rdmap_opcode, rctx->first_ddp_seg,
 		rctx->more_ddp_segs);
 	pr_info("MPA State:\tlen:%d, crc_enabled:%d, crc:0x%x\n",
-		ntohs(rctx->hdr.ctrl.mpa_len), rctx->crc_enabled,
+		ntohs(rctx->hdr.ctrl.mpa_len), rctx->mpa_crc_hd ? 1 : 0,
 		rctx->trailer.crc);
 	pr_info("<---------------\n");
 }

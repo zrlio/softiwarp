@@ -103,9 +103,9 @@
 
 static inline int siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
 {
-	crypto_shash_init(&ctx->mpa_crc_hd);
+	crypto_shash_init(ctx->mpa_crc_hd);
 
-	return siw_crc_array(&ctx->mpa_crc_hd, (u8 *)&ctx->hdr,
+	return siw_crc_array(ctx->mpa_crc_hd, (u8 *)&ctx->hdr,
 			     ctx->fpdu_part_rcvd);
 }
 
@@ -157,8 +157,8 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 			RX_QPID(rctx), p, bytes, rv);
 
 		if (likely(!rv)) {
-			if (rctx->crc_enabled)
-				rv = siw_crc_page(&rctx->mpa_crc_hd, p, pg_off,
+			if (rctx->mpa_crc_hd)
+				rv = siw_crc_page(rctx->mpa_crc_hd, p, pg_off,
 						  bytes);
 
 			rctx->skb_offset += bytes;
@@ -201,8 +201,8 @@ static inline int siw_rx_kva(struct siw_iwarp_rx *rctx, void *kva, int len)
 		rctx->skb_offset += len;
 		rctx->skb_copied += len;
 		rctx->skb_new -= len;
-		if (rctx->crc_enabled) {
-			rv = siw_crc_array(&rctx->mpa_crc_hd, kva, len);
+		if (rctx->mpa_crc_hd) {
+			rv = siw_crc_array(rctx->mpa_crc_hd, kva, len);
 			if (rv)
 				goto error;
 		}
@@ -361,8 +361,8 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		return -EINVAL;
 	}
 	if (unlikely(ddp_msn != rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND])) {
-		dprint(DBG_RX|DBG_ON, " received MSN=%d, expected MSN=%d\n",
-			rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND], ddp_msn);
+		dprint(DBG_RX|DBG_ON, " received MSN=%u, expected MSN=%u\n",
+			ddp_msn, rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]);
 		/*
 		 * TODO: Error handling
 		 * async_event= RI_EVENT_QP_RQ_PROTECTION_ERROR_MSN_GAP;
@@ -925,14 +925,14 @@ static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		/*
 		 * check crc if required
 		 */
-		if (!rctx->crc_enabled)
+		if (!rctx->mpa_crc_hd)
 			return 0;
 
-		if (rctx->pad && siw_crc_array(&rctx->mpa_crc_hd,
+		if (rctx->pad && siw_crc_array(rctx->mpa_crc_hd,
 					       tbuf, rctx->pad) != 0)
 			return -EINVAL;
 
-		crypto_shash_final(&rctx->mpa_crc_hd, (u8 *)&crc_own);
+		crypto_shash_final(rctx->mpa_crc_hd, (u8 *)&crc_own);
 
 		/*
 		 * CRC32 is computed, transmitted and received directly in NBO,
@@ -1280,7 +1280,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 		case SIW_GET_HDR:
 			rv = siw_get_hdr(rctx);
 			if (!rv) {
-				if (rctx->crc_enabled &&
+				if (rctx->mpa_crc_hd &&
 				    siw_crc_rxhdr(rctx) != 0) {
 					rv = -EINVAL;
 					break;
