@@ -279,8 +279,7 @@ struct siw_mw {
 enum siw_wr_state {
 	SR_WR_IDLE		= 0,
 	SR_WR_QUEUED		= 1,	/* processing has not started yet */
-	SR_WR_INPROGRESS	= 2,	/* initiated processing of the WR */
-	SR_WR_DONE		= 3
+	SR_WR_INPROGRESS	= 2	/* initiated processing of the WR */
 };
 
 union siw_mem_resolved {

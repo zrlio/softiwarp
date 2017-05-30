@@ -266,7 +266,7 @@ void siw_qp_llp_close(struct siw_qp *qp)
  */
 static void siw_qp_llp_write_space(struct sock *sk)
 {
-	struct siw_qp	*qp = sk_to_qp(sk);
+	struct siw_cep	*cep = sk_to_cep(sk);
 
 	/*
 	 * TODO:
@@ -276,15 +276,15 @@ static void siw_qp_llp_write_space(struct sock *sk)
 	 */
 #ifdef SIW_TX_FULLSEGS
 	struct socket *sock = sk->sk_socket;
-	if (sk_stream_wspace(sk) >= (int)qp->tx_ctx.fpdu_len && sock) {
+	if (sk_stream_wspace(sk) >= (int)cep->qp.tx_ctx.fpdu_len && sock) {
 		clear_bit(SOCK_NOSPACE, &sock->flags);
-		siw_sq_queue_work(qp);
+		siw_sq_queue_work(cep->qp);
 	}
 #else
-	sk_stream_write_space(sk);
+	cep->sk_write_space(sk);
 
 	if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
-		siw_sq_queue_work(qp);
+		siw_sq_queue_work(cep->qp);
 #endif
 }
 

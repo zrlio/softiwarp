@@ -128,11 +128,12 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 			unsigned int off =  sge->laddr & ~PAGE_MASK;
 			struct page *p;
 			char *buffer;
+			int index = 0;
 
 			if (!mr->mem.is_pbl)
 				p = siw_get_upage(mr->umem, sge->laddr);
 			else
-				p = siw_get_pblpage(mr, sge->laddr, NULL);
+				p = siw_get_pblpage(mr, sge->laddr, &index);
 
 			BUG_ON(!p);
 
@@ -154,7 +155,7 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 				else
 					p = siw_get_pblpage(mr,
 							    sge->laddr + part,
-							    NULL);
+							    &index);
 				BUG_ON(!p);
 
 				buffer = kmap_atomic(p);
