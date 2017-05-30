@@ -1726,32 +1726,47 @@ static int siw_set_pbl_page(struct ib_mr *ofa_mr, u64 buf_addr)
 	return 0;
 }
 
-int siw_map_mr_sg(struct ib_mr *ofa_mr, struct scatterlist *sl, int num_sge,
+int siw_map_mr_sg(struct ib_mr *ofa_mr, struct scatterlist *sl, int num_sle,
 		  unsigned int *sg_off)
 {
 	struct scatterlist *slp;
 	struct siw_mr *mr = siw_mr_ofa2siw(ofa_mr);
 	struct siw_pbl *pbl = mr->pbl;
-	u64 pbl_size = 0;
+	struct siw_pble *pble = pbl->pbe;
+	u64 pbl_size;
 	int i, rv;
 
 	if (!pbl) {
 		dprint(DBG_ON, ": No PBL allocated\n");
 		return -EINVAL;
 	}
-	if (pbl->max_buf < num_sge) {
+	if (pbl->max_buf < num_sle) {
 		dprint(DBG_ON, ": Too many SG entries: %u : %u\n",
-			mr->pbl->max_buf, num_sge);
+			mr->pbl->max_buf, num_sle);
 		return -ENOMEM;
 	}
-	pbl->num_buf = num_sge;
 
-	for_each_sg(sl, slp, num_sge, i) {
-		struct siw_pble *pble = &pbl->pbe[i];
+	for_each_sg(sl, slp, num_sle, i) {
+		if (sg_dma_len(slp) == 0)
+			return -EINVAL;
 
-		pble->addr = sg_dma_address(slp);
-		pble->size = sg_dma_len(slp);
-		pble->pbl_off = pbl_size;
+		if (i == 0) {
+			pble->addr = sg_dma_address(slp);
+			pble->size = sg_dma_len(slp);
+			pble->pbl_off = 0;
+			pbl_size = pble->size;
+			pbl->num_buf = 1;
+			continue;
+		}
+		if (pble->addr + pble->size != sg_dma_address(slp)) {
+			pble++;
+			pbl->num_buf++;
+			pble->addr = sg_dma_address(slp);
+			pble->size = sg_dma_len(slp);
+			pble->pbl_off = pbl_size;
+		} else
+			pble->size += sg_dma_len(slp);
+
 		pbl_size += sg_dma_len(slp);
 
 		dprint(DBG_MM, " MEM(%d): SGE[%d], reg. %llu byte, "
@@ -1759,14 +1774,13 @@ int siw_map_mr_sg(struct ib_mr *ofa_mr, struct scatterlist *sl, int num_sge,
 			OBJ_ID(&mr->mem), i, pble->size, (void *)pble->addr,
 			pbl_size);
 	}
-	rv = ib_sg_to_pages(ofa_mr, sl, num_sge, sg_off, siw_set_pbl_page);
+	rv = ib_sg_to_pages(ofa_mr, sl, num_sle, sg_off, siw_set_pbl_page);
 	if (rv > 0) {
 		mr->mem.len = ofa_mr->length;
 		mr->mem.va = ofa_mr->iova;
-		dprint(DBG_MM, " MEM(%d): Mapped %llu byte, %u SGEs, "
-			"%u entries\n",
-			OBJ_ID(&mr->mem), mr->mem.len, num_sge,
-			mr->pbl->num_buf);
+		dprint(DBG_MM, " MEM(%d): got %llu byte, %u SLE "
+			"into %u entries\n",
+			OBJ_ID(&mr->mem), mr->mem.len, num_sle, pbl->num_buf);
 	}
 	return rv;
 }

@@ -928,23 +928,6 @@ out:
 	return rv;
 }
 
-int siw_crc_array(struct shash_desc *desc, u8 *start, size_t len)
-{
-	return crypto_shash_update(desc, start, len);
-}
-
-int siw_crc_page(struct shash_desc *desc, struct page *p, int off, int len)
-{
-	int rv;
-	struct scatterlist t_sg;
-
-	sg_init_table(&t_sg, 1);
-	sg_set_page(&t_sg, p, len, off);
-	rv = crypto_shash_update(desc, sg_virt(&t_sg), len);
-
-	return rv;
-}
-
 static void siw_cq_notify(struct siw_cq *cq, u32 flags)
 {
 	u32 cq_notify;

@@ -51,6 +51,7 @@
 #include <linux/module.h>
 #include <linux/version.h>
 #include <linux/llist.h>
+#include <linux/mm.h>
 
 #include <siw_user.h>
 #include "iwarp.h"
@@ -762,8 +763,17 @@ extern int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 			   unsigned int off, size_t len);
 
 /* MPA utilities */
-extern int siw_crc_array(struct shash_desc *, u8 *, size_t);
-extern int siw_crc_page(struct shash_desc *, struct page *, int, int);
+static inline int siw_crc_array(struct shash_desc *desc, u8 *start,
+				size_t len)
+{
+	return crypto_shash_update(desc, start, len);
+}
+
+static inline int siw_crc_page(struct shash_desc *desc, struct page *p,
+			       int off, int len)
+{
+	return crypto_shash_update(desc, page_address(p) + off, len);
+}
 
 
 /* Varia */
