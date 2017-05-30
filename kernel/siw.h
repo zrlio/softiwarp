@@ -346,7 +346,10 @@ enum siw_qp_attr_mask {
 	SIW_QP_ATTR_IRD			= (1 << 4),
 	SIW_QP_ATTR_SQ_SIZE		= (1 << 5),
 	SIW_QP_ATTR_RQ_SIZE		= (1 << 6),
-	SIW_QP_ATTR_MPA			= (1 << 7)
+	SIW_QP_ATTR_MPA			= (1 << 7),
+	SIW_QP_ATTR_ETYPE		= (1 << 8),
+	SIW_QP_ATTR_LAYER		= (1 << 9),
+	SIW_QP_ATTR_ECODE		= (1 << 10)
 };
 
 struct siw_mpa_attrs {
@@ -402,6 +405,9 @@ struct siw_qp_attrs {
 	enum siw_qp_flags	flags;
 
 	struct socket		*llp_stream_handle;
+	u8			etype;
+	u8			layer;
+	u8			ecode;
 };
 
 enum siw_tx_ctx {
@@ -706,6 +712,8 @@ int siw_sqe_complete(struct siw_qp *, struct siw_sqe *, u32,
 		     enum siw_wc_status);
 int siw_rqe_complete(struct siw_qp *, struct siw_rqe *, u32,
 		     enum siw_wc_status);
+void siw_sk_assign_rtr_upcalls(struct siw_cep *cep);
+void siw_qp_socket_assoc(struct socket *s, struct siw_qp *qp);
 
 
 /* SIW user memory management */

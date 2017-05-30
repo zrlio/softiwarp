@@ -48,9 +48,11 @@
 #define RDMAP_VERSION		1
 #define DDP_VERSION		1
 #define MPA_REVISION_1		1
+#define MPA_REVISION_2		2
 #define MPA_MAX_PRIVDATA	RDMA_MAX_PRIVATE_DATA
 #define MPA_KEY_REQ		"MPA ID Req Frame"
 #define MPA_KEY_REP		"MPA ID Rep Frame"
+#define	MPA_IRD_ORD_MASK	0x3fff;
 
 struct mpa_rr_params {
 	__be16	bits;
@@ -64,6 +66,7 @@ enum {
 	MPA_RR_FLAG_MARKERS	= __cpu_to_be16(0x8000),
 	MPA_RR_FLAG_CRC		= __cpu_to_be16(0x4000),
 	MPA_RR_FLAG_REJECT	= __cpu_to_be16(0x2000),
+	MPA_RR_FLAG_ENHANCED	= __cpu_to_be16(0x1000),
 	MPA_RR_RESERVED		= __cpu_to_be16(0x1f00),
 	MPA_RR_MASK_REVISION	= __cpu_to_be16(0x00ff)
 };
@@ -89,6 +92,19 @@ static inline u8 __mpa_rr_revision(u16 mpa_rr_bits)
 	return (u8)be16_to_cpu(rev);
 }
 
+enum {
+	MPA_V2_PEER_TO_PEER	= __cpu_to_be16(0x8000),
+	MPA_V2_ZERO_LENGTH_RTR	= __cpu_to_be16(0x4000),
+	MPA_V2_RDMA_WRITE_RTR	= __cpu_to_be16(0x8000),
+	MPA_V2_RDMA_READ_RTR	= __cpu_to_be16(0x4000),
+	MPA_V2_RDMA_NO_RTR	= __cpu_to_be16(0x0000),
+	MPA_V2_MASK_IRD_ORD	= __cpu_to_be16(0x3fff)
+};
+
+struct mpa_v2_data {
+	__be16		ird;
+	__be16		ord;
+};
 
 /*
  * Don't change the layout/size of this struct!
@@ -353,6 +369,16 @@ enum rdmap_elayer {
 	RDMAP_ERROR_LAYER_RDMA	= 0x00,
 	RDMAP_ERROR_LAYER_DDP	= 0x01,
 	RDMAP_ERROR_LAYER_LLP	= 0x02	/* eg., MPA */
+};
+
+enum llp_ecode {
+	LLP_ECODE_LOCAL_CATASTROPHIC	= 0x05,
+	LLP_ECODE_INSUFFICIENT_IRD	= 0x06,
+	LLP_ECODE_NO_MATCHING_RTR	= 0x07
+};
+
+enum llp_etype {
+	LLP_ETYPE_MPA	= 0x00
 };
 
 enum rdma_opcode {

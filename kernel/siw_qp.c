@@ -288,7 +288,7 @@ static void siw_qp_llp_write_space(struct sock *sk)
 #endif
 }
 
-static void siw_qp_socket_assoc(struct socket *s, struct siw_qp *qp)
+void siw_qp_socket_assoc(struct socket *s, struct siw_qp *qp)
 {
 	struct sock *sk = s->sk;
 
@@ -340,6 +340,9 @@ static void siw_send_terminate(struct siw_qp *qp)
 	struct iwarp_terminate	pkt;
 
 	memset(&pkt, 0, sizeof pkt);
+	pkt.term_ctrl = cpu_to_be32(((qp->attrs.layer &0xf) >> 28) |
+			((qp->attrs.etype &0xf) >> 24) |
+			((qp->attrs.ecode &0xff) >> 20));
 	/*
 	 * TODO: send TERMINATE
 	 */
@@ -399,6 +402,47 @@ error:
 
 
 /*
+ * handle all attrs other than state
+ */
+int
+siw_qp_modify_nonstate(struct siw_qp *qp, struct siw_qp_attrs *attrs,
+	      enum siw_qp_attr_mask mask)
+{
+	int	rv = 0;
+
+	if (mask & SIW_QP_ATTR_ACCESS_FLAGS) {
+		if (attrs->flags & SIW_RDMA_BIND_ENABLED)
+			qp->attrs.flags |= SIW_RDMA_BIND_ENABLED;
+		else
+			qp->attrs.flags &= ~SIW_RDMA_BIND_ENABLED;
+
+		if (attrs->flags & SIW_RDMA_WRITE_ENABLED)
+			qp->attrs.flags |= SIW_RDMA_WRITE_ENABLED;
+		else
+			qp->attrs.flags &= ~SIW_RDMA_WRITE_ENABLED;
+
+		if (attrs->flags & SIW_RDMA_READ_ENABLED)
+			qp->attrs.flags |= SIW_RDMA_READ_ENABLED;
+		else
+			qp->attrs.flags &= ~SIW_RDMA_READ_ENABLED;
+	}
+
+	if (mask & SIW_QP_ATTR_ETYPE) {
+		qp->attrs.etype = attrs->etype;
+	}
+
+	if (mask & SIW_QP_ATTR_LAYER) {
+		qp->attrs.layer = attrs->layer;
+	}
+
+	if (mask & SIW_QP_ATTR_ECODE) {
+		qp->attrs.ecode = attrs->ecode;
+	}
+
+	return rv;
+}
+
+/*
  * caller holds qp->state_lock
  */
 int
@@ -413,27 +457,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 	dprint(DBG_CM, "(QP%d)\n", QP_ID(qp));
 
 	if (mask != SIW_QP_ATTR_STATE) {
-		/*
-		 * changes of qp attributes (maybe state, too)
-		 */
-		if (mask & SIW_QP_ATTR_ACCESS_FLAGS) {
-
-			if (attrs->flags & SIW_RDMA_BIND_ENABLED)
-				qp->attrs.flags |= SIW_RDMA_BIND_ENABLED;
-			else
-				qp->attrs.flags &= ~SIW_RDMA_BIND_ENABLED;
-
-			if (attrs->flags & SIW_RDMA_WRITE_ENABLED)
-				qp->attrs.flags |= SIW_RDMA_WRITE_ENABLED;
-			else
-				qp->attrs.flags &= ~SIW_RDMA_WRITE_ENABLED;
-
-			if (attrs->flags & SIW_RDMA_READ_ENABLED)
-				qp->attrs.flags |= SIW_RDMA_READ_ENABLED;
-			else
-				qp->attrs.flags &= ~SIW_RDMA_READ_ENABLED;
-
-		}
+		rv = siw_qp_modify_nonstate(qp, attrs, mask);
 		/*
 		 * TODO: what else ??
 		 */
@@ -498,10 +522,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 				break;
 
 			qp->attrs.mpa = attrs->mpa;
-			/*
-			 * move socket rx and tx under qp's control
-			 */
-			siw_qp_socket_assoc(attrs->llp_stream_handle, qp);
+			qp->attrs.llp_stream_handle = attrs->llp_stream_handle;
 
 			qp->attrs.state = SIW_QP_STATE_RTS;
 			/*
@@ -661,7 +682,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 		break;
 	}
 	if (drop_conn)
-		siw_qp_cm_drop(qp, 0);
+		siw_qp_cm_drop(qp, 1);
 
 	return rv;
 }

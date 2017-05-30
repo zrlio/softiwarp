@@ -57,9 +57,10 @@ enum siw_cep_state {
 };
 
 struct siw_mpa_info {
-	struct mpa_rr	hdr;	/* peer mpa hdr in host byte order */
-	char		*pdata;
-	int		bytes_rcvd;
+	struct mpa_rr		hdr;	/* peer mpa hdr in host byte order */
+	struct mpa_v2_data	enhanced_conn_data;
+	char			*pdata;
+	int			bytes_rcvd;
 };
 
 struct siw_llp_info {
@@ -68,6 +69,10 @@ struct siw_llp_info {
 	struct sockaddr_in	raddr;	/* dito, consider removal */
 	struct siw_sk_upcalls	sk_def_upcalls;
 };
+
+#define	SIW_MPAV2_P2P_DISABLED		1
+#define	SIW_MPAV2_RDMA_WRITE_RTR	2
+#define	SIW_MPAV2_RDMA_READ_RTR		3
 
 struct siw_dev;
 
@@ -94,6 +99,9 @@ struct siw_cep {
 	struct siw_mpa_info	mpa;
 	int			ord;
 	int			ird;
+	int			revision;
+	int			p2ptype;
+	int			enhanced_rdma_connection;
 	int			sk_error; /* not (yet) used XXX */
 
 	/* Saved upcalls of socket llp.sock */
@@ -143,6 +151,15 @@ extern int siw_cm_queue_work(struct siw_cep *, enum siw_work_type);
 
 extern int siw_cm_init(void);
 extern void siw_cm_exit(void);
+
+int siw_enter_rts(struct siw_cep *cep, struct siw_qp *qp);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
+extern void siw_rtr_data_ready(struct sock *sk, int flags);
+#else
+extern void siw_rtr_data_ready(struct sock *sk);
+#endif
+
 
 /*
  * TCP socket interface
