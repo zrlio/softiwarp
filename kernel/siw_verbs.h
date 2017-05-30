@@ -79,8 +79,6 @@ extern int siw_query_gid(struct ib_device *, u8, int, union ib_gid *);
 extern struct ib_pd *siw_alloc_pd(struct ib_device *, struct ib_ucontext *,
 				  struct ib_udata *);
 extern int siw_dealloc_pd(struct ib_pd *);
-extern struct ib_ah *siw_create_ah(struct ib_pd *, struct ib_ah_attr *);
-extern int siw_destroy_ah(struct ib_ah *);
 extern struct ib_qp *siw_create_qp(struct ib_pd *, struct ib_qp_init_attr *,
 				   struct ib_udata *);
 extern int siw_query_qp(struct ib_qp *, struct ib_qp_attr *, int,

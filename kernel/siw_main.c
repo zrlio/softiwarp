@@ -346,6 +346,22 @@ static void siw_rq_flush_ofa(struct ib_qp *ofa_qp) {
 	 siw_rq_flush(siw_qp_ofa2siw(ofa_qp));
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
+static struct ib_ah *siw_create_ah(struct ib_pd *pd, struct ib_ah_attr *attr,
+			    struct ib_udata *udata)
+#else
+static struct ib_ah *siw_create_ah(struct ib_pd *pd, struct ib_ah_attr *attr)
+#endif
+{
+	return ERR_PTR(-ENOSYS);
+}
+
+static int siw_destroy_ah(struct ib_ah *ah)
+{
+	return -ENOSYS;
+}
+
+
 static struct siw_dev *siw_device_create(struct net_device *netdev)
 {
 	struct siw_dev *sdev = (struct siw_dev *)ib_alloc_device(sizeof *sdev);
