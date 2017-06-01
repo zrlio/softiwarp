@@ -178,7 +178,7 @@ struct siw_mem *siw_mem_id2obj(struct siw_dev *sdev, int id)
 
 	if (obj) {
 		dprint(DBG_MM|DBG_OBJ, "(MEM%d): New refcount: %d\n",
-		       obj->id, obj->ref.refcount.counter);
+		       obj->id, refcount_read(&obj->ref));
 
 		return container_of(obj, struct siw_mem, hdr);
 	}
@@ -415,28 +415,28 @@ static void siw_free_mem(struct kref *ref)
 void siw_cq_put(struct siw_cq *cq)
 {
 	dprint(DBG_OBJ, "(CQ%d): Old refcount: %d\n",
-		OBJ_ID(cq), atomic_read(&cq->hdr.ref.refcount));
+		OBJ_ID(cq), refcount_read(&cq->hdr.ref));
 	kref_put(&cq->hdr.ref, siw_free_cq);
 }
 
 void siw_qp_put(struct siw_qp *qp)
 {
 	dprint(DBG_OBJ, "(QP%d): Old refcount: %d\n",
-		QP_ID(qp), atomic_read(&qp->hdr.ref.refcount));
+		QP_ID(qp), refcount_read(&qp->hdr.ref));
 	kref_put(&qp->hdr.ref, siw_free_qp);
 }
 
 void siw_pd_put(struct siw_pd *pd)
 {
 	dprint(DBG_OBJ, "(PD%d): Old refcount: %d\n",
-		OBJ_ID(pd), atomic_read(&pd->hdr.ref.refcount));
+		OBJ_ID(pd), refcount_read(&pd->hdr.ref));
 	kref_put(&pd->hdr.ref, siw_free_pd);
 }
 
 void siw_mem_put(struct siw_mem *m)
 {
 	dprint(DBG_MM|DBG_OBJ, "(MEM%d): Old refcount: %d\n",
-		OBJ_ID(m), atomic_read(&m->hdr.ref.refcount));
+		OBJ_ID(m), refcount_read(&m->hdr.ref));
 	kref_put(&m->hdr.ref, siw_free_mem);
 }
 

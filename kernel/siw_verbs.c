@@ -40,6 +40,7 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
+#include <linux/sched/signal.h>
 
 #include <rdma/iw_cm.h>
 #include <rdma/ib_verbs.h>
@@ -1506,7 +1507,7 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 
 	dprint(DBG_OBJ|DBG_MM, "(MEM%d): Dereg MR, object %p, #ref's: %d\n",
 		mr->mem.hdr.id, mr->mem_obj,
-		atomic_read(&mr->mem.hdr.ref.refcount));
+		refcount_read(&mr->mem.hdr.ref));
 
 	mr->mem.stag_valid = 0;
 

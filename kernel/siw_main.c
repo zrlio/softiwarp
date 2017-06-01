@@ -45,6 +45,8 @@
 #include <linux/if_arp.h>
 #include <linux/list.h>
 #include <linux/kernel.h>
+#include <linux/sched/signal.h>
+#include <linux/if_vlan.h>
 
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_smi.h>
@@ -122,7 +124,11 @@ static void siw_device_release(struct device *dev)
 }
 
 static struct device siw_generic_dma_device = {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 	.archdata.dma_ops	= &siw_dma_generic_ops,
+#else
+	.dma_ops		= &siw_dma_generic_ops,
+#endif
 	.init_name		= "software-rdma-v2",
 	.release		= siw_device_release
 };
@@ -437,7 +443,11 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->phys_port_cnt = 1;
 
 	ofa_dev->num_comp_vectors = 1;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 	ofa_dev->dma_device = &siw_generic_dma_device;
+#else
+	ofa_dev->dev.parent = &siw_generic_dma_device;
+#endif
 	ofa_dev->query_device = siw_query_device;
 	ofa_dev->query_port = siw_query_port;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0) || defined(IS_RH_7_2)
@@ -485,8 +495,11 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->drain_sq = siw_sq_flush_ofa;
 	ofa_dev->drain_rq = siw_rq_flush_ofa;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 	ofa_dev->dma_ops = &siw_dma_mapping_ops;
-
+#else
+	ofa_dev->dev.dma_ops = &dma_virt_ops;
+#endif
 	ofa_dev->iwcm->connect = siw_connect;
 	ofa_dev->iwcm->accept = siw_accept;
 	ofa_dev->iwcm->reject = siw_reject;

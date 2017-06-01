@@ -43,6 +43,8 @@
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
 #include <linux/pid.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/signal.h>
 
 #include "siw.h"
 #include "siw_debug.h"
@@ -237,6 +239,7 @@ out:
 	return ERR_PTR(rv);
 }
 
+#if 1
 
 /*
  * DMA mapping/address translation functions.
@@ -247,20 +250,6 @@ out:
 static int siw_mapping_error(struct ib_device *dev, u64 dma_addr)
 {
 	return dma_addr == 0;
-}
-
-static u64 siw_dma_map_single(struct ib_device *dev, void *kva, size_t size,
-			       enum dma_data_direction dir)
-{
-	/* siw uses kernel virtual addresses for data transfer */
-	return (u64) kva;
-}
-
-static void siw_dma_unmap_single(struct ib_device *dev,
-				 u64 addr, size_t size,
-				 enum dma_data_direction dir)
-{
-	/* NOP */
 }
 
 static u64 siw_dma_map_page(struct ib_device *dev, struct page *page,
@@ -348,6 +337,21 @@ static void siw_dma_free_coherent(struct ib_device *dev, size_t size,
 	free_pages((unsigned long) kva, get_order(size));
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+static u64 siw_dma_map_single(struct ib_device *dev, void *kva, size_t size,
+			       enum dma_data_direction dir)
+{
+	/* siw uses kernel virtual addresses for data transfer */
+	return (u64) kva;
+}
+
+static void siw_dma_unmap_single(struct ib_device *dev,
+				 u64 addr, size_t size,
+				 enum dma_data_direction dir)
+{
+	/* NOP */
+}
+
 struct ib_dma_mapping_ops siw_dma_mapping_ops = {
 	.mapping_error		= siw_mapping_error,
 	.map_single		= siw_dma_map_single,
@@ -361,6 +365,7 @@ struct ib_dma_mapping_ops siw_dma_mapping_ops = {
 	.alloc_coherent		= siw_dma_alloc_coherent,
 	.free_coherent		= siw_dma_free_coherent
 };
+#endif
 
 static void *siw_dma_generic_alloc(struct device *dev, size_t size,
 				   dma_addr_t *dma_handle, gfp_t gfp,
@@ -481,3 +486,4 @@ struct dma_map_ops siw_dma_generic_ops = {
 	.set_dma_mask		= siw_dma_generic_set_mask,
 	.is_phys		= 1
 };
+#endif

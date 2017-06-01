@@ -114,6 +114,14 @@ extern void siw_print_hdr(union iwarp_hdrs *, int, char *);
 extern void siw_print_rctx(struct siw_iwarp_rx *);
 extern void siw_print_qp_attr_mask(enum ib_qp_attr_mask, char *);
 
+#ifndef refcount_read
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+#define refcount_read(x)	atomic_read(x.refcount)
+#else
+#define refcount_read(x)	atomic_read(x.refcount.refs)
+#endif
+#endif
+
 #undef DEBUG
 #define DEBUG_ORQ
 #undef DEBUG_ORQ

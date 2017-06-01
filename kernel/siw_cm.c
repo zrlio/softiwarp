@@ -45,6 +45,7 @@
 #include <net/sock.h>
 #include <net/tcp.h>
 #include <linux/tcp.h>
+#include <linux/sched/signal.h>
 
 
 #include <rdma/iw_cm.h>
@@ -472,9 +473,9 @@ out:
 void siw_cep_put(struct siw_cep *cep)
 {
 	dprint(DBG_OBJ|DBG_CM, "(CEP 0x%p): New refcount: %d\n",
-		cep, atomic_read(&cep->ref.refcount) - 1);
+		cep, refcount_read(&cep->ref) - 1);
 
-	BUG_ON(atomic_read(&cep->ref.refcount) < 1);
+	BUG_ON(refcount_read(&cep->ref) < 1);
 	kref_put(&cep->ref, __siw_cep_dealloc);
 }
 
@@ -482,7 +483,7 @@ void siw_cep_get(struct siw_cep *cep)
 {
 	kref_get(&cep->ref);
 	dprint(DBG_OBJ|DBG_CM, "(CEP 0x%p): New refcount: %d\n",
-		cep, atomic_read(&cep->ref.refcount));
+		cep, refcount_read(&cep->ref));
 }
 
 
