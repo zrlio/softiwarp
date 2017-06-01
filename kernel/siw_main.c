@@ -45,8 +45,6 @@
 #include <linux/if_arp.h>
 #include <linux/list.h>
 #include <linux/kernel.h>
-#include <linux/sched/signal.h>
-#include <linux/if_vlan.h>
 
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_smi.h>

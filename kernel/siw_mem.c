@@ -43,8 +43,9 @@
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
 #include <linux/pid.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #include <linux/sched/mm.h>
-#include <linux/sched/signal.h>
+#endif
 
 #include "siw.h"
 #include "siw_debug.h"

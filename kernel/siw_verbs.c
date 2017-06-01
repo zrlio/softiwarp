@@ -40,7 +40,6 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
-#include <linux/sched/signal.h>
 
 #include <rdma/iw_cm.h>
 #include <rdma/ib_verbs.h>

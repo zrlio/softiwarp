@@ -52,6 +52,9 @@
 #include <linux/version.h>
 #include <linux/llist.h>
 #include <linux/mm.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+#include <linux/sched/signal.h>
+#endif
 
 #include <siw_user.h>
 #include "iwarp.h"

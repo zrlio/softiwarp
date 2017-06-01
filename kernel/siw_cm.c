@@ -45,7 +45,6 @@
 #include <net/sock.h>
 #include <net/tcp.h>
 #include <linux/tcp.h>
-#include <linux/sched/signal.h>
 
 
 #include <rdma/iw_cm.h>
