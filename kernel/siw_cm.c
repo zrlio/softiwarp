@@ -1019,6 +1019,7 @@ error:
 	if (new_s) {
 		siw_socket_disassoc(new_s);
 		sock_release(new_s);
+		new_cep->llp.sock = NULL;
 	}
 	dprint(DBG_CM|DBG_ON, "(cep=0x%p): ERROR: rv=%d\n", cep, rv);
 }
@@ -1197,8 +1198,10 @@ static void siw_cm_work_handler(struct work_struct *w)
 			/*
 			 * No MPA request received after peer TCP stream setup.
 			 */
-			siw_cep_put(cep->listen_cep);
-			cep->listen_cep = NULL;
+			if (cep->listen_cep) {
+				siw_cep_put(cep->listen_cep);
+				cep->listen_cep = NULL;
+			}
 			release_cep = 1;
 		}
 		break;
