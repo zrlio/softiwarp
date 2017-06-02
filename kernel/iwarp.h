@@ -67,7 +67,7 @@ enum {
 	MPA_RR_FLAG_CRC		= __cpu_to_be16(0x4000),
 	MPA_RR_FLAG_REJECT	= __cpu_to_be16(0x2000),
 	MPA_RR_FLAG_ENHANCED	= __cpu_to_be16(0x1000),
-	MPA_RR_RESERVED		= __cpu_to_be16(0x1f00),
+	MPA_RR_RESERVED		= __cpu_to_be16(0x0f00),
 	MPA_RR_MASK_REVISION	= __cpu_to_be16(0x00ff)
 };
 

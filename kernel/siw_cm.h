@@ -101,7 +101,7 @@ struct siw_cep {
 	int			ird;
 	int			revision;
 	int			p2ptype;
-	int			enhanced_rdma_connection;
+	int			enhanced_rdma_conn_est;
 	int			sk_error; /* not (yet) used XXX */
 
 	/* Saved upcalls of socket llp.sock */
@@ -151,15 +151,6 @@ extern int siw_cm_queue_work(struct siw_cep *, enum siw_work_type);
 
 extern int siw_cm_init(void);
 extern void siw_cm_exit(void);
-
-int siw_enter_rts(struct siw_cep *cep, struct siw_qp *qp);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-extern void siw_rtr_data_ready(struct sock *sk, int flags);
-#else
-extern void siw_rtr_data_ready(struct sock *sk);
-#endif
-
 
 /*
  * TCP socket interface
