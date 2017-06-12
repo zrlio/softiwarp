@@ -109,7 +109,8 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 			QP_ID((struct siw_qp *)cqe->qp), OBJ_ID(cq),
 			cqe->opcode, cqe);
 
-		siw_qp_put(cqe->qp);
+		if (cq->kernel_verbs)
+			siw_qp_put(cqe->qp);
 
 		cqe->flags = 0;
 		cq->cq_get++;
