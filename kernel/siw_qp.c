@@ -78,6 +78,7 @@ static char siw_qp_state_to_string[SIW_QP_STATE_COUNT][sizeof "TERMINATE"] = {
  * is initialized to minimum packet size.
  */
 struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
+	/* RDMAP_RDMA_WRITE */
 	.hdr_len = sizeof(struct iwarp_rdma_write),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_rdma_write) - 2),
 	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_TAGGED | DDP_FLAG_LAST
@@ -86,7 +87,7 @@ struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 		| cpu_to_be16(RDMAP_RDMA_WRITE),
 	.proc_data = siw_proc_write
 },
-{
+{	/* RDMAP_RDMA_READ_REQ */
 	.hdr_len = sizeof(struct iwarp_rdma_rreq),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_rdma_rreq) - 2),
 	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
@@ -95,7 +96,7 @@ struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 		| cpu_to_be16(RDMAP_RDMA_READ_REQ),
 	.proc_data = siw_proc_rreq
 },
-{
+{	/* RDMAP_RDMA_READ_RESP */
 	.hdr_len = sizeof(struct iwarp_rdma_rresp),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_rdma_rresp) - 2),
 	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_TAGGED | DDP_FLAG_LAST
@@ -104,7 +105,7 @@ struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 		| cpu_to_be16(RDMAP_RDMA_READ_RESP),
 	.proc_data = siw_proc_rresp
 },
-{
+{	/* RDMAP_SEND */
 	.hdr_len = sizeof(struct iwarp_send),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_send) - 2),
 	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
@@ -113,16 +114,16 @@ struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 		| cpu_to_be16(RDMAP_SEND),
 	.proc_data = siw_proc_send
 },
-{
+{	/* RDMAP_SEND_INVAL */
 	.hdr_len = sizeof(struct iwarp_send_inv),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_send_inv) - 2),
 	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
 		| cpu_to_be16(DDP_VERSION << 8)
 		| cpu_to_be16(RDMAP_VERSION << 6)
 		| cpu_to_be16(RDMAP_SEND_INVAL),
-	.proc_data = siw_proc_unsupp
+	.proc_data = siw_proc_send
 },
-{
+{	/* RDMAP_SEND_SE */
 	.hdr_len = sizeof(struct iwarp_send),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_send) - 2),
 	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
@@ -131,16 +132,16 @@ struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 		| cpu_to_be16(RDMAP_SEND_SE),
 	.proc_data = siw_proc_send
 },
-{
+{	/* RDMAP_SEND_SE_INVAL */
 	.hdr_len = sizeof(struct iwarp_send_inv),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_send_inv) - 2),
 	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
 		| cpu_to_be16(DDP_VERSION << 8)
 		| cpu_to_be16(RDMAP_VERSION << 6)
 		| cpu_to_be16(RDMAP_SEND_SE_INVAL),
-	.proc_data = siw_proc_unsupp
+	.proc_data = siw_proc_send
 },
-{
+{	/* RDMAP_TERMINATE */
 	.hdr_len = sizeof(struct iwarp_terminate),
 	.ctrl.mpa_len = htons(sizeof(struct iwarp_terminate) - 2),
 	.ctrl.ddp_rdmap_ctrl = DDP_FLAG_LAST
@@ -265,7 +266,7 @@ void siw_qp_llp_close(struct siw_qp *qp)
  */
 static void siw_qp_llp_write_space(struct sock *sk)
 {
-	struct siw_qp	*qp = sk_to_qp(sk);
+	struct siw_cep	*cep = sk_to_cep(sk);
 
 	/*
 	 * TODO:
@@ -275,19 +276,19 @@ static void siw_qp_llp_write_space(struct sock *sk)
 	 */
 #ifdef SIW_TX_FULLSEGS
 	struct socket *sock = sk->sk_socket;
-	if (sk_stream_wspace(sk) >= (int)qp->tx_ctx.fpdu_len && sock) {
+	if (sk_stream_wspace(sk) >= (int)cep->qp.tx_ctx.fpdu_len && sock) {
 		clear_bit(SOCK_NOSPACE, &sock->flags);
-		siw_sq_queue_work(qp);
+		siw_sq_queue_work(cep->qp);
 	}
 #else
-	sk_stream_write_space(sk);
+	cep->sk_write_space(sk);
 
 	if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
-		siw_sq_queue_work(qp);
+		siw_sq_queue_work(cep->qp);
 #endif
 }
 
-static void siw_qp_socket_assoc(struct socket *s, struct siw_qp *qp)
+void siw_qp_socket_assoc(struct socket *s, struct siw_qp *qp)
 {
 	struct sock *sk = s->sk;
 
@@ -339,6 +340,9 @@ static void siw_send_terminate(struct siw_qp *qp)
 	struct iwarp_terminate	pkt;
 
 	memset(&pkt, 0, sizeof pkt);
+	pkt.term_ctrl = cpu_to_be32(((qp->attrs.layer &0xf) >> 28) |
+			((qp->attrs.etype &0xf) >> 24) |
+			((qp->attrs.ecode &0xff) >> 20));
 	/*
 	 * TODO: send TERMINATE
 	 */
@@ -350,30 +354,93 @@ static int siw_qp_enable_crc(struct siw_qp *qp)
 {
 	struct siw_iwarp_rx *c_rx = &qp->rx_ctx;
 	struct siw_iwarp_tx *c_tx = &qp->tx_ctx;
+	struct crypto_shash *txsh, *rxsh;
 	int rv = 0;
 
-	c_tx->mpa_crc_hd.tfm = crypto_alloc_shash("crc32c", 0,
-						  CRYPTO_ALG_ASYNC);
-	if (IS_ERR(c_tx->mpa_crc_hd.tfm)) {
-		rv = -PTR_ERR(c_tx->mpa_crc_hd.tfm);
-		goto out;
+	txsh = crypto_alloc_shash("crc32c", 0, 0);
+	if (IS_ERR(txsh))
+		return -PTR_ERR(txsh);
+
+	rxsh = crypto_alloc_shash("crc32c", 0, 0);
+	if (IS_ERR(rxsh)) {
+		rv = -PTR_ERR(rxsh);
+		rxsh = NULL;
+	 	goto error;
 	}
-	c_rx->mpa_crc_hd.tfm = crypto_alloc_shash("crc32c", 0,
-						  CRYPTO_ALG_ASYNC);
-	if (IS_ERR(c_rx->mpa_crc_hd.tfm)) {
-		rv = -PTR_ERR(c_rx->mpa_crc_hd.tfm);
-		crypto_free_shash(c_tx->mpa_crc_hd.tfm);
+
+	c_tx->mpa_crc_hd = kzalloc(sizeof(struct shash_desc) +
+				   crypto_shash_descsize(txsh),
+				   GFP_KERNEL);
+	c_rx->mpa_crc_hd = kzalloc(sizeof(struct shash_desc) +
+				   crypto_shash_descsize(rxsh),
+				   GFP_KERNEL);
+	if (!c_tx->mpa_crc_hd || !c_rx->mpa_crc_hd) {
+		rv = -ENOMEM;
+		goto error;
 	}
-out:
-	if (rv)
-		dprint(DBG_ON, "(QP%d): Failed loading crc32c: error=%d.",
+		
+	c_tx->mpa_crc_hd->tfm = txsh;
+	c_rx->mpa_crc_hd->tfm = rxsh;
+
+	return 0;
+error:
+	dprint(DBG_ON, "(QP%d): Failed loading crc32c: error=%d.",
 			QP_ID(qp), rv);
-	else
-		c_tx->crc_enabled = c_rx->crc_enabled = 1;
+
+	kfree(c_tx->mpa_crc_hd);
+	kfree(c_rx->mpa_crc_hd);
+
+	c_tx->mpa_crc_hd = c_rx->mpa_crc_hd = NULL;
+
+	if (txsh)
+		crypto_free_shash(txsh);
+	if (rxsh)
+		crypto_free_shash(rxsh);
 
 	return rv;
 }
 
+
+/*
+ * handle all attrs other than state
+ */
+int
+siw_qp_modify_nonstate(struct siw_qp *qp, struct siw_qp_attrs *attrs,
+	      enum siw_qp_attr_mask mask)
+{
+	int	rv = 0;
+
+	if (mask & SIW_QP_ATTR_ACCESS_FLAGS) {
+		if (attrs->flags & SIW_RDMA_BIND_ENABLED)
+			qp->attrs.flags |= SIW_RDMA_BIND_ENABLED;
+		else
+			qp->attrs.flags &= ~SIW_RDMA_BIND_ENABLED;
+
+		if (attrs->flags & SIW_RDMA_WRITE_ENABLED)
+			qp->attrs.flags |= SIW_RDMA_WRITE_ENABLED;
+		else
+			qp->attrs.flags &= ~SIW_RDMA_WRITE_ENABLED;
+
+		if (attrs->flags & SIW_RDMA_READ_ENABLED)
+			qp->attrs.flags |= SIW_RDMA_READ_ENABLED;
+		else
+			qp->attrs.flags &= ~SIW_RDMA_READ_ENABLED;
+	}
+
+	if (mask & SIW_QP_ATTR_ETYPE) {
+		qp->attrs.etype = attrs->etype;
+	}
+
+	if (mask & SIW_QP_ATTR_LAYER) {
+		qp->attrs.layer = attrs->layer;
+	}
+
+	if (mask & SIW_QP_ATTR_ECODE) {
+		qp->attrs.ecode = attrs->ecode;
+	}
+
+	return rv;
+}
 
 /*
  * caller holds qp->state_lock
@@ -390,27 +457,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 	dprint(DBG_CM, "(QP%d)\n", QP_ID(qp));
 
 	if (mask != SIW_QP_ATTR_STATE) {
-		/*
-		 * changes of qp attributes (maybe state, too)
-		 */
-		if (mask & SIW_QP_ATTR_ACCESS_FLAGS) {
-
-			if (attrs->flags & SIW_RDMA_BIND_ENABLED)
-				qp->attrs.flags |= SIW_RDMA_BIND_ENABLED;
-			else
-				qp->attrs.flags &= ~SIW_RDMA_BIND_ENABLED;
-
-			if (attrs->flags & SIW_RDMA_WRITE_ENABLED)
-				qp->attrs.flags |= SIW_RDMA_WRITE_ENABLED;
-			else
-				qp->attrs.flags &= ~SIW_RDMA_WRITE_ENABLED;
-
-			if (attrs->flags & SIW_RDMA_READ_ENABLED)
-				qp->attrs.flags |= SIW_RDMA_READ_ENABLED;
-			else
-				qp->attrs.flags &= ~SIW_RDMA_READ_ENABLED;
-
-		}
+		rv = siw_qp_modify_nonstate(qp, attrs, mask);
 		/*
 		 * TODO: what else ??
 		 */
@@ -475,10 +522,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 				break;
 
 			qp->attrs.mpa = attrs->mpa;
-			/*
-			 * move socket rx and tx under qp's control
-			 */
-			siw_qp_socket_assoc(attrs->llp_stream_handle, qp);
+			qp->attrs.llp_stream_handle = attrs->llp_stream_handle;
 
 			qp->attrs.state = SIW_QP_STATE_RTS;
 			/*
@@ -638,7 +682,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 		break;
 	}
 	if (drop_conn)
-		siw_qp_cm_drop(qp, 0);
+		siw_qp_cm_drop(qp, 1);
 
 	return rv;
 }
@@ -683,7 +727,7 @@ int siw_check_mem(struct siw_pd *pd, struct siw_mem *mem, u64 addr,
 
 		return -EINVAL;
 	}
-	if (mem->stag_state == STAG_INVALID) {
+	if (mem->stag_valid == 0) {
 		dprint(DBG_WR|DBG_ON, "(PD%d): STAG 0x%08x invalid\n",
 			OBJ_ID(pd), OBJ_ID(mem));
 		return -EPERM;
@@ -772,10 +816,11 @@ fail:
 void siw_read_to_orq(struct siw_sqe *rreq, struct siw_sqe *sqe)
 {
 	rreq->id = sqe->id;
-	rreq->opcode = SIW_OP_READ;
+	rreq->opcode = sqe->opcode;
 	rreq->sge[0].laddr = sqe->sge[0].laddr;
 	rreq->sge[0].length = sqe->sge[0].length;
 	rreq->sge[0].lkey = sqe->sge[0].lkey;
+	rreq->sge[1].lkey = sqe->sge[1].lkey;
 	rreq->flags = sqe->flags | SIW_WQE_VALID;
 	rreq->num_sge = 1;
 }
@@ -830,7 +875,7 @@ int siw_activate_tx(struct siw_qp *qp)
 		/* First copy SQE to kernel private memory */
 		memcpy(&wqe->sqe, sqe, sizeof *sqe);
 
-		if (wqe->sqe.opcode > SIW_OP_SEND) {
+		if (wqe->sqe.opcode >= SIW_NUM_OPCODES) {
 			rv = -EINVAL;
 			goto out;
 		}
@@ -851,11 +896,11 @@ int siw_activate_tx(struct siw_qp *qp)
 		}
 		
 		if (wqe->sqe.flags & SIW_WQE_READ_FENCE) {
-			/* Only WRITE and SEND can be READ fenced */
-			if (unlikely(wqe->sqe.opcode != SIW_OP_WRITE &&
-				     wqe->sqe.opcode != SIW_OP_SEND)) {
-				pr_info("QP[%d]: cannot fence %d\n",
-					QP_ID(qp), wqe->sqe.opcode);
+			/* A READ cannot be fenced */
+			if (unlikely(wqe->sqe.opcode == SIW_OP_READ ||
+			    wqe->sqe.opcode == SIW_OP_READ_LOCAL_INV)) {
+				pr_info("QP[%d]: cannot fence READ\n",
+					QP_ID(qp));
 				rv = -EINVAL;
 				goto out;
 			}
@@ -867,7 +912,8 @@ int siw_activate_tx(struct siw_qp *qp)
 			}
 			unlock_orq_rxsave(qp, flags);
 
-		} else if (wqe->sqe.opcode == SIW_OP_READ) {
+		} else if (wqe->sqe.opcode == SIW_OP_READ ||
+			   wqe->sqe.opcode == SIW_OP_READ_LOCAL_INV) {
 			struct siw_sqe	*rreq;
 
 			wqe->sqe.num_sge = 1;
@@ -900,23 +946,6 @@ out:
 		pr_warn("QP[%d]: error %d in activate_tx\n", QP_ID(qp), rv);
 		wqe->wr_status = SR_WR_IDLE;
 	}
-	return rv;
-}
-
-int siw_crc_array(struct shash_desc *desc, u8 *start, size_t len)
-{
-	return crypto_shash_update(desc, start, len);
-}
-
-int siw_crc_page(struct shash_desc *desc, struct page *p, int off, int len)
-{
-	int rv;
-	struct scatterlist t_sg;
-
-	sg_init_table(&t_sg, 1);
-	sg_set_page(&t_sg, p, len, off);
-	rv = crypto_shash_update(desc, sg_virt(&t_sg), len);
-
 	return rv;
 }
 
@@ -1085,8 +1114,9 @@ void siw_sq_flush(struct siw_qp *qp)
 		siw_wqe_put_mem(wqe, wqe->sqe.opcode);
 
 		if (wqe->sqe.opcode != SIW_OP_READ_RESPONSE &&
-		    (wqe->sqe.opcode != SIW_OP_READ ||
-		     wqe->wr_status == SR_WR_QUEUED))
+			((wqe->sqe.opcode != SIW_OP_READ &&
+			  wqe->sqe.opcode != SIW_OP_READ_LOCAL_INV) ||
+			wqe->wr_status == SR_WR_QUEUED))
 			/*
 			 * An in-progress RREQUEST is already in
 			 * the ORQ

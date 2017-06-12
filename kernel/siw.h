@@ -51,6 +51,7 @@
 #include <linux/module.h>
 #include <linux/version.h>
 #include <linux/llist.h>
+#include <linux/mm.h>
 
 #include <siw_user.h>
 #include "iwarp.h"
@@ -69,13 +70,14 @@ enum siw_if_type {
 #define SIW_MAX_QP_WR		(1024 * 32)
 #define SIW_MAX_ORD		128
 #define SIW_MAX_IRD		128
+#define SIW_MAX_SGE_PBL		256	/* max num sge's for PBL */
 #define SIW_MAX_SGE_RD		1	/* iwarp limitation. we could relax */
 #define SIW_MAX_CQ		(1024 * 100)
 #define SIW_MAX_CQE		(SIW_MAX_QP_WR * 100)
 #define SIW_MAX_MR		(SIW_MAX_QP * 10)
 #define SIW_MAX_PD		SIW_MAX_QP
 #define SIW_MAX_MW		0	/* to be set if MW's are supported */
-#define SIW_MAX_FMR		0
+#define SIW_MAX_FMR		SIW_MAX_MR
 #define SIW_MAX_SRQ		SIW_MAX_QP
 #define SIW_MAX_SRQ_WR		(SIW_MAX_QP_WR * 10)
 #define SIW_MAX_CONTEXT		SIW_MAX_PD
@@ -189,8 +191,6 @@ enum siw_access_flags {
 		(SR_MEM_RWRITE | SR_MEM_RREAD)
 };
 
-#define STAG_VALID	1
-#define STAG_INVALID	0
 #define SIW_STAG_MAX	0xffffffff
 
 struct siw_mr;
@@ -213,6 +213,18 @@ struct siw_umem {
 	struct work_struct	work;
 };
 
+struct siw_pble {
+	u64	addr;		/* Address of assigned user buffer */
+	u64	size;		/* Size of this entry */
+	u64	pbl_off;	/* Total offset form start of PBL */
+};
+
+struct siw_pbl {
+	unsigned int	num_buf;
+	unsigned int	max_buf;
+	struct siw_pble	pbe[1];
+};
+
 /*
  * generic memory representation for registered siw memory.
  * memory lookup always via higher 24 bit of stag (stag index).
@@ -226,12 +238,13 @@ struct siw_mem {
 	u64	va;		/* VA of memory */
 	u64	len;		/* amount of memory bytes */
 
-	u32	stag_state:1,		/* VALID or INVALID */
+	u32	stag_valid:1,		/* VALID or INVALID */
+		is_pbl:1,		/* PBL or user space mem */
 		is_zbva:1,		/* zero based virt. addr. */
 		mw_bind_enabled:1,	/* check only if MR */
 		remote_inval_enabled:1,	/* VALID or INVALID */
 		consumer_owns_key:1,	/* key/index split ? */
-		rsvd:27;
+		rsvd:26;
 
 	enum siw_access_flags	perms;	/* local/remote READ & WRITE */
 };
@@ -247,7 +260,11 @@ struct siw_mr {
 	struct ib_mr	ofa_mr;
 	struct siw_mem	mem;
 	struct rcu_head rcu;
-	struct siw_umem	*umem;
+	union {
+		struct siw_umem	*umem;
+		struct siw_pbl	*pbl;
+		void *mem_obj;
+	};
 	struct siw_pd	*pd;
 };
 
@@ -259,14 +276,10 @@ struct siw_mw {
 
 /********** WR definitions ****************/
 
-#define SIW_WQE_IS_TX(wqe)	1	/* add BIND/FASTREG/INVAL_STAG */
-
-
 enum siw_wr_state {
 	SR_WR_IDLE		= 0,
 	SR_WR_QUEUED		= 1,	/* processing has not started yet */
-	SR_WR_INPROGRESS	= 2,	/* initiated processing of the WR */
-	SR_WR_DONE		= 3
+	SR_WR_INPROGRESS	= 2	/* initiated processing of the WR */
 };
 
 union siw_mem_resolved {
@@ -333,7 +346,10 @@ enum siw_qp_attr_mask {
 	SIW_QP_ATTR_IRD			= (1 << 4),
 	SIW_QP_ATTR_SQ_SIZE		= (1 << 5),
 	SIW_QP_ATTR_RQ_SIZE		= (1 << 6),
-	SIW_QP_ATTR_MPA			= (1 << 7)
+	SIW_QP_ATTR_MPA			= (1 << 7),
+	SIW_QP_ATTR_ETYPE		= (1 << 8),
+	SIW_QP_ATTR_LAYER		= (1 << 9),
+	SIW_QP_ATTR_ECODE		= (1 << 10)
 };
 
 struct siw_mpa_attrs {
@@ -389,6 +405,9 @@ struct siw_qp_attrs {
 	enum siw_qp_flags	flags;
 
 	struct socket		*llp_stream_handle;
+	u8			etype;
+	u8			layer;
+	u8			ecode;
 };
 
 enum siw_tx_ctx {
@@ -416,7 +435,7 @@ struct siw_iwarp_rx {
 	 */
 	struct siw_wqe		wqe_active;
 
-	struct shash_desc	mpa_crc_hd;
+	struct shash_desc	*mpa_crc_hd;
 	/*
 	 * Next expected DDP MSN for each QN +
 	 * expected steering tag +
@@ -445,10 +464,12 @@ struct siw_iwarp_rx {
 
 	enum siw_rx_state	state;
 
-	u8			crc_enabled:1,
-				first_ddp_seg:1,   /* this is first DDP seg */
+	u32			inval_stag;
+
+	u8			first_ddp_seg:1,   /* this is first DDP seg */
 				more_ddp_segs:1,   /* more DDP segs expected */
 				rx_suspend:1,	   /* stop rcv DDP segs. */
+				unused:1,
 				prev_rdmap_opcode:4; /* opcode of prev msg */
 	char			pad;		/* # of pad bytes expected */
 };
@@ -516,17 +537,17 @@ struct siw_iwarp_tx {
 	
 	int			bytes_unsent;	/* ddp payload bytes */
 
-	struct shash_desc	mpa_crc_hd;
+	struct shash_desc	*mpa_crc_hd;
 
 	atomic_t		in_use;		/* tx currently under way */
 
-	u8			crc_enabled:1,	/* compute and ship crc */
-				do_crc:1,	/* do crc for segment */
+	u8			do_crc:1,	/* do crc for segment */
 				use_sendpage:1,	/* send w/o copy */
 				new_tcpseg:1,	/* start new tcp segment */
 				tx_suspend:1,	/* stop sending DDP segs. */
 				pad:2,		/* # pad in current fpdu */
-				orq_fence:1;	/* ORQ full or Send fenced */
+				orq_fence:1,	/* ORQ full or Send fenced */
+				unused:1;
 
 	u16			fpdu_len;	/* len of FPDU to tx */
 
@@ -691,6 +712,8 @@ int siw_sqe_complete(struct siw_qp *, struct siw_sqe *, u32,
 		     enum siw_wc_status);
 int siw_rqe_complete(struct siw_qp *, struct siw_rqe *, u32,
 		     enum siw_wc_status);
+void siw_sk_assign_rtr_upcalls(struct siw_cep *cep);
+void siw_qp_socket_assoc(struct socket *s, struct siw_qp *qp);
 
 
 /* SIW user memory management */
@@ -719,45 +742,64 @@ static inline struct page *siw_get_upage(struct siw_umem *umem, u64 addr)
 
 	return NULL;
 }
-struct siw_umem *siw_umem_get(u64, u64);
-void siw_umem_release(struct siw_umem *);
+
+extern struct siw_umem *siw_umem_get(u64, u64);
+extern struct siw_umem *siw_umem_alloc(u32);
+extern void siw_umem_release(struct siw_umem *);
+extern struct siw_pbl *siw_pbl_alloc(u32);
+extern u64 siw_pbl_get_buffer(struct siw_pbl *, u64, int *, int *);
+extern void siw_pbl_free(struct siw_pbl *);
 
 
 /* QP TX path functions */
-int siw_qp_sq_process(struct siw_qp *);
-int siw_sq_worker_init(void);
-void siw_sq_worker_exit(void);
-int siw_sq_queue_work(struct siw_qp *qp);
-int siw_activate_tx(struct siw_qp *);
+extern int siw_qp_sq_process(struct siw_qp *);
+extern int siw_sq_worker_init(void);
+extern void siw_sq_worker_exit(void);
+extern int siw_sq_queue_work(struct siw_qp *qp);
+extern int siw_activate_tx(struct siw_qp *);
 
 /* QP RX path functions */
-int siw_proc_send(struct siw_qp *, struct siw_iwarp_rx *);
-int siw_proc_rreq(struct siw_qp *, struct siw_iwarp_rx *);
-int siw_proc_rresp(struct siw_qp *, struct siw_iwarp_rx *);
-int siw_proc_write(struct siw_qp *, struct siw_iwarp_rx *);
-int siw_proc_terminate(struct siw_qp*, struct siw_iwarp_rx *);
-int siw_proc_unsupp(struct siw_qp *, struct siw_iwarp_rx *);
+extern int siw_proc_send(struct siw_qp *, struct siw_iwarp_rx *);
+extern int siw_proc_rreq(struct siw_qp *, struct siw_iwarp_rx *);
+extern int siw_proc_rresp(struct siw_qp *, struct siw_iwarp_rx *);
+extern int siw_proc_write(struct siw_qp *, struct siw_iwarp_rx *);
+extern int siw_proc_terminate(struct siw_qp*, struct siw_iwarp_rx *);
+extern int siw_proc_unsupp(struct siw_qp *, struct siw_iwarp_rx *);
 
-int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
-		    unsigned int off, size_t len);
+extern int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
+			   unsigned int off, size_t len);
 
 /* MPA utilities */
-int siw_crc_array(struct shash_desc *, u8 *, size_t);
-int siw_crc_page(struct shash_desc *, struct page *, int, int);
+static inline int siw_crc_array(struct shash_desc *desc, u8 *start,
+				size_t len)
+{
+	return crypto_shash_update(desc, start, len);
+}
+
+static inline int siw_crc_page(struct shash_desc *desc, struct page *p,
+			       int off, int len)
+{
+	return crypto_shash_update(desc, page_address(p) + off, len);
+}
 
 
 /* Varia */
-void siw_cq_flush(struct siw_cq *);
-void siw_sq_flush(struct siw_qp *);
-void siw_rq_flush(struct siw_qp *);
-int siw_reap_cqe(struct siw_cq *, struct ib_wc *);
+extern void siw_cq_flush(struct siw_cq *);
+extern void siw_sq_flush(struct siw_qp *);
+extern void siw_rq_flush(struct siw_qp *);
+extern int siw_reap_cqe(struct siw_cq *, struct ib_wc *);
 
 /* RDMA core event dipatching */
-void siw_qp_event(struct siw_qp *, enum ib_event_type);
-void siw_cq_event(struct siw_cq *, enum ib_event_type);
-void siw_srq_event(struct siw_srq *, enum ib_event_type);
-void siw_port_event(struct siw_dev *, u8, enum ib_event_type);
+extern void siw_qp_event(struct siw_qp *, enum ib_event_type);
+extern void siw_cq_event(struct siw_cq *, enum ib_event_type);
+extern void siw_srq_event(struct siw_srq *, enum ib_event_type);
+extern void siw_port_event(struct siw_dev *, u8, enum ib_event_type);
 
+
+static inline struct siw_qp *siw_qp_ofa2siw(struct ib_qp *ofa_qp)
+{
+	return container_of(ofa_qp, struct siw_qp, ofa_qp);
+}
 
 static inline int siw_sq_empty(struct siw_qp *qp)
 {
@@ -770,6 +812,11 @@ static inline struct siw_sqe *sq_get_next(struct siw_qp *qp)
 	if (sqe->flags & SIW_WQE_VALID)
 		return sqe;
 	return NULL;
+}
+
+static inline struct siw_sqe *orq_get_current(struct siw_qp *qp)
+{
+	return &qp->orq[qp->orq_get % qp->attrs.orq_size];
 }
 
 static inline struct siw_sqe *orq_get_tail(struct siw_qp *qp)

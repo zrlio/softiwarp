@@ -390,7 +390,7 @@ static void siw_free_mem(struct kref *ref)
 	m = container_of(container_of(ref, struct siw_objhdr, ref),
 			 struct siw_mem, hdr);
 
-	dprint(DBG_MM|DBG_OBJ, "(MEM%d): Free Object\n", OBJ_ID(m));
+	dprint(DBG_MM|DBG_OBJ, "(MEM%d): Free\n", OBJ_ID(m));
 
 	atomic_dec(&m->hdr.sdev->num_mem);
 
@@ -399,9 +399,14 @@ static void siw_free_mem(struct kref *ref)
 		kfree_rcu(mw, rcu);
 	} else {
 		struct siw_mr *mr = container_of(m, struct siw_mr, mem);
-		dprint(DBG_MM|DBG_OBJ, "(MEM%d): Release UMem\n", OBJ_ID(m));
-		if (mr->umem)
-			siw_umem_release(mr->umem);
+		dprint(DBG_MM|DBG_OBJ, "(MEM%d): Release obj %p, (PBL %d)\n",
+			OBJ_ID(m), mr->mem_obj, mr->mem.is_pbl ? 1 : 0);
+		if (mr->mem_obj) {
+			if (mr->mem.is_pbl == 0)
+				siw_umem_release(mr->umem);
+			else
+				siw_pbl_free(mr->pbl);
+		}
 		kfree_rcu(mr, rcu);
 	}
 }
@@ -457,7 +462,9 @@ void siw_wqe_put_mem(struct siw_wqe *wqe, enum siw_opcode op)
 	case SIW_OP_SEND:
 	case SIW_OP_WRITE:
 	case SIW_OP_SEND_WITH_IMM:
+	case SIW_OP_SEND_REMOTE_INV:
 	case SIW_OP_READ:
+	case SIW_OP_READ_LOCAL_INV:
 		if (!(wqe->sqe.flags & SIW_WQE_INLINE))
 			siw_unref_mem_sgl(wqe->mem, wqe->sqe.num_sge);
 		break;
@@ -471,6 +478,39 @@ void siw_wqe_put_mem(struct siw_wqe *wqe, enum siw_opcode op)
 		break;
 
 	default:
-		WARN_ON(1);
+		/*
+		 *  SIW_OP_INVAL_STAG and SIW_OP_REG_MR 
+		 * do not hold memory references
+		 */
+		break;
 	}
+}
+
+int siw_invalidate_stag(struct siw_pd *pd, u32 stag)
+{
+	u32 stag_idx = stag >> 8;
+	struct siw_mem *mem = siw_mem_id2obj(pd->hdr.sdev, stag_idx);
+	int rv = 0;
+
+	dprint(DBG_MM, ": STag %u Enter\n", stag_idx);
+
+	if (unlikely(!mem)) {
+		dprint(DBG_MM, ": STag %u unknown\n", stag_idx);
+		return -EINVAL;
+	}
+	if (unlikely(siw_mem2mr(mem)->pd != pd)) {
+		dprint(DBG_MM, ": PD mismatch for STag %u\n", stag_idx);
+		rv = -EINVAL;
+		goto out;
+	}
+	/*
+	 * Per RDMA verbs definition, an STag may already be in invalid
+	 * state if invalidation is requested. So no state check here.
+	 */
+	mem->stag_valid = 0;
+
+	dprint(DBG_MM, ": STag now invalid: %u\n", stag_idx);
+out:
+	siw_mem_put(mem);
+	return rv;
 }

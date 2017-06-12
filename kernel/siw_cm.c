@@ -43,6 +43,7 @@
 #include <linux/inetdevice.h>
 #include <linux/workqueue.h>
 #include <net/sock.h>
+#include <net/tcp.h>
 #include <linux/tcp.h>
 
 
@@ -61,11 +62,16 @@ static bool mpa_crc_required;
 module_param(mpa_crc_required, bool, 0644);
 static bool tcp_nodelay = 0;
 module_param(tcp_nodelay, bool, 0644);
+static u_char  mpa_version = MPA_REVISION_2;
+module_param(mpa_version, byte, 0644);
+static __be16 rtr_type = MPA_V2_RDMA_NO_RTR;
+static const bool peer_to_peer = 0;	/* we don't need RTR */
+static const bool relaxed_ird_negotiation = 1;
 
 MODULE_PARM_DESC(mpa_crc_required, "MPA CRC required");
 MODULE_PARM_DESC(mpa_crc_strict, "MPA CRC off enforced");
 MODULE_PARM_DESC(tcp_nodelay, "Set TCP NODELAY");
-
+MODULE_PARM_DESC(mpa_version, "MPA version number");
 
 /*
  * siw_sock_nodelay() - Disable Nagle algorithm
@@ -91,11 +97,7 @@ static int siw_sock_nodelay(struct socket *sock)
 }
 
 static void siw_cm_llp_state_change(struct sock *);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-static void siw_cm_llp_data_ready(struct sock *sk, int flags);
-#else
 static void siw_cm_llp_data_ready(struct sock *sk);
-#endif
 static void siw_cm_llp_write_space(struct sock *);
 static void siw_cm_llp_error_report(struct sock *);
 
@@ -148,7 +150,6 @@ static void siw_socket_disassoc(struct socket *s)
 	} else
 		pr_warn("cannot restore sk callbacks: no sk\n");
 }
-
 
 static inline int kernel_peername(struct socket *s, struct sockaddr_in *addr)
 {
@@ -354,14 +355,28 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 			event.private_data_len = pd_len;
 			event.private_data = cep->mpa.pdata;
 		}
+		if (__mpa_rr_revision(cep->mpa.hdr.params.bits) < 
+		    MPA_REVISION_2) {
+			event.ird = cep->sdev->attrs.max_ird;
+			event.ord = cep->sdev->attrs.max_ord;
+		} else {
+			event.ird = cep->ird;
+			event.ord = cep->ord;
+			if (cep->enhanced_rdma_conn_est) {
+				event.private_data_len -=
+					sizeof(struct mpa_v2_data);
+				event.private_data +=
+					sizeof(struct mpa_v2_data);
+			}
+		}
 		to_sockaddr_in(event.local_addr) = cep->llp.laddr;
 		to_sockaddr_in(event.remote_addr) = cep->llp.raddr;
 	}
+	if (reason == IW_CM_EVENT_ESTABLISHED) {
+		event.ird = cep->ird;
+		event.ord = cep->ord;
+	}
 	if (reason == IW_CM_EVENT_CONNECT_REQUEST) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
-		event.ird = cep->sdev->attrs.max_ird;
-		event.ord = cep->sdev->attrs.max_ord;
-#endif
 		event.provider_data = cep;
 		cm_id = cep->listen_cep->cm_id;
 	} else
@@ -496,21 +511,33 @@ static int siw_send_mpareqrep(struct siw_cep *cep, const void *pdata,
 	struct kvec	iov[2];
 	struct msghdr	msg;
 	int		rv;
+	int		iovec_num = 0;
+	int		mpa_len;
 
 	memset(&msg, 0, sizeof(msg));
 
-	rr->params.pd_len = cpu_to_be16(pd_len);
-
-	iov[0].iov_base = rr;
-	iov[0].iov_len = sizeof *rr;
+	iov[iovec_num].iov_base = rr;
+	iov[iovec_num].iov_len = sizeof *rr;
+	mpa_len = sizeof *rr;
+	if (cep->enhanced_rdma_conn_est) {
+		iovec_num++;
+		iov[iovec_num].iov_base = &cep->mpa.enhanced_conn_data;
+		iov[iovec_num].iov_len = sizeof cep->mpa.enhanced_conn_data;
+		mpa_len += sizeof cep->mpa.enhanced_conn_data;
+	}
 
 	if (pd_len) {
-		iov[1].iov_base = (char *)pdata;
-		iov[1].iov_len = pd_len;
+		iovec_num++;
+		iov[iovec_num].iov_base = (char *)pdata;
+		iov[iovec_num].iov_len = pd_len;
+		mpa_len += pd_len;
+	}
+	if (cep->enhanced_rdma_conn_est)
+		pd_len += sizeof cep->mpa.enhanced_conn_data;
 
-		rv =  kernel_sendmsg(s, &msg, iov, 2, pd_len + sizeof *rr);
-	} else
-		rv =  kernel_sendmsg(s, &msg, iov, 1, sizeof *rr);
+	rr->params.pd_len = cpu_to_be16(pd_len);
+
+	rv =  kernel_sendmsg(s, &msg, iov, iovec_num + 1, mpa_len);
 
 	return rv < 0 ? rv : 0;
 }
@@ -618,8 +645,9 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
  */
 static int siw_proc_mpareq(struct siw_cep *cep)
 {
-	struct mpa_rr	*req;
-	int		rv;
+	struct mpa_rr		*req;
+	struct mpa_v2_data	*v2;
+	int			rv;
 
 	rv = siw_recv_mpa_rr(cep);
 	if (rv)
@@ -627,8 +655,8 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 
 	req = &cep->mpa.hdr;
 
-	if (__mpa_rr_revision(req->params.bits) > MPA_REVISION_1) {
-		/* allow for 0 and 1 only */
+	if (__mpa_rr_revision(req->params.bits) > MPA_REVISION_2) {
+		/* allow for 0, 1, and 2 only */
 		rv = -EPROTO;
 		goto out;
 	}
@@ -681,6 +709,38 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 		cep->mpa.hdr.params.c = 1;
 #endif
 
+	cep->p2ptype = SIW_MPAV2_P2P_DISABLED;
+
+	if (__mpa_rr_revision(req->params.bits) == MPA_REVISION_2) {
+		if (req->params.bits & MPA_RR_FLAG_ENHANCED)
+			cep->enhanced_rdma_conn_est = 1;
+		else
+			cep->enhanced_rdma_conn_est = 0;
+	
+		if (cep->enhanced_rdma_conn_est) {
+			v2 = (struct mpa_v2_data *)cep->mpa.pdata;
+			cep->ird = ntohs(v2->ird) & MPA_IRD_ORD_MASK;
+			cep->ird = min(cep->ird, SIW_MAX_IRD);
+			cep->ord = ntohs(v2->ord) & MPA_IRD_ORD_MASK;
+			cep->ord = min(cep->ord, SIW_MAX_ORD);
+
+			cep->mpa.enhanced_conn_data.ird = htons(cep->ird) | 
+						MPA_V2_PEER_TO_PEER;
+			cep->mpa.enhanced_conn_data.ord = htons(cep->ord);
+			if (v2->ird & MPA_V2_PEER_TO_PEER) {
+				if (v2->ord & MPA_V2_RDMA_WRITE_RTR) {
+					cep->p2ptype = SIW_MPAV2_RDMA_WRITE_RTR;
+					cep->mpa.enhanced_conn_data.ord |=
+						MPA_V2_RDMA_WRITE_RTR;
+				} else if (v2->ord & MPA_V2_RDMA_READ_RTR) {
+					cep->p2ptype = SIW_MPAV2_RDMA_READ_RTR;
+					cep->mpa.enhanced_conn_data.ord |=
+						MPA_V2_RDMA_READ_RTR;
+				}
+			}
+		}
+	}
+
 	cep->state = SIW_EPSTATE_RECVD_MPAREQ;
 
 	/* Keep reference until IWCM accepts/rejects */
@@ -698,7 +758,11 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 	struct siw_qp_attrs	qp_attrs;
 	struct siw_qp		*qp = cep->qp;
 	struct mpa_rr		*rep;
+	struct mpa_v2_data	*v2;
 	int			rv;
+	u16			rep_ord;
+	u16			rep_ird;
+	char			ird_insufficient = 0;
 
 	rv = siw_recv_mpa_rr(cep);
 	if (rv != -EAGAIN)
@@ -708,8 +772,8 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 
 	rep = &cep->mpa.hdr;
 
-	if (__mpa_rr_revision(rep->params.bits) > MPA_REVISION_1) {
-		/* allow for 0 and 1 only */
+	if (__mpa_rr_revision(rep->params.bits) > MPA_REVISION_2) {
+		/* allow for 0, 1,  and 2 only */
 		rv = -EPROTO;
 		goto out_err;
 	}
@@ -740,6 +804,60 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 		rv = -EINVAL;
 		goto out;
 	}
+
+	cep->p2ptype = SIW_MPAV2_P2P_DISABLED;
+
+	if (__mpa_rr_revision(rep->params.bits) == MPA_REVISION_2) {
+		if (rep->params.bits & MPA_RR_FLAG_ENHANCED)
+			cep->enhanced_rdma_conn_est = 1;
+		else
+			cep->enhanced_rdma_conn_est = 0;
+	
+		if (cep->enhanced_rdma_conn_est) {
+			v2 = (struct mpa_v2_data *)cep->mpa.pdata;
+			rep_ird = ntohs(v2->ird) & MPA_IRD_ORD_MASK;
+			rep_ord = ntohs(v2->ord) & MPA_IRD_ORD_MASK;
+
+			if (cep->ird < rep_ord) {
+				if (relaxed_ird_negotiation && rep_ord <=
+				    cep->sdev->attrs.max_ord)
+					cep->ird = rep_ord;
+				else
+					ird_insufficient = 1;
+			} else if (cep->ird > rep_ord)
+				cep->ird = rep_ord;
+
+			if (cep->ord > rep_ird) {
+				if (relaxed_ird_negotiation)
+					cep->ord = rep_ird;
+				else
+					ird_insufficient = 1;
+			}
+
+			if (ird_insufficient) {
+				rv = -ENOMEM;
+				cep->ird = rep_ord;
+				cep->ord = rep_ird;
+			}
+
+			cep->mpa.enhanced_conn_data.ird = htons(cep->ird) | 
+						MPA_V2_PEER_TO_PEER;
+			cep->mpa.enhanced_conn_data.ord = htons(cep->ord);
+			if (v2->ird & MPA_V2_PEER_TO_PEER) {
+				if (v2->ord & MPA_V2_RDMA_WRITE_RTR) {
+					cep->p2ptype = SIW_MPAV2_RDMA_WRITE_RTR;
+					cep->mpa.enhanced_conn_data.ord |=
+						MPA_V2_RDMA_WRITE_RTR;
+				} else { if (v2->ord & MPA_V2_RDMA_READ_RTR)
+					cep->p2ptype = SIW_MPAV2_RDMA_READ_RTR;
+					cep->mpa.enhanced_conn_data.ord |=
+						MPA_V2_RDMA_READ_RTR;
+				}
+			}
+
+		}
+	}
+
 	memset(&qp_attrs, 0, sizeof qp_attrs);
 	qp_attrs.mpa.marker_rcv = 0;
 	qp_attrs.mpa.marker_snd = 0;
@@ -761,6 +879,25 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 					       SIW_QP_ATTR_ORD|
 					       SIW_QP_ATTR_IRD|
 					       SIW_QP_ATTR_MPA);
+	/*
+	 * If the initiator IRD is insuffient for the responder ORD,
+	 * send a TERM.
+	 *
+	 */
+	if (ird_insufficient) {
+		qp_attrs.state = SIW_QP_STATE_TERMINATE;
+		qp_attrs.etype = LLP_ETYPE_MPA;
+		qp_attrs.layer = RDMAP_ERROR_LAYER_LLP;
+		qp_attrs.ecode = LLP_ECODE_INSUFFICIENT_IRD;
+		rv = siw_qp_modify(qp, &qp_attrs, SIW_QP_ATTR_STATE|
+							SIW_QP_ATTR_ETYPE|
+							SIW_QP_ATTR_LAYER|
+							SIW_QP_ATTR_ECODE);
+		rv = -EINVAL;
+		up_write(&qp->state_lock);
+		goto out_err;
+	}
+	siw_qp_socket_assoc(cep->llp.sock, qp);
 
 	up_write(&qp->state_lock);
 
@@ -948,13 +1085,8 @@ static void siw_cm_work_handler(struct work_struct *w)
 			dprint(DBG_CM, "(): CEP not in MPA "
 				"handshake state: %d\n", cep->state);
 			if (cep->state == SIW_EPSTATE_RDMA_MODE) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-				cep->llp.sock->sk->sk_data_ready(
-					cep->llp.sock->sk, 0);
-#else
 				cep->llp.sock->sk->sk_data_ready(
 					cep->llp.sock->sk);
-#endif
 				pr_info("cep already in RDMA mode");
 			} else
 				pr_info("cep out of state: %d\n", cep->state);
@@ -1156,11 +1288,7 @@ int siw_cm_queue_work(struct siw_cep *cep, enum siw_work_type type)
 	return 0;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-static void siw_cm_llp_data_ready(struct sock *sk, int flags)
-#else
 static void siw_cm_llp_data_ready(struct sock *sk)
-#endif
 {
 	struct siw_cep	*cep;
 
@@ -1264,6 +1392,61 @@ static void siw_cm_llp_state_change(struct sock *sk)
 	orig_state_change(sk);
 }
 
+static int siw_enter_rts(struct siw_cep *cep, struct siw_qp *qp)
+{
+	int rv;
+
+	rv = siw_cm_upcall(cep, IW_CM_EVENT_ESTABLISHED, 0);
+
+	return rv;
+}
+
+static void siw_rtr_complete(struct siw_qp *qp)
+{
+	struct siw_cep	*cep;
+
+	cep = qp->cep;
+
+	siw_enter_rts(cep, qp);
+}
+
+static void siw_rtr_data_ready(struct sock *sk)
+{
+	struct siw_cep		*cep;
+	struct siw_qp		*qp = NULL;
+	read_descriptor_t	rd_desc;
+
+	read_lock(&sk->sk_callback_lock);
+
+	cep = sk_to_cep(sk);
+	if (!cep) {
+		WARN_ON(1);
+		goto out;
+	}
+	qp = sk_to_qp(sk);
+
+	memset(&rd_desc, 0, sizeof(rd_desc));
+	rd_desc.arg.data = qp;
+	rd_desc.count = 1;
+
+	tcp_read_sock(sk, &rd_desc, siw_tcp_rx_data);
+	siw_rtr_complete(qp);
+
+out:
+	read_unlock(&sk->sk_callback_lock);
+	if (qp)
+		siw_qp_socket_assoc(cep->llp.sock, qp);
+}
+
+void siw_sk_assign_rtr_upcalls(struct siw_cep *cep)
+{
+	struct sock *sk;
+
+	sk = cep->llp.sock->sk;
+	write_lock_bh(&sk->sk_callback_lock);
+	sk->sk_data_ready   = siw_rtr_data_ready;
+	write_unlock_bh(&sk->sk_callback_lock);
+}
 
 static int kernel_bindconnect(struct socket *s,
 			      struct sockaddr *laddr, int laddrlen,
@@ -1370,6 +1553,10 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	}
 	cep->ird = params->ird;
 	cep->ord = params->ord;
+
+	if (peer_to_peer && cep->ord == 0)
+		cep->ord = 1;
+
 	cep->state = SIW_EPSTATE_CONNECTING;
 
 	dprint(DBG_CM, " (id=0x%p, QP%d): pd_len = %u\n",
@@ -1395,10 +1582,26 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	 * MPA Rev. 1, Key 'Request'.
 	 */
 	cep->mpa.hdr.params.bits = 0;
-	__mpa_rr_set_revision(&cep->mpa.hdr.params.bits, MPA_REVISION_1);
+	__mpa_rr_set_revision(&cep->mpa.hdr.params.bits, mpa_version);
 
 	if (mpa_crc_required)
 		cep->mpa.hdr.params.bits |= MPA_RR_FLAG_CRC;
+
+	/*
+	 * set MPAv2 bits if required.
+	 */
+	if (mpa_version == MPA_REVISION_2) {
+		cep->enhanced_rdma_conn_est = 1;
+		cep->mpa.hdr.params.bits |= MPA_RR_FLAG_ENHANCED;
+
+		cep->mpa.enhanced_conn_data.ird = htons(cep->ird);
+		cep->mpa.enhanced_conn_data.ord = htons(cep->ord);
+
+		if (peer_to_peer)
+			cep->mpa.enhanced_conn_data.ird |= MPA_V2_PEER_TO_PEER;
+
+		cep->mpa.enhanced_conn_data.ord |= rtr_type;
+	}
 
 	memcpy(cep->mpa.hdr.key, MPA_KEY_REQ, 16);
 
@@ -1527,12 +1730,39 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		up_write(&qp->state_lock);
 		goto error;
 	}
+
+	if (cep->revision == MPA_REVISION_2 && cep->enhanced_rdma_conn_est) {
+		if (params->ord > cep->ird) {
+			if (relaxed_ird_negotiation)
+				params->ord = cep->ird;
+			else {
+				cep->ird = params->ird;
+				cep->ord = params->ord;
+				rv =  -EINVAL;
+				up_write(&qp->state_lock);
+				goto error;
+			}
+		}
+		if (params->ird < cep->ord) {
+			if (relaxed_ird_negotiation &&
+			    cep->ord <= sdev->attrs.max_ord)
+				params->ird = cep->ord;
+			else {
+				rv = -ENOMEM;
+				up_write(&qp->state_lock);
+				goto error;
+			}
+		}
+	}
+	cep->ird = params->ird;
+	cep->ord = params->ord;
+
 	cep->cm_id = id;
 	id->add_ref(id);
 
 	memset(&qp_attrs, 0, sizeof qp_attrs);
-	qp_attrs.orq_size = params->ord;
-	qp_attrs.irq_size = params->ird;
+	qp_attrs.orq_size = cep->ord;
+	qp_attrs.irq_size = cep->ird;
 	qp_attrs.llp_stream_handle = cep->llp.sock;
 
 	/*
@@ -1572,18 +1802,13 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 
 	rv = siw_send_mpareqrep(cep, params->private_data,
 				params->private_data_len);
+	if (rv != 0)
+		goto error;
 
-	if (!rv) {
-		rv = siw_cm_upcall(cep, IW_CM_EVENT_ESTABLISHED, 0);
-		if (rv)
-			goto error;
+	siw_sk_assign_rtr_upcalls(cep);
+	siw_cep_set_free(cep);
 
-		siw_cep_set_free(cep);
-
-		dprint(DBG_CM, "(id=0x%p, QP%d): Exit\n", id, QP_ID(qp));
-		return 0;
-	}
-
+	return 0;
 error:
 	siw_socket_disassoc(cep->llp.sock);
 	sock_release(cep->llp.sock);
@@ -1638,7 +1863,7 @@ int siw_reject(struct iw_cm_id *id, const void *pdata, u8 plen)
 	dprint(DBG_CM, "(id=0x%p): cep->state=%d\n", id, cep->state);
 	dprint(DBG_CM, " Reject: %d: %x\n", plen, plen ? *(char *)pdata : 0);
 
-	if (__mpa_rr_revision(cep->mpa.hdr.params.bits) == MPA_REVISION_1) {
+	if (__mpa_rr_revision(cep->mpa.hdr.params.bits) >= MPA_REVISION_1) {
 		cep->mpa.hdr.params.bits |= MPA_RR_FLAG_REJECT; /* reject */
 		(void)siw_send_mpareqrep(cep, pdata, plen);
 	}

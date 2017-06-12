@@ -55,6 +55,11 @@ static inline struct siw_dev *siw_dev_ofa2siw(struct ib_device *ofa_dev)
 	return container_of(ofa_dev, struct siw_dev, ofa_dev);
 }
 
+static inline struct siw_mr *siw_mr_ofa2siw(struct ib_mr *ofa_mr)
+{
+	return container_of(ofa_mr, struct siw_mr, ofa_mr);
+}
+
 static inline void siw_cq_get(struct siw_cq *cq)
 {
 	kref_get(&cq->hdr.ref);
@@ -104,4 +109,5 @@ extern void siw_pd_put(struct siw_pd *);
 extern void siw_mem_put(struct siw_mem *);
 extern void siw_wqe_put_mem(struct siw_wqe *, enum siw_opcode);
 
+extern int siw_invalidate_stag(struct siw_pd *, u32);
 #endif

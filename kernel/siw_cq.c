@@ -54,11 +54,30 @@ static int siw_wc_op_siw2ofa[SIW_NUM_OPCODES] = {
 	[SIW_OP_SEND]		= IB_WC_SEND,
 	[SIW_OP_SEND_WITH_IMM]	= IB_WC_SEND,
 	[SIW_OP_READ]		= IB_WC_RDMA_READ,
+	[SIW_OP_READ_LOCAL_INV]	= IB_WC_RDMA_READ,
 	[SIW_OP_COMP_AND_SWAP]	= IB_WC_COMP_SWAP,
 	[SIW_OP_FETCH_AND_ADD]	= IB_WC_FETCH_ADD,
 	[SIW_OP_INVAL_STAG]	= IB_WC_LOCAL_INV,
+	[SIW_OP_REG_MR]		= IB_WC_REG_MR,
 	[SIW_OP_RECEIVE]	= IB_WC_RECV,
 	[SIW_OP_READ_RESPONSE]	= -1 /* not used */
+};
+
+
+static struct {
+	enum siw_opcode   siw;
+        enum ib_wc_opcode ofa;
+} map_cqe_status [SIW_NUM_WC_STATUS] = {
+	{SIW_WC_SUCCESS,	IB_WC_SUCCESS},
+	{SIW_WC_LOC_LEN_ERR,	IB_WC_LOC_LEN_ERR},
+	{SIW_WC_LOC_PROT_ERR,	IB_WC_LOC_PROT_ERR},
+	{SIW_WC_LOC_QP_OP_ERR,	IB_WC_LOC_QP_OP_ERR},
+	{SIW_WC_WR_FLUSH_ERR,	IB_WC_WR_FLUSH_ERR},
+	{SIW_WC_BAD_RESP_ERR,	IB_WC_BAD_RESP_ERR},
+	{SIW_WC_LOC_ACCESS_ERR,	IB_WC_LOC_ACCESS_ERR},
+	{SIW_WC_REM_ACCESS_ERR,	IB_WC_REM_ACCESS_ERR},
+	{SIW_WC_REM_INV_REQ_ERR,IB_WC_REM_INV_REQ_ERR},
+	{SIW_WC_GENERAL_ERR,	IB_WC_GENERAL_ERR}
 };
 
 /*
@@ -69,7 +88,7 @@ static void siw_wc_siw2ofa(struct siw_cqe *cqe, struct ib_wc *ofa_wc)
 	memset(ofa_wc, 0, sizeof *ofa_wc);
 
 	ofa_wc->wr_id = cqe->id;
-	ofa_wc->status = cqe->status;
+	ofa_wc->status = map_cqe_status[cqe->status].ofa;
 	ofa_wc->byte_len = cqe->bytes;
 	ofa_wc->qp = &((struct siw_qp *)cqe->qp)->ofa_qp;
 
@@ -131,7 +150,14 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
  */
 void siw_cq_flush(struct siw_cq *cq)
 {
+	struct ib_wc wc;
+
+	int got, total = 0;
+
 	dprint(DBG_CM|DBG_OBJ, "(CQ%d:) Enter\n", OBJ_ID(cq));
 
-	memset(cq->queue, 0, cq->num_cqe * sizeof(struct siw_cqe));
+	do {
+		got = siw_reap_cqe(cq, &wc);
+		total += got;
+	} while (got > 0);
 }
