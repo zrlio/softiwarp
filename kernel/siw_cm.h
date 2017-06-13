@@ -158,15 +158,7 @@ static inline unsigned int get_tcp_mss(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0) || defined(IS_RH_7_2)
-	if (tp->gso_segs)
-		return tp->gso_segs * tp->mss_cache;
-#else
-	if (tp->xmit_size_goal_segs)
-		return tp->xmit_size_goal_segs * tp->mss_cache;
-#endif
-	else
-		return tp->mss_cache;
+	return tp->mss_cache;
 }
 
 #endif
