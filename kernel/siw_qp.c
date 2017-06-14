@@ -152,9 +152,9 @@ struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 } };
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-static void siw_qp_llp_data_ready(struct sock *sk, int flags)
+void siw_qp_llp_data_ready(struct sock *sk, int flags)
 #else
-static void siw_qp_llp_data_ready(struct sock *sk)
+void siw_qp_llp_data_ready(struct sock *sk)
 #endif
 {
 	struct siw_qp		*qp;
@@ -264,7 +264,7 @@ void siw_qp_llp_close(struct siw_qp *qp)
  * socket callback routine informing about newly available send space.
  * Function schedules SQ work for processing SQ items.
  */
-static void siw_qp_llp_write_space(struct sock *sk)
+void siw_qp_llp_write_space(struct sock *sk)
 {
 	struct siw_cep	*cep = sk_to_cep(sk);
 
@@ -287,20 +287,6 @@ static void siw_qp_llp_write_space(struct sock *sk)
 		siw_sq_queue_work(cep->qp);
 #endif
 }
-
-void siw_qp_socket_assoc(struct socket *s, struct siw_qp *qp)
-{
-	struct sock *sk = s->sk;
-
-	write_lock_bh(&sk->sk_callback_lock);
-
-	qp->attrs.llp_stream_handle = s;
-	s->sk->sk_data_ready = siw_qp_llp_data_ready;
-	s->sk->sk_write_space = siw_qp_llp_write_space;
-
-	write_unlock_bh(&sk->sk_callback_lock);
-}
-
 
 static int siw_qp_readq_init(struct siw_qp *qp, int irq_size, int orq_size)
 {
@@ -332,21 +318,6 @@ static int siw_qp_readq_init(struct siw_qp *qp, int irq_size, int orq_size)
 	memset(qp->orq, 0, orq_size * sizeof(struct siw_sqe));
 
 	return 0;
-}
-
-
-static void siw_send_terminate(struct siw_qp *qp)
-{
-	struct iwarp_terminate	pkt;
-
-	memset(&pkt, 0, sizeof pkt);
-	pkt.term_ctrl = cpu_to_be32(((qp->attrs.layer &0xf) >> 28) |
-			((qp->attrs.etype &0xf) >> 24) |
-			((qp->attrs.ecode &0xff) >> 20));
-	/*
-	 * TODO: send TERMINATE
-	 */
-	dprint(DBG_CM, "(QP%d): Todo\n", QP_ID(qp));
 }
 
 
@@ -400,16 +371,75 @@ error:
 	return rv;
 }
 
+/*
+ * Send a non signalled READ or WRITE to peer side as negotiated
+ * with MPAv2 P2P setup protocol. The work request is only created
+ * as a current active WR and does not consume Send Queue space.
+ *
+ * Caller must hold QP state lock.
+ */
+int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
+{
+	struct siw_wqe	*wqe = tx_wqe(qp);
+	unsigned long flags, flags2;
+	int rv = 0;
+
+	lock_sq_rxsave(qp, flags);
+
+	if (unlikely(wqe->wr_status != SR_WR_IDLE)) {
+		unlock_sq_rxsave(qp, flags);
+		return -EIO;
+	}
+	memset(wqe->mem, 0, sizeof *wqe->mem * SIW_MAX_SGE);
+
+	wqe->wr_status = SR_WR_QUEUED;
+	wqe->sqe.flags = 0;
+	wqe->sqe.num_sge = 1;
+	wqe->sqe.sge[0].length = 0;
+	wqe->sqe.sge[0].laddr = 0;
+	wqe->sqe.sge[0].lkey = 0;
+	wqe->sqe.rkey = 0;
+	wqe->sqe.raddr = 0;
+	wqe->processed = 0;
+
+	if (ctrl & MPA_V2_RDMA_WRITE_RTR)
+		wqe->sqe.opcode = SIW_OP_WRITE;
+	else if (ctrl & MPA_V2_RDMA_READ_RTR) {
+		struct siw_sqe	*rreq;
+
+		wqe->sqe.opcode = SIW_OP_READ;
+
+		lock_orq_rxsave(qp, flags2);
+
+		rreq = orq_get_free(qp);
+		if (rreq) {
+			siw_read_to_orq(rreq, &wqe->sqe);
+			qp->orq_put++;
+		} else
+			rv = -EIO;
+
+		unlock_orq_rxsave(qp, flags2);
+	} else
+		rv = -EINVAL;
+
+	if (rv)
+		wqe->wr_status = SR_WR_IDLE;
+
+	unlock_sq_rxsave(qp, flags);
+
+	if (!rv)
+		siw_sq_queue_work(qp);
+
+	return rv;
+}
 
 /*
  * handle all attrs other than state
  */
-int
-siw_qp_modify_nonstate(struct siw_qp *qp, struct siw_qp_attrs *attrs,
-	      enum siw_qp_attr_mask mask)
+static void siw_qp_modify_nonstate(struct siw_qp *qp,
+				  struct siw_qp_attrs *attrs,
+				  enum siw_qp_attr_mask mask)
 {
-	int	rv = 0;
-
 	if (mask & SIW_QP_ATTR_ACCESS_FLAGS) {
 		if (attrs->flags & SIW_RDMA_BIND_ENABLED)
 			qp->attrs.flags |= SIW_RDMA_BIND_ENABLED;
@@ -426,28 +456,13 @@ siw_qp_modify_nonstate(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 		else
 			qp->attrs.flags &= ~SIW_RDMA_READ_ENABLED;
 	}
-
-	if (mask & SIW_QP_ATTR_ETYPE) {
-		qp->attrs.etype = attrs->etype;
-	}
-
-	if (mask & SIW_QP_ATTR_LAYER) {
-		qp->attrs.layer = attrs->layer;
-	}
-
-	if (mask & SIW_QP_ATTR_ECODE) {
-		qp->attrs.ecode = attrs->ecode;
-	}
-
-	return rv;
 }
 
 /*
  * caller holds qp->state_lock
  */
-int
-siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
-	      enum siw_qp_attr_mask mask)
+int siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
+		  enum siw_qp_attr_mask mask)
 {
 	int	drop_conn = 0, rv = 0;
 
@@ -456,12 +471,9 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 
 	dprint(DBG_CM, "(QP%d)\n", QP_ID(qp));
 
-	if (mask != SIW_QP_ATTR_STATE) {
-		rv = siw_qp_modify_nonstate(qp, attrs, mask);
-		/*
-		 * TODO: what else ??
-		 */
-	}
+	if (mask != SIW_QP_ATTR_STATE)
+		siw_qp_modify_nonstate(qp, attrs, mask);
+
 	if (!(mask & SIW_QP_ATTR_STATE))
 		return 0;
 
@@ -581,7 +593,13 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 
 		case SIW_QP_STATE_TERMINATE:
 			qp->attrs.state = SIW_QP_STATE_TERMINATE;
-			siw_send_terminate(qp);
+			/*
+			 * To be extended for flexible error layer,
+			 * type and code.
+			 */
+			siw_send_terminate(qp, RDMAP_ERROR_LAYER_RDMA,
+					   RDMAP_ETYPE_CATASTROPHIC,
+					   0);
 			drop_conn = 1;
 
 			break;
@@ -682,7 +700,7 @@ siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 		break;
 	}
 	if (drop_conn)
-		siw_qp_cm_drop(qp, 1);
+		siw_qp_cm_drop(qp, 0);
 
 	return rv;
 }

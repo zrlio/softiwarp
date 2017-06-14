@@ -349,10 +349,7 @@ enum siw_qp_attr_mask {
 	SIW_QP_ATTR_IRD			= (1 << 4),
 	SIW_QP_ATTR_SQ_SIZE		= (1 << 5),
 	SIW_QP_ATTR_RQ_SIZE		= (1 << 6),
-	SIW_QP_ATTR_MPA			= (1 << 7),
-	SIW_QP_ATTR_ETYPE		= (1 << 8),
-	SIW_QP_ATTR_LAYER		= (1 << 9),
-	SIW_QP_ATTR_ECODE		= (1 << 10)
+	SIW_QP_ATTR_MPA			= (1 << 7)
 };
 
 struct siw_mpa_attrs {
@@ -360,6 +357,7 @@ struct siw_mpa_attrs {
 	__u8	marker_snd; /* always 0, consider support */
 	__u8	crc;
 	__u8	unused;
+	enum mpa_v2_ctrl	v2_ctrl;
 };
 
 struct siw_sk_upcalls {
@@ -408,9 +406,6 @@ struct siw_qp_attrs {
 	enum siw_qp_flags	flags;
 
 	struct socket		*llp_stream_handle;
-	u8			etype;
-	u8			layer;
-	u8			ecode;
 };
 
 enum siw_tx_ctx {
@@ -691,9 +686,10 @@ extern struct siw_dev *siw;
 /* QP general functions */
 int siw_qp_modify(struct siw_qp *, struct siw_qp_attrs *,
 		  enum siw_qp_attr_mask);
-
+int siw_qp_mpa_rts(struct siw_qp *, enum mpa_v2_ctrl);
 void siw_qp_llp_close(struct siw_qp *);
 void siw_qp_cm_drop(struct siw_qp *, int);
+void siw_send_terminate(struct siw_qp *, u8, u8, u8);
 
 
 struct ib_qp *siw_get_ofaqp(struct ib_device *, int);
@@ -715,9 +711,12 @@ int siw_sqe_complete(struct siw_qp *, struct siw_sqe *, u32,
 		     enum siw_wc_status);
 int siw_rqe_complete(struct siw_qp *, struct siw_rqe *, u32,
 		     enum siw_wc_status);
-void siw_sk_assign_rtr_upcalls(struct siw_cep *cep);
-void siw_qp_socket_assoc(struct socket *s, struct siw_qp *qp);
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
+void siw_qp_llp_data_ready(struct sock *, int);
+#else
+void siw_qp_llp_data_ready(struct sock *);
+#endif
+void siw_qp_llp_write_space(struct sock *);
 
 /* SIW user memory management */
 

@@ -92,7 +92,7 @@ static inline u8 __mpa_rr_revision(u16 mpa_rr_bits)
 	return (u8)be16_to_cpu(rev);
 }
 
-enum {
+enum mpa_v2_ctrl {
 	MPA_V2_PEER_TO_PEER	= __cpu_to_be16(0x8000),
 	MPA_V2_ZERO_LENGTH_RTR	= __cpu_to_be16(0x4000),
 	MPA_V2_RDMA_WRITE_RTR	= __cpu_to_be16(0x8000),

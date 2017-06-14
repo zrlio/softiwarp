@@ -58,7 +58,8 @@ enum siw_cep_state {
 
 struct siw_mpa_info {
 	struct mpa_rr		hdr;	/* peer mpa hdr in host byte order */
-	struct mpa_v2_data	enhanced_conn_data;
+	struct mpa_v2_data	v2_ctrl;
+	struct mpa_v2_data	v2_ctrl_req;
 	char			*pdata;
 	int			bytes_rcvd;
 };
@@ -69,10 +70,6 @@ struct siw_llp_info {
 	struct sockaddr_in	raddr;	/* dito, consider removal */
 	struct siw_sk_upcalls	sk_def_upcalls;
 };
-
-#define	SIW_MPAV2_P2P_DISABLED		1
-#define	SIW_MPAV2_RDMA_WRITE_RTR	2
-#define	SIW_MPAV2_RDMA_READ_RTR		3
 
 struct siw_dev;
 
@@ -99,9 +96,7 @@ struct siw_cep {
 	struct siw_mpa_info	mpa;
 	int			ord;
 	int			ird;
-	int			revision;
-	int			p2ptype;
-	int			enhanced_rdma_conn_est;
+	bool			enhanced_rdma_conn_est;
 	int			sk_error; /* not (yet) used XXX */
 
 	/* Saved upcalls of socket llp.sock */
