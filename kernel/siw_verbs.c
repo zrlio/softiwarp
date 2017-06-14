@@ -1736,9 +1736,10 @@ int siw_map_mr_sg(struct ib_mr *ofa_mr, struct scatterlist *sl, int num_sle,
 	}
 
 	for_each_sg(sl, slp, num_sle, i) {
-		if (sg_dma_len(slp) == 0)
+		if (sg_dma_len(slp) == 0) {
+			pr_warn("siw_map_mr_sg: empty sge\n");
 			return -EINVAL;
-
+		}
 		if (i == 0) {
 			pble->addr = sg_dma_address(slp);
 			pble->size = sg_dma_len(slp);

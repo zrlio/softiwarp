@@ -792,10 +792,10 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 	    (req->params.bits & MPA_RR_FLAG_ENHANCED)) {
 		struct mpa_v2_data *v2 = (struct mpa_v2_data *)cep->mpa.pdata;
 
-		cep->ird = ntohs(v2->ird) & MPA_IRD_ORD_MASK;
-		cep->ird = min(cep->ird, SIW_MAX_IRD);
-		cep->ord = ntohs(v2->ord) & MPA_IRD_ORD_MASK;
-		cep->ord = min(cep->ord, SIW_MAX_ORD);
+		cep->ord = ntohs(v2->ird) & MPA_IRD_ORD_MASK;
+		cep->ord = min(cep->ord, SIW_MAX_IRD);
+		cep->ird = ntohs(v2->ord) & MPA_IRD_ORD_MASK;
+		cep->ird = min(cep->ird, SIW_MAX_ORD);
 
 		cep->mpa.v2_ctrl.ird = htons(cep->ird) | MPA_V2_PEER_TO_PEER;
 		cep->mpa.v2_ctrl.ord = htons(cep->ord);

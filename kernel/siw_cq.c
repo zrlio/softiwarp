@@ -123,7 +123,7 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 	cqe = &cq->queue[cq->cq_get % cq->num_cqe];
 	if (cqe->flags & SIW_WQE_VALID) {
 		siw_wc_siw2ofa(cqe, ofa_wc);
-		
+
 		dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d, p: %p\n",
 			QP_ID((struct siw_qp *)cqe->qp), OBJ_ID(cq),
 			cqe->opcode, cqe);

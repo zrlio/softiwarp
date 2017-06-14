@@ -756,7 +756,7 @@ static struct siw_wqe *siw_orqe_get(struct siw_qp *qp)
 
 	smp_mb();
 
-	orqe = &qp->orq[qp->orq_get % qp->attrs.orq_size];
+	orqe = orq_get_current(qp);
 	if (_load_shared(orqe->flags) & SIW_WQE_VALID) {
 		wqe = rx_wqe(qp);
 		wqe->sqe.id = orqe->id;
@@ -868,7 +868,6 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	rctx->fpdu_part_rcvd += rv;
 
 	wqe->processed += rv;
-
 	if (!rctx->fpdu_part_rem) {
 		rctx->ddp_to += rctx->fpdu_part_rcvd;
 		return 0;
@@ -880,9 +879,6 @@ done:
 
 int siw_proc_unsupp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	pr_info("QP[%d]: unrecognized packet received, %d bytes payload\n",
-		QP_ID(qp), rctx->fpdu_part_rem);
-
 	return -ECONNRESET;
 }
 
@@ -1173,7 +1169,6 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 			break;
 
 		rctx->ddp_msn[RDMAP_UNTAGGED_QN_RDMA_READ]++;
-
 		if (error != 0) {
 			if  (rctx->state == SIW_GET_HDR || error == -ENODATA)
 				/*  eventual RREQ in ORQ left untouched */
@@ -1185,11 +1180,9 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 			/*
 			 * Handle any STag invalidation request
 			 */
-			struct siw_sqe *req = orq_get_current(qp);
-
-			if (req->opcode == SIW_OP_READ_LOCAL_INV) {
+			if (opcode == SIW_OP_READ_LOCAL_INV) {
 				rv = siw_invalidate_stag(qp->pd,
-							 req->sge[0].lkey);
+							 wqe->sqe.sge[0].lkey);
 				if (rv && wc_status == SIW_WC_SUCCESS) {
 					wc_status = SIW_WC_GENERAL_ERR;
 					error = rv;

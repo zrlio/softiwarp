@@ -492,14 +492,12 @@ int siw_invalidate_stag(struct siw_pd *pd, u32 stag)
 	struct siw_mem *mem = siw_mem_id2obj(pd->hdr.sdev, stag_idx);
 	int rv = 0;
 
-	dprint(DBG_MM, ": STag %u Enter\n", stag_idx);
-
 	if (unlikely(!mem)) {
-		dprint(DBG_MM, ": STag %u unknown\n", stag_idx);
+		dprint(DBG_ON, ": STag %u unknown\n", stag_idx);
 		return -EINVAL;
 	}
 	if (unlikely(siw_mem2mr(mem)->pd != pd)) {
-		dprint(DBG_MM, ": PD mismatch for STag %u\n", stag_idx);
+		dprint(DBG_ON, ": PD mismatch for STag %u\n", stag_idx);
 		rv = -EINVAL;
 		goto out;
 	}
@@ -509,7 +507,7 @@ int siw_invalidate_stag(struct siw_pd *pd, u32 stag)
 	 */
 	mem->stag_valid = 0;
 
-	dprint(DBG_MM, ": STag now invalid: %u\n", stag_idx);
+	dprint(DBG_MM, ": STag %u now invalid\n", stag_idx);
 out:
 	siw_mem_put(mem);
 	return rv;
