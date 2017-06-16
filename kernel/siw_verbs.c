@@ -988,6 +988,7 @@ long siw_doorbell(u32 resource, u32 id, u32 arg)
 	}
 }
 #endif
+
 /*
  * siw_post_send()
  *
@@ -1062,6 +1063,7 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 
 		if (wr->send_flags & IB_SEND_FENCE)
 			sqe->flags |= SIW_WQE_READ_FENCE;
+
 
 		switch (wr->opcode) {
 
@@ -1472,17 +1474,15 @@ int siw_req_notify_cq(struct ib_cq *ofa_cq, enum ib_cq_notify_flags flags)
 {
 	struct siw_cq	 *cq  = siw_cq_ofa2siw(ofa_cq);
 
-	dprint(DBG_EH, "(CQ%d:) flags: 0x%8x\n", OBJ_ID(cq), flags);
+	dprint(DBG_EH|DBG_CQ, "(CQ%d:) flags: 0x%8x\n", OBJ_ID(cq), flags);
 
 	if ((flags & IB_CQ_SOLICITED_MASK) == IB_CQ_SOLICITED)
 		smp_store_mb(*cq->notify, SIW_NOTIFY_SOLICITED);
 	else
 		smp_store_mb(*cq->notify, SIW_NOTIFY_ALL);
 
-	/* TODO
 	if (flags & IB_CQ_REPORT_MISSED_EVENTS)
-		return atomic_read(&cq->qlen);
-	*/
+		return cq->cq_put - cq->cq_get;
 	return 0;
 }
 

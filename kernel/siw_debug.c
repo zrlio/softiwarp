@@ -362,7 +362,6 @@ void siw_print_qp_attr_mask(enum ib_qp_attr_mask attr_mask, char *msg)
 	pr_info("-------- %s -(end)-\n", msg);
 }
 
-
 void siw_print_hdr(union iwarp_hdrs *hdr, int qp_id, char *msg)
 {
 	switch (__rdmap_opcode(&hdr->ctrl)) {

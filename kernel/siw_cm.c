@@ -56,11 +56,11 @@
 #include "siw_cm.h"
 #include "siw_obj.h"
 
-static bool mpa_crc_strict = 1;
+static bool mpa_crc_strict = true;
 module_param(mpa_crc_strict, bool, 0644);
 static bool mpa_crc_required;
 module_param(mpa_crc_required, bool, 0644);
-static bool tcp_nodelay = 0;
+static bool tcp_nodelay = false;
 module_param(tcp_nodelay, bool, 0644);
 static u_char  mpa_version = MPA_REVISION_2;
 module_param(mpa_version, byte, 0644);

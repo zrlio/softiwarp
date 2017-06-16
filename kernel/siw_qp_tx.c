@@ -1049,22 +1049,22 @@ static int siw_fastreg_mr(struct siw_pd *pd, struct siw_sqe *sqe)
 	dprint(DBG_MM, ": STag %u (%x) Enter\n", sqe->rkey >> 8, sqe->rkey);
 
 	if (!mem) {
-		dprint(DBG_MM, ": STag %u unknown\n", sqe->rkey >> 8);
+		dprint(DBG_ON, ": STag %u unknown\n", sqe->rkey >> 8);
 		return -EINVAL;
 	}
 	mr = siw_mem2mr(mem);
 	if (&mr->ofa_mr != (void *)sqe->ofa_mr) {
-		dprint(DBG_MM, ": STag %u: unexpected MR\n", sqe->rkey >> 8);
+		dprint(DBG_ON, ": STag %u: unexpected MR\n", sqe->rkey >> 8);
 		rv = -EINVAL;
 		goto out;
 	}
 	if (mr->pd != pd) {
-		dprint(DBG_MM, ": PD mismatch: %p != %p\n", mr->pd, pd);
+		dprint(DBG_ON, ": PD mismatch: %p != %p\n", mr->pd, pd);
 		rv = -EINVAL;
 		goto out;
 	}
 	if (mem->stag_valid) {
-		dprint(DBG_MM, ": STag already valid: %u\n",
+		dprint(DBG_ON, ": STag already valid: %u\n",
 			sqe->rkey >> 8);
 		rv = -EINVAL;
 		goto out;

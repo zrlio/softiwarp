@@ -845,11 +845,13 @@ static inline int siw_orq_empty(struct siw_qp *qp)
 	return qp->orq[qp->orq_get % qp->attrs.orq_size].flags == 0 ? 1 : 0;
 }
 
-static inline struct siw_sqe *irq_get_free(struct siw_qp *qp)
+static inline struct siw_sqe *irq_alloc_free(struct siw_qp *qp)
 {
 	struct siw_sqe *irq_e = &qp->irq[qp->irq_put % qp->attrs.irq_size];
-	if (irq_e->flags == 0)
+	if (irq_e->flags == 0) {
+		qp->irq_put++;
 		return irq_e;
+	}
 	return NULL;
 }
 

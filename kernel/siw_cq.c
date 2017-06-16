@@ -124,9 +124,10 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 	if (cqe->flags & SIW_WQE_VALID) {
 		siw_wc_siw2ofa(cqe, ofa_wc);
 
-		dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d, p: %p\n",
+		dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d, p: %p "
+			" at idx %d\n",
 			QP_ID((struct siw_qp *)cqe->qp), OBJ_ID(cq),
-			cqe->opcode, cqe);
+			cqe->opcode, cqe, cq->cq_get % cq->num_cqe);
 
 		if (cq->kernel_verbs)
 			siw_qp_put(cqe->qp);

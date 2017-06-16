@@ -712,7 +712,7 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		tx_work->wr_status = SR_WR_QUEUED;
 		resp = &tx_work->sqe;
 	} else {
-		resp = irq_get_free(qp);
+		resp = irq_alloc_free(qp);
 		run_sq = 0;
 	}
 	if (likely(resp)) {
@@ -738,8 +738,6 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 	if (run_sq)
 		siw_sq_queue_work(qp);
-	else if (rv == 0)
-		qp->irq_put++;
 
 	return rv;
 }
