@@ -128,12 +128,12 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 			unsigned int off =  sge->laddr & ~PAGE_MASK;
 			struct page *p;
 			char *buffer;
+			int pbl_idx = 0;
 
 			if (!mr->mem.is_pbl)
 				p = siw_get_upage(mr->umem, sge->laddr);
 			else
-				p = siw_get_pblpage(mr, sge->laddr,
-						    &c_tx->pbl_idx);
+				p = siw_get_pblpage(mr, sge->laddr, &pbl_idx);
 
 			BUG_ON(!p);
 
@@ -143,6 +143,7 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 				memcpy(payload, buffer + off, bytes);
 				kunmap_atomic(buffer);
 			} else {
+				int pbl_idx = 0;
 				unsigned long part = bytes - (PAGE_SIZE - off);
 
 				memcpy(payload, buffer + off, part);
@@ -155,7 +156,7 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 				else
 					p = siw_get_pblpage(mr,
 							    sge->laddr + part,
-							    &c_tx->pbl_idx);
+							    &pbl_idx);
 				BUG_ON(!p);
 
 				buffer = kmap_atomic(p);
