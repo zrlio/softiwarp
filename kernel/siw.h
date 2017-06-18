@@ -457,6 +457,8 @@ struct siw_iwarp_rx {
 	int			skb_offset;   /* offset in skb */
 	int			skb_copied;   /* processed bytes in skb */
 
+	int			pbl_idx;	/* Index into current PBL */
+
 	int			sge_idx;	/* current sge in rx */
 	unsigned int		sge_off;	/* already rcvd in curr. sge */
 
@@ -553,6 +555,7 @@ struct siw_iwarp_tx {
 
 	struct siw_wqe		wqe_active;
 
+	int			pbl_idx;	/* Index into current PBL */
 	int			sge_idx;	/* current sge in tx */
 	u32			sge_off;	/* already sent in curr. sge */
 	int			in_syscall;	/* TX out of user context */

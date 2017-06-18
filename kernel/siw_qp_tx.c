@@ -128,12 +128,12 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 			unsigned int off =  sge->laddr & ~PAGE_MASK;
 			struct page *p;
 			char *buffer;
-			int index = 0;
 
 			if (!mr->mem.is_pbl)
 				p = siw_get_upage(mr->umem, sge->laddr);
 			else
-				p = siw_get_pblpage(mr, sge->laddr, &index);
+				p = siw_get_pblpage(mr, sge->laddr,
+						    &c_tx->pbl_idx);
 
 			BUG_ON(!p);
 
@@ -155,7 +155,7 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 				else
 					p = siw_get_pblpage(mr,
 							    sge->laddr + part,
-							    &index);
+							    &c_tx->pbl_idx);
 				BUG_ON(!p);
 
 				buffer = kmap_atomic(p);
@@ -332,6 +332,7 @@ static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 	c_tx->ctrl_len += MPA_CRC_SIZE;
 	c_tx->sge_idx = 0;
 	c_tx->sge_off = 0;
+	c_tx->pbl_idx = 0;
 
 	/*
 	 * Allow direct sending out of user buffer if WR is non signalled
@@ -526,7 +527,8 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 				hdr_len = 0,
 				trl_len = 0,
 				sge_off = c_tx->sge_off,
-				sge_idx = c_tx->sge_idx;
+				sge_idx = c_tx->sge_idx,
+				pbl_idx = c_tx->pbl_idx;
 
 	if (c_tx->state == SIW_SEND_HDR) {
 		if (c_tx->use_sendpage) {
@@ -551,7 +553,6 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 	while (data_len) { /* walk the list of SGE's */
 		unsigned int	sge_len = min(sge->length - sge_off, data_len);
 		unsigned int	fp_off = (sge->laddr + sge_off) & ~PAGE_MASK;
-		int pbl_idx = 0;
 
 		BUG_ON(!sge_len);
 
@@ -708,6 +709,7 @@ sge_done:
 			/* Save the current state for next tx */
 			c_tx->sge_idx = sge_idx;
 			c_tx->sge_off = sge_off;
+			c_tx->pbl_idx = pbl_idx;
 		}
 		rv -= data_len;
 

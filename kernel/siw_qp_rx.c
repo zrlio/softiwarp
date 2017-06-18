@@ -219,11 +219,12 @@ static int siw_rx_pbl(struct siw_iwarp_rx *rctx, struct siw_mr *mr,
 {
 	struct siw_pbl *pbl = mr->pbl;
 	u64 offset = addr - mr->mem.va;
-	int copied = 0, idx = 0;
+	int copied = 0;
 
 	while (len) {
 		int bytes;
-		u64 buf_addr = siw_pbl_get_buffer(pbl, offset, &bytes, &idx);
+		u64 buf_addr = siw_pbl_get_buffer(pbl, offset, &bytes,
+						  &rctx->pbl_idx);
 		if (buf_addr == 0)
 			break;
 		bytes = min(bytes, len);
@@ -258,7 +259,8 @@ static inline int siw_rresp_check_ntoh(struct siw_iwarp_rx *rctx)
 
 	if (rctx->first_ddp_seg) {
 		rctx->ddp_stag = wqe->sqe.sge[0].lkey;
-		rctx->ddp_to   = wqe->sqe.sge[0].laddr;
+		rctx->ddp_to = wqe->sqe.sge[0].laddr;
+		rctx->pbl_idx = 0;
 	}
 	if (rctx->ddp_stag != sink_stag) {
 		dprint(DBG_RX|DBG_ON,
@@ -310,7 +312,8 @@ static inline int siw_write_check_ntoh(struct siw_iwarp_rx *rctx)
 
 	if (rctx->first_ddp_seg) {
 		rctx->ddp_stag = sink_stag;
-		rctx->ddp_to   = sink_to;
+		rctx->ddp_to = sink_to;
+		rctx->pbl_idx = 0;
 	} else {
 		if (rctx->ddp_stag != sink_stag) {
 			dprint(DBG_RX|DBG_ON,
@@ -382,6 +385,7 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		/* initialize user memory write position */
 		rctx->sge_idx = 0;
 		rctx->sge_off = 0;
+		rctx->pbl_idx = 0;
 		/* only valid for SEND_INV and SEND_SE_INV operations */
 		rctx->inval_stag = be32_to_cpu(send->inval_stag);
 	}
@@ -518,6 +522,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			/* just skip empty sge's */
 			rctx->sge_idx++;
 			rctx->sge_off = 0;
+			rctx->pbl_idx = 0;
 			continue;
 		}
 		sge_bytes = min(data_bytes, sge->length - rctx->sge_off);
@@ -555,6 +560,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		if (rctx->sge_off == sge->length) {
 			rctx->sge_idx++;
 			rctx->sge_off = 0;
+			rctx->pbl_idx = 0;
 		}
 		data_bytes -= rv;
 		rcvd_bytes += rv;

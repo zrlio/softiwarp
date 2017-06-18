@@ -119,6 +119,12 @@ void siw_pbl_free(struct siw_pbl *pbl)
 	kfree(pbl);
 }
 
+/*
+ * Get physical address backed by PBL element. Address is referenced
+ * by linear byte offset into list of variably sized PB elements.
+ * Optionally, provide remaining len within current element, and
+ * current PBL index for later resume at same element.
+ */
 u64 siw_pbl_get_buffer(struct siw_pbl *pbl, u64 off, int *len, int *idx)
 {
 	int i = idx ? *idx : 0;
@@ -136,13 +142,15 @@ u64 siw_pbl_get_buffer(struct siw_pbl *pbl, u64 off, int *len, int *idx)
 		}
 		i++;
 	}
+	if (len)
+		*len = 0;
 	return 0;
 }
 
 struct siw_pbl *siw_pbl_alloc(u32 num_buf)
 {
 	struct siw_pbl *pbl;
-	int buf_size = sizeof(struct siw_pbl);
+	int buf_size = sizeof *pbl;
 
 	if (num_buf == 0)
 		return ERR_PTR(-EINVAL);
