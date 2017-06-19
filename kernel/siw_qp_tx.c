@@ -143,7 +143,6 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 				memcpy(payload, buffer + off, bytes);
 				kunmap_atomic(buffer);
 			} else {
-				int pbl_idx = 0;
 				unsigned long part = bytes - (PAGE_SIZE - off);
 
 				memcpy(payload, buffer + off, part);
