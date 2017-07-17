@@ -68,40 +68,6 @@ void siw_idr_release(struct siw_dev *sdev)
 	idr_destroy(&sdev->mem_idr);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 9, 0)
-static inline int siw_add_obj(spinlock_t *lock, struct idr *idr,
-			      struct siw_objhdr *obj)
-{
-	u32		pre_id, id;
-	unsigned long	flags;
-	int		rv;
-
-	get_random_bytes(&pre_id, sizeof pre_id);
-	pre_id &= 0xffff;
-again:
-	do {
-		if (!(idr_pre_get(idr, GFP_KERNEL)))
-			return -ENOMEM;
-
-		spin_lock_irqsave(lock, flags);
-		rv = idr_get_new_above(idr, obj, pre_id, &id);
-		spin_unlock_irqrestore(lock, flags);
-
-	} while  (rv == -EAGAIN);
-
-	if (rv == 0) {
-		siw_objhdr_init(obj);
-		obj->id = id;
-		dprint(DBG_OBJ, "(OBJ%d): IDR New Object\n", id);
-	} else if (rv == -ENOSPC && pre_id != 1) {
-		pre_id = 1;
-		goto again;
-	} else {
-		dprint(DBG_OBJ|DBG_ON, "(OBJ??): IDR New Object failed!\n");
-	}
-	return rv;
-}
-#else
 static inline int siw_add_obj(spinlock_t *lock, struct idr *idr,
 			      struct siw_objhdr *obj)
 {
@@ -130,7 +96,6 @@ again:
 	}
 	return id > 0 ? 0 : id;
 }
-#endif
 
 static inline struct siw_objhdr *siw_get_obj(struct idr *idr, int id)
 {
@@ -217,62 +182,6 @@ int siw_pd_add(struct siw_dev *sdev, struct siw_pd *pd)
 	return rv;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 9, 0)
-/*
- * Stag lookup is based on its index part only (24 bits)
- * It is assumed that the idr_get_new_above(,,1,) function will
- * always return a new id within this range (0x1...0xffffff),
- * if one is available.
- * The code avoids special Stag of zero and tries to randomize
- * STag values.
- */
-int siw_mem_add(struct siw_dev *sdev, struct siw_mem *m)
-{
-	u32		id, pre_id;
-	unsigned long	flags;
-	int		rv;
-
-	do {
-		get_random_bytes(&pre_id, sizeof pre_id);
-		pre_id &= 0xffff;
-	} while (pre_id == 0);
-again:
-	do {
-		if (!(idr_pre_get(&sdev->mem_idr, GFP_KERNEL)))
-			return -ENOMEM;
-
-		spin_lock_irqsave(&sdev->idr_lock, flags);
-		rv = idr_get_new_above(&sdev->mem_idr, m, pre_id, &id);
-		spin_unlock_irqrestore(&sdev->idr_lock, flags);
-
-	} while (rv == -EAGAIN);
-
-	if (rv == -ENOSPC || (rv == 0 && id > SIW_STAG_MAX)) {
-		if (rv == 0) {
-			spin_lock_irqsave(&sdev->idr_lock, flags);
-			idr_remove(&sdev->mem_idr, id);
-			spin_unlock_irqrestore(&sdev->idr_lock, flags);
-		}
-		if (pre_id == 1) {
-			dprint(DBG_OBJ|DBG_MM|DBG_ON,
-				"(IDR): New Object failed: %d\n", pre_id);
-			return -ENOSPC;
-		}
-		pre_id = 1;
-		goto again;
-	} else if (rv) {
-		dprint(DBG_OBJ|DBG_MM|DBG_ON,
-			"(IDR%d): New Object failed: rv %d\n", id, rv);
-		return rv;
-	}
-	siw_objhdr_init(&m->hdr);
-	m->hdr.id = id;
-	m->hdr.sdev = sdev;
-	dprint(DBG_OBJ|DBG_MM, "(IDR%d): New Object\n", id);
-
-	return 0;
-}
-#else
 /*
  * Stag lookup is based on its index part only (24 bits).
  * The code avoids special Stag of zero and tries to randomize
@@ -308,7 +217,6 @@ again:
 
 	return 0;
 }
-#endif
 
 void siw_remove_obj(spinlock_t *lock, struct idr *idr,
 		      struct siw_objhdr *hdr)

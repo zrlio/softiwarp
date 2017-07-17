@@ -148,11 +148,7 @@ static void siw_device_register(struct siw_dev *sdev)
 	int rv, i;
 	static int dev_id = 1;
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 34) 
 	rv = ib_register_device(ofa_dev, NULL);
-#else
-	rv = ib_register_device(ofa_dev);
-#endif
 	if (rv) {
 		dprint(DBG_DM|DBG_ON, "(dev=%s): "
 		       "ib_register_device failed: rv=%d\n", ofa_dev->name, rv);
@@ -275,14 +271,9 @@ static int siw_tx_qualified(int cpu)
 		return 1;
 
 	for (i = 0; i < NR_CPUS; i++) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 39) 
-		if (tx_cpu_list[i] &&
-		    simple_strtoull(tx_cpu_list[i], NULL, 10) == cpu)
-#else
 		int c;
 		if (tx_cpu_list[i] && kstrtoint(tx_cpu_list[i], 0, &c) == 0 &&
 		    cpu == c)
-#endif
 			return 1;
 	}
 	return 0;
@@ -350,12 +341,8 @@ static void siw_rq_flush_ofa(struct ib_qp *ofa_qp) {
 	 siw_rq_flush(siw_qp_ofa2siw(ofa_qp));
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
 static struct ib_ah *siw_create_ah(struct ib_pd *pd, struct ib_ah_attr *attr,
 			    struct ib_udata *udata)
-#else
-static struct ib_ah *siw_create_ah(struct ib_pd *pd, struct ib_ah_attr *attr)
-#endif
 {
 	return ERR_PTR(-ENOSYS);
 }
@@ -449,9 +436,7 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 #endif
 	ofa_dev->query_device = siw_query_device;
 	ofa_dev->query_port = siw_query_port;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0) || defined(IS_RH_7_2)
 	ofa_dev->get_port_immutable = siw_get_port_immutable;
-#endif
 	ofa_dev->query_qp = siw_query_qp;
 	ofa_dev->modify_port = siw_modify_port;
 	ofa_dev->query_pkey = siw_query_pkey;
@@ -559,11 +544,7 @@ out:
 static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 			    void *arg)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 11, 0)
-	struct net_device	*netdev = arg;
-#else
 	struct net_device	*netdev = netdev_notifier_info_to_dev(arg);
-#endif
 	struct in_device	*in_dev;
 	struct siw_dev		*sdev;
 

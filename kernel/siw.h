@@ -714,11 +714,7 @@ int siw_sqe_complete(struct siw_qp *, struct siw_sqe *, u32,
 		     enum siw_wc_status);
 int siw_rqe_complete(struct siw_qp *, struct siw_rqe *, u32,
 		     enum siw_wc_status);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-void siw_qp_llp_data_ready(struct sock *, int);
-#else
 void siw_qp_llp_data_ready(struct sock *);
-#endif
 void siw_qp_llp_write_space(struct sock *);
 
 /* SIW user memory management */

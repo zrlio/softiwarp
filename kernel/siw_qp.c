@@ -151,11 +151,7 @@ struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1] = { {
 	.proc_data = siw_proc_terminate
 } };
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-void siw_qp_llp_data_ready(struct sock *sk, int flags)
-#else
 void siw_qp_llp_data_ready(struct sock *sk)
-#endif
 {
 	struct siw_qp		*qp;
 

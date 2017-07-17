@@ -101,11 +101,7 @@ struct siw_cep {
 
 	/* Saved upcalls of socket llp.sock */
 	void    (*sk_state_change)(struct sock *sk);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-	void    (*sk_data_ready)(struct sock *sk, int bytes);
-#else
 	void    (*sk_data_ready)(struct sock *sk);
-#endif
 	void    (*sk_write_space)(struct sock *sk);
 	void    (*sk_error_report)(struct sock *sk);
 };
@@ -161,13 +157,8 @@ static inline unsigned int get_tcp_mss(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0) || defined(IS_RH_7_2)
 	if (tp->gso_segs)
 		return tp->gso_segs * tp->mss_cache;
-#else
-	if (tp->xmit_size_goal_segs)
-		return tp->xmit_size_goal_segs * tp->mss_cache;
-#endif
 	else
 		return tp->mss_cache;
 }

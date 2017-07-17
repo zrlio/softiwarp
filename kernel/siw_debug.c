@@ -52,11 +52,7 @@
 #include "siw_cm.h"
 #include "siw_obj.h"
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0)
-#define FDENTRY(f) (f->f_dentry)
-#else
 #define FDENTRY(f) (f->f_path.dentry)
-#endif
 
 
 static struct dentry *siw_debugfs;

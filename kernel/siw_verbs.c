@@ -351,7 +351,6 @@ int siw_query_port(struct ib_device *ofa_dev, u8 port,
 	return 0;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0) || defined(IS_RH_7_2)
 int siw_get_port_immutable(struct ib_device *ofa_dev, u8 port,
 			   struct ib_port_immutable *port_immutable)
 {
@@ -367,7 +366,6 @@ int siw_get_port_immutable(struct ib_device *ofa_dev, u8 port,
 
 	return 0;
 }
-#endif
 
 int siw_query_pkey(struct ib_device *ofa_dev, u8 port, u16 idx, u16 *pkey)
 {
@@ -457,17 +455,11 @@ void siw_qp_put_ref(struct ib_qp *ofa_qp)
 	siw_qp_put(qp);
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0) || defined(IS_RH_7_2)
 int siw_no_mad(struct ib_device *ofa_dev, int flags, u8 port,
 	       const struct ib_wc *wc, const struct ib_grh *grh,
 	       const struct ib_mad_hdr *in_mad, size_t in_mad_size,
 	       struct ib_mad_hdr *out_mad, size_t *out_mad_size,
 	       u16 *outmad_pkey_index)
-#else
-int siw_no_mad(struct ib_device *ofa_dev, int flags, u8 port,
-	       struct ib_wc *wc, struct ib_grh *grh,
-	       struct ib_mad *in_mad, struct ib_mad *out_mad)
-#endif
 {
 	return -ENOSYS;
 }
@@ -1328,25 +1320,15 @@ int siw_destroy_cq(struct ib_cq *ofa_cq)
  * @udata:	used to provide CQ ID back to user.
  */
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0) || defined(IS_RH_7_2)
 struct ib_cq *siw_create_cq(struct ib_device *ofa_dev,
 			    const struct ib_cq_init_attr *attr,
 			    struct ib_ucontext *ib_context,
 			    struct ib_udata *udata)
-#else
-struct ib_cq *siw_create_cq(struct ib_device *ofa_dev, int size,
-			    int vec /* unused */,
-			    struct ib_ucontext *ib_context,
-			    struct ib_udata *udata)
-#endif
 {
 	struct siw_cq			*cq = NULL;
 	struct siw_dev			*sdev = siw_dev_ofa2siw(ofa_dev);
 	struct siw_uresp_create_cq	uresp;
-	int rv;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0) || defined(IS_RH_7_2)
-	int size = attr->cqe;
-#endif
+	int rv, size = attr->cqe;
 
 	if (!ofa_dev) {
 		pr_warn("NO OFA device\n");

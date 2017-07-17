@@ -54,7 +54,6 @@ extern struct ib_ucontext *siw_alloc_ucontext(struct ib_device *,
 					      struct ib_udata *);
 extern int siw_dealloc_ucontext(struct ib_ucontext *);
 extern int siw_query_port(struct ib_device *, u8, struct ib_port_attr *);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0) || defined(IS_RH_7_2)
 extern int siw_get_port_immutable(struct ib_device *, u8,
 				  struct ib_port_immutable *);
 extern int siw_query_device(struct ib_device *, struct ib_device_attr *,
@@ -65,13 +64,6 @@ extern struct ib_cq *siw_create_cq(struct ib_device *,
 int siw_no_mad(struct ib_device *, int, u8, const struct ib_wc *,
 	       const struct ib_grh *, const struct ib_mad_hdr *, size_t,
 	       struct ib_mad_hdr *, size_t *, u16 *);
-#else
-extern int siw_query_device(struct ib_device *, struct ib_device_attr *);
-extern struct ib_cq *siw_create_cq(struct ib_device *, int, int,
-				   struct ib_ucontext *, struct ib_udata *);
-int siw_no_mad(struct ib_device *, int, u8, struct ib_wc *, struct ib_grh *,
-	       struct ib_mad *, struct ib_mad *);
-#endif
 extern int siw_query_port(struct ib_device *, u8, struct ib_port_attr *);
 extern int siw_query_pkey(struct ib_device *, u8, u16, u16 *);
 extern int siw_query_gid(struct ib_device *, u8, int, union ib_gid *);
