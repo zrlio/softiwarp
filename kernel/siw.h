@@ -608,48 +608,6 @@ struct siw_qp {
 	struct siw_sq_work	sq_work;
 };
 
-#define lock_sq(qp)	spin_lock(&qp->sq_lock)
-#define unlock_sq(qp)	spin_unlock(&qp->sq_lock)
-
-#ifdef LOCK_WO_FLAG
-#define lock_sq_rxsave(qp, flags) spin_lock_bh(&qp->sq_lock)
-#define unlock_sq_rxsave(qp, flags) spin_unlock_bh(&qp->sq_lock)
-#else
-#define lock_sq_rxsave(qp, flags) spin_lock_irqsave(&qp->sq_lock, flags)
-#define unlock_sq_rxsave(qp, flags) spin_unlock_irqrestore(&qp->sq_lock, flags)
-#endif
-
-#define lock_rq(qp)	spin_lock(&qp->rq_lock)
-#define unlock_rq(qp)	spin_unlock(&qp->rq_lock)
-
-#define lock_rq_rxsave(qp, flags) spin_lock_irqsave(&qp->rq_lock, flags)
-#define unlock_rq_rxsave(qp, flags) spin_unlock_irqrestore(&qp->rq_lock, flags)
-
-#define lock_srq(srq)	spin_lock(&srq->lock)
-#define unlock_srq(srq)	spin_unlock(&srq->lock)
-
-#define lock_srq_rxsave(srq, flags) spin_lock_irqsave(&srq->lock, flags)
-#define unlock_srq_rxsave(srq, flags) spin_unlock_irqrestore(&srq->lock, flags)
-
-#define lock_cq(cq)	spin_lock(&cq->lock)
-#define unlock_cq(cq)	spin_unlock(&cq->lock)
-
-#define lock_cq_rxsave(cq, flags)	spin_lock_irqsave(&cq->lock, flags)
-#define unlock_cq_rxsave(cq, flags)\
-	spin_unlock_irqrestore(&cq->lock, flags)
-
-#define lock_orq(qp)	spin_lock(&qp->orq_lock)
-#define unlock_orq(qp)	spin_unlock(&qp->orq_lock)
-
-#ifdef LOCK_WO_FLAG
-#define lock_orq_rxsave(qp, flags)	spin_lock_bh(&qp->orq_lock)
-#define unlock_orq_rxsave(qp, flags)	spin_unlock_bh(&qp->orq_lock)
-#else
-#define lock_orq_rxsave(qp, flags)	spin_lock_irqsave(&qp->orq_lock, flags)
-#define unlock_orq_rxsave(qp, flags)\
-	spin_unlock_irqrestore(&qp->orq_lock, flags)
-#endif
-
 #define RX_QP(rx)		container_of(rx, struct siw_qp, rx_ctx)
 #define TX_QP(tx)		container_of(tx, struct siw_qp, tx_ctx)
 #define QP_ID(qp)		((qp)->hdr.id)
@@ -664,17 +622,8 @@ struct siw_qp {
 #define tx_type(wqe)		((wqe)->sqe.opcode)
 #define rx_type(wqe)		((wqe)->rqe.opcode)
 #define tx_flags(wqe)		((wqe)->sqe.flags)
-#define rx_flags(wqe)		((wqe)->rqe.flags)
-#define list_entry_wqe(pos)	list_entry(pos, struct siw_wqe, list)
-#define list_first_wqe(pos)	list_first_entry(pos, struct siw_wqe, list)
 
-#define TX_ACTIVE(qp)		(tx_wqe(qp).status != SIW_WR_IDLE)
-#define TX_ACTIVE_RRESP(qp)	(TX_ACTIVE(qp) &&\
-			tx_type(tx_wqe(qp)) == SIW_OP_READ_RESP)
-
-#define TX_IDLE(qp)		(!TX_ACTIVE(qp) && SQ_EMPTY(qp) && \
-				IRQ_EMPTY(qp) && ORQ_EMPTY(qp))
-
+#define tx_more_wqe(qp)		(!siw_sq_empty(qp) || !siw_irq_empty(qp))
 
 struct iwarp_msg_info {
 	int			hdr_len;
@@ -858,9 +807,6 @@ static inline int siw_irq_empty(struct siw_qp *qp)
 {
 	return qp->irq[qp->irq_get % qp->attrs.irq_size].flags == 0;
 }
-
-#define tx_more_wqe(qp)		(!siw_sq_empty(qp) || !siw_irq_empty(qp))
-
 
 static inline struct siw_mr *siw_mem2mr(struct siw_mem *m)
 {

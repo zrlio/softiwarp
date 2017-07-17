@@ -414,7 +414,7 @@ static struct siw_wqe *siw_rqe_get(struct siw_qp *qp)
 		 * "‘flags’ may be used uninitialized ..." later for unlock
 		 */
 		srq_used = true;
-		lock_srq_rxsave(srq, flags);
+		spin_lock_irqsave(&srq->lock, flags);
 		rqe = &srq->recvq[srq->rq_get % srq->num_rqe];
 	} else
 		rqe = &qp->recvq[qp->rq_get % qp->attrs.rq_size];
@@ -466,7 +466,7 @@ static struct siw_wqe *siw_rqe_get(struct siw_qp *qp)
 	} 
 out:
 	if (srq_used)
-		unlock_srq_rxsave(srq, flags);
+		spin_unlock_irqrestore(&srq->lock, flags);
 
 	return wqe;
 }
@@ -716,7 +716,7 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	int run_sq = 1, rv = 0;
 	unsigned long flags;
 
-	lock_sq_rxsave(qp, flags);
+	spin_lock_irqsave(&qp->sq_lock, flags);
 
 	if (tx_work->wr_status == SR_WR_IDLE) {
 		/*
@@ -750,7 +750,7 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rv = -EPROTO;
 	}
 
-	unlock_sq_rxsave(qp, flags);
+	spin_unlock_irqrestore(&qp->sq_lock, flags);
 
 	if (run_sq)
 		siw_sq_queue_work(qp);
@@ -1083,7 +1083,7 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 	int resume_tx = 0;
 	unsigned long flags;
 
-	lock_orq_rxsave(qp, flags);
+	spin_lock_irqsave(&qp->orq_lock, flags);
 
 	/* free current orq entry */
 	rreq = orq_get_current(qp);
@@ -1120,7 +1120,7 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 	}
 	qp->orq_get++;
 out:
-	unlock_orq_rxsave(qp, flags);
+	spin_unlock_irqrestore(&qp->orq_lock, flags);
 
 	if (resume_tx)
 		siw_sq_queue_work(qp);

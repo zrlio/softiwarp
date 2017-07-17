@@ -118,7 +118,7 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 	struct siw_cqe *cqe;
 	unsigned long flags;
 
-	lock_cq_rxsave(cq, flags);
+	spin_lock_irqsave(&cq->lock, flags);
 
 	cqe = &cq->queue[cq->cq_get % cq->num_cqe];
 	if (cqe->flags & SIW_WQE_VALID) {
@@ -137,10 +137,10 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 
 		smp_wmb();
 
-		unlock_cq_rxsave(cq, flags);
+		spin_unlock_irqrestore(&cq->lock, flags);
 		return 1;
 	}
-	unlock_cq_rxsave(cq, flags);
+	spin_unlock_irqrestore(&cq->lock, flags);
 	return 0;
 }
 

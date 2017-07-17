@@ -1192,10 +1192,10 @@ next_wqe:
 			BUG();
 		}
 
-		lock_sq_rxsave(qp, flags);
+		spin_lock_irqsave(&qp->sq_lock, flags);
 		wqe->wr_status = SR_WR_IDLE;
 		rv = siw_activate_tx(qp);
-		unlock_sq_rxsave(qp, flags);
+		spin_unlock_irqrestore(&qp->sq_lock, flags);
 
 		if (unlikely(rv <= 0))
 			goto done;
@@ -1229,7 +1229,7 @@ next_wqe:
 		dprint(DBG_ON, " (QP%d): WQE type %d processing failed: %d\n",
 				QP_ID(qp), tx_type(wqe), rv);
 
-		lock_sq_rxsave(qp, flags);
+		spin_lock_irqsave(&qp->sq_lock, flags);
 		/*
 		 * RREQ may have already been completed by inbound RRESP!
 		 */
@@ -1239,7 +1239,7 @@ next_wqe:
 			qp->orq_put--;
 			qp->orq[qp->orq_put % qp->attrs.orq_size].flags = 0;
 		}
-		unlock_sq_rxsave(qp, flags);
+		spin_unlock_irqrestore(&qp->sq_lock, flags);
 		/*
 		 * immediately suspends further TX processing
 		 */

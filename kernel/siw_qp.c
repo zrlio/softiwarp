@@ -380,10 +380,10 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 	unsigned long flags, flags2;
 	int rv = 0;
 
-	lock_sq_rxsave(qp, flags);
+	spin_lock_irqsave(&qp->sq_lock, flags);
 
 	if (unlikely(wqe->wr_status != SR_WR_IDLE)) {
-		unlock_sq_rxsave(qp, flags);
+		spin_unlock_irqrestore(&qp->sq_lock, flags);
 		return -EIO;
 	}
 	memset(wqe->mem, 0, sizeof *wqe->mem * SIW_MAX_SGE);
@@ -405,7 +405,7 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 
 		wqe->sqe.opcode = SIW_OP_READ;
 
-		lock_orq_rxsave(qp, flags2);
+		spin_lock_irqsave(&qp->orq_lock, flags2);
 
 		rreq = orq_get_free(qp);
 		if (rreq) {
@@ -414,14 +414,14 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 		} else
 			rv = -EIO;
 
-		unlock_orq_rxsave(qp, flags2);
+		spin_unlock_irqrestore(&qp->orq_lock, flags2);
 	} else
 		rv = -EINVAL;
 
 	if (rv)
 		wqe->wr_status = SR_WR_IDLE;
 
-	unlock_sq_rxsave(qp, flags);
+	spin_unlock_irqrestore(&qp->sq_lock, flags);
 
 	if (!rv)
 		siw_sq_queue_work(qp);
@@ -918,13 +918,13 @@ int siw_activate_tx(struct siw_qp *qp)
 				rv = -EINVAL;
 				goto out;
 			}
-			lock_orq_rxsave(qp, flags);
+			spin_lock_irqsave(&qp->orq_lock, flags);
 
 			if (!siw_orq_empty(qp)) {
 				qp->tx_ctx.orq_fence = 1;
 				rv = 0;
 			}
-			unlock_orq_rxsave(qp, flags);
+			spin_unlock_irqrestore(&qp->orq_lock, flags);
 
 		} else if (wqe->sqe.opcode == SIW_OP_READ ||
 			   wqe->sqe.opcode == SIW_OP_READ_LOCAL_INV) {
@@ -932,7 +932,7 @@ int siw_activate_tx(struct siw_qp *qp)
 
 			wqe->sqe.num_sge = 1;
 
-			lock_orq_rxsave(qp, flags);
+			spin_lock_irqsave(&qp->orq_lock, flags);
 
 			rreq = orq_get_free(qp);
 			if (rreq) {
@@ -946,7 +946,7 @@ int siw_activate_tx(struct siw_qp *qp)
 				qp->tx_ctx.orq_fence = 1;
 				rv = 0;
 			}
-			unlock_orq_rxsave(qp, flags);
+			spin_unlock_irqrestore(&qp->orq_lock, flags);
 		}
 
 		/* Clear SQE, can be re-used by application */
@@ -992,7 +992,7 @@ int siw_sqe_complete(struct siw_qp *qp, struct siw_sqe *sqe, u32 bytes,
 	if (cq) {
 		u32 sqe_flags = sqe->flags;
 
-		lock_cq_rxsave(cq, flags);
+		spin_lock_irqsave(&cq->lock, flags);
 
 		idx = cq->cq_put % cq->num_cqe;
 		cqe = &cq->queue[idx];
@@ -1014,10 +1014,10 @@ int siw_sqe_complete(struct siw_qp *qp, struct siw_sqe *sqe, u32 bytes,
 			smp_store_mb(sqe->flags, 0);
 
 			cq->cq_put++;
-			unlock_cq_rxsave(cq, flags);
+			spin_unlock_irqrestore(&cq->lock, flags);
 			siw_cq_notify(cq, sqe_flags);
 		} else {
-			unlock_cq_rxsave(cq, flags);
+			spin_unlock_irqrestore(&cq->lock, flags);
 			rv = -ENOMEM;
 			siw_cq_event(cq, IB_EVENT_CQ_ERR);
 		}
@@ -1039,7 +1039,7 @@ int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
 	if (cq) {
 		u32 rqe_flags = rqe->flags;
 
-		lock_cq_rxsave(cq, flags);
+		spin_lock_irqsave(&cq->lock, flags);
 
 		idx = cq->cq_put % cq->num_cqe;
 		cqe = &cq->queue[idx];
@@ -1061,10 +1061,10 @@ int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
 			smp_store_mb(rqe->flags, 0);
 
 			cq->cq_put++;
-			unlock_cq_rxsave(cq, flags);
+			spin_unlock_irqrestore(&cq->lock, flags);
 			siw_cq_notify(cq, rqe_flags);
 		} else {
-			unlock_cq_rxsave(cq, flags);
+			spin_unlock_irqrestore(&cq->lock, flags);
 			rv = -ENOMEM;
 			siw_cq_event(cq, IB_EVENT_CQ_ERR);
 		}
@@ -1100,7 +1100,7 @@ void siw_sq_flush(struct siw_qp *qp)
 	/*
 	 * Start with completing any work currently on the ORQ
 	 */
-	lock_orq_rxsave(qp, flags);
+	spin_lock_irqsave(&qp->orq_lock, flags);
 
 	while (qp->attrs.orq_size) {
 		sqe = &qp->orq[qp->orq_get % qp->attrs.orq_size];
@@ -1113,7 +1113,7 @@ void siw_sq_flush(struct siw_qp *qp)
 
 		qp->orq_get++;
 	}
-	unlock_orq_rxsave(qp, flags);
+	spin_unlock_irqrestore(&qp->orq_lock, flags);
 	/*
 	 * Flush the in-progress wqe, if there.
 	 */

@@ -929,12 +929,12 @@ static long siw_doorbell_sq(u32 dev_id, u32 qp_id)
 				up_read(&qp->state_lock);
 				goto out;
 			}
-			lock_sq_rxsave(qp, flags);
+			spin_lock_irqsave(&qp->sq_lock, flags);
 
 			if (tx_wqe(qp)->wr_status == SR_WR_IDLE) {
 
 				rv = siw_activate_tx(qp);
-				unlock_sq_rxsave(qp, flags);
+				spin_unlock_irqrestore(&qp->sq_lock, flags);
 
 				if (rv > 0) {
 
@@ -948,7 +948,7 @@ static long siw_doorbell_sq(u32 dev_id, u32 qp_id)
 				} else if (rv < 0)
 					siw_qp_cm_drop(qp, 0);
 			} else
-				unlock_sq_rxsave(qp, flags);
+				spin_unlock_irqrestore(&qp->sq_lock, flags);
 
 			up_read(&qp->state_lock);
 			rv = 0;
@@ -1026,7 +1026,7 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 		return -EINVAL;
 	}
 
-	lock_sq_rxsave(qp, flags);
+	spin_lock_irqsave(&qp->sq_lock, flags);
 
 	while (wr) {
 		u32 idx = qp->sq_put % qp->attrs.sq_size;
@@ -1180,11 +1180,11 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 	 * to caller.
 	 */
 	if (wqe->wr_status != SR_WR_IDLE) {
-		unlock_sq_rxsave(qp, flags);
+		spin_unlock_irqrestore(&qp->sq_lock, flags);
 		goto skip_direct_sending;
 	}
 	rv = siw_activate_tx(qp);
-	unlock_sq_rxsave(qp, flags);
+	spin_unlock_irqrestore(&qp->sq_lock, flags);
 
 	if (rv <= 0)
 		goto skip_direct_sending;
@@ -1914,7 +1914,7 @@ int siw_modify_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs,
 	unsigned long	flags;
 	int rv = 0;
 
-	lock_srq_rxsave(srq, flags);
+	spin_lock_irqsave(&srq->lock, flags);
 
 	if (attr_mask & IB_SRQ_MAX_WR) {
 		/* resize request not yet supported */
@@ -1935,7 +1935,7 @@ int siw_modify_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs,
 		srq->limit = attrs->srq_limit;
 	}
 out:
-	unlock_srq_rxsave(srq, flags);
+	spin_unlock_irqrestore(&srq->lock, flags);
 
 	return rv;
 }
@@ -1950,13 +1950,13 @@ int siw_query_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs)
 	struct siw_srq	*srq = siw_srq_ofa2siw(ofa_srq);
 	unsigned long	flags;
 
-	lock_srq_rxsave(srq, flags);
+	spin_lock_irqsave(&srq->lock, flags);
 
 	attrs->max_wr = srq->num_rqe;
 	attrs->max_sge = srq->max_sge;
 	attrs->srq_limit = srq->limit;
 
-	unlock_srq_rxsave(srq, flags);
+	spin_unlock_irqrestore(&srq->lock, flags);
 
 	return 0;
 }
