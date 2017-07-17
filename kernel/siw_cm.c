@@ -411,6 +411,13 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 	event.status = status;
 	event.event = reason;
 
+	if (reason == IW_CM_EVENT_CONNECT_REQUEST) {
+		event.provider_data = cep;
+		cm_id = cep->listen_cep->cm_id;
+	} else
+		cm_id = cep->cm_id;
+
+	/* Signal private data and address information */
 	if (reason == IW_CM_EVENT_CONNECT_REQUEST ||
 	    reason == IW_CM_EVENT_CONNECT_REPLY) {
 		u16 pd_len = be16_to_cpu(cep->mpa.hdr.params.pd_len);
@@ -429,27 +436,19 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 				event.private_data +=
 					sizeof(struct mpa_v2_data);
 		}
-		if (__mpa_rr_revision(cep->mpa.hdr.params.bits) < 
-		    MPA_REVISION_2) {
-			event.ird = cep->sdev->attrs.max_ird;
-			event.ord = cep->sdev->attrs.max_ord;
-		} else {
-			event.ird = cep->ird;
-			event.ord = cep->ord;
-		}
 		to_sockaddr_in(event.local_addr) = cep->llp.laddr;
 		to_sockaddr_in(event.remote_addr) = cep->llp.raddr;
 	}
-	if (reason == IW_CM_EVENT_ESTABLISHED) {
+	/* Signal IRD and ORD */
+	if (reason == IW_CM_EVENT_ESTABLISHED || 
+	    reason == IW_CM_EVENT_CONNECT_REPLY) {
+		/* Signal negotiated IRD/ORD values we will use */
 		event.ird = cep->ird;
 		event.ord = cep->ord;
+	} else if (reason == IW_CM_EVENT_CONNECT_REQUEST) {
+		event.ird = cep->ord;
+		event.ord = cep->ird;
 	}
-	if (reason == IW_CM_EVENT_CONNECT_REQUEST) {
-		event.provider_data = cep;
-		cm_id = cep->listen_cep->cm_id;
-	} else
-		cm_id = cep->cm_id;
-
 	dprint(DBG_CM, " (QP%d): cep=0x%p, id=0x%p, dev(id)=%s, "
 		"reason=%d, status=%d\n",
 		cep->qp ? QP_ID(cep->qp) : -1, cep, cm_id,
@@ -729,8 +728,9 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
  */
 static int siw_proc_mpareq(struct siw_cep *cep)
 {
-	struct mpa_rr		*req;
-	int			rv;
+	struct mpa_rr	*req;
+	int		version, rv;
+	u16		pd_len;
 
 	rv = siw_recv_mpa_rr(cep);
 	if (rv)
@@ -738,7 +738,10 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 
 	req = &cep->mpa.hdr;
 
-	if (__mpa_rr_revision(req->params.bits) > MPA_REVISION_2) {
+	version = __mpa_rr_revision(req->params.bits);
+	pd_len = be16_to_cpu(req->params.pd_len);
+
+	if (version > MPA_REVISION_2) {
 		/* allow for 0, 1, and 2 only */
 		rv = -EPROTO;
 		goto out;
@@ -747,72 +750,75 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 		rv = -EPROTO;
 		goto out;
 	}
-	/*
-	 * Prepare for sending MPA reply
-	 */
+	/* Prepare for sending MPA reply */
 	memcpy(req->key, MPA_KEY_REP, 16);
 
-	if (req->params.bits & MPA_RR_FLAG_MARKERS
-		|| (req->params.bits & MPA_RR_FLAG_CRC
-			&& !mpa_crc_required && mpa_crc_strict)) {
+	if (version == MPA_REVISION_2 &&
+            (req->params.bits & MPA_RR_FLAG_ENHANCED)) {
 		/*
-		 * MPA Markers: currently not supported. Marker TX to be added.
-		 *
-		 * CRC:
-		 *    RFC 5044, page 27: CRC MUST be used if peer requests it.
-		 *    siw specific: 'mpa_crc_strict' parameter to reject
-		 *    connection with CRC if local CRC off enforced by
-		 *    'mpa_crc_strict' module parameter.
+		 * MPA version 2 must signal IRD/ORD values and P2P mode
+		 * in private data if header flag MPA_RR_FLAG_ENHANCED
+		 * is set.
 		 */
-		dprint(DBG_CM|DBG_ON, " Reject: CRC %d:%d:%d, M %d:%d\n",
-			req->params.bits & MPA_RR_FLAG_CRC ? 1 : 0,
-			mpa_crc_required, mpa_crc_strict,
-			req->params.bits & MPA_RR_FLAG_MARKERS ? 1 : 0, 0);
-
-		req->params.bits &= ~MPA_RR_FLAG_MARKERS;
-		req->params.bits |= MPA_RR_FLAG_REJECT; /* reject */
-
-		if (!mpa_crc_required && mpa_crc_strict)
-			req->params.bits &= ~MPA_RR_FLAG_CRC;
-
-		kfree(cep->mpa.pdata);
-		cep->mpa.pdata = NULL;
-
-		(void)siw_send_mpareqrep(cep, NULL, 0);
-		rv = -EOPNOTSUPP;
-		goto out;
-	}
-	/*
-	 * Enable CRC if requested by module initialization
-	 */
-	if (!(req->params.bits & MPA_RR_FLAG_CRC) && mpa_crc_required)
-		req->params.bits |= MPA_RR_FLAG_CRC;
-
-	if (__mpa_rr_revision(req->params.bits) == MPA_REVISION_2 &&
-	    (req->params.bits & MPA_RR_FLAG_ENHANCED)) {
-		struct mpa_v2_data *v2 = (struct mpa_v2_data *)cep->mpa.pdata;
-
-		cep->ord = ntohs(v2->ird) & MPA_IRD_ORD_MASK;
-		cep->ord = min(cep->ord, SIW_MAX_IRD);
-		cep->ird = ntohs(v2->ord) & MPA_IRD_ORD_MASK;
-		cep->ird = min(cep->ird, SIW_MAX_ORD);
-
-		cep->mpa.v2_ctrl.ird = htons(cep->ird) | MPA_V2_PEER_TO_PEER;
-		cep->mpa.v2_ctrl.ord = htons(cep->ord);
+		if (pd_len < sizeof(struct mpa_v2_data))
+			goto reject_conn;
 
 		cep->enhanced_rdma_conn_est = true;
+	}
+
+	/* MPA Markers: currently not supported. Marker TX to be added. */
+	if (req->params.bits & MPA_RR_FLAG_MARKERS)
+		goto reject_conn;
+
+	if (req->params.bits & MPA_RR_FLAG_CRC) {
+		/*
+		 * RFC 5044, page 27: CRC MUST be used if peer requests it.
+		 * siw specific: 'mpa_crc_strict' parameter to reject
+		 * connection with CRC if local CRC off enforced by
+		 * 'mpa_crc_strict' module parameter.
+		 */
+		if (!mpa_crc_required && mpa_crc_strict)
+			goto reject_conn;
+
+		/* Enable CRC if requested by module parameter */
+		if (mpa_crc_required)
+			req->params.bits |= MPA_RR_FLAG_CRC;
+	}
+
+	if (cep->enhanced_rdma_conn_est) {
+		struct mpa_v2_data *v2 = (struct mpa_v2_data *)cep->mpa.pdata;
+
+		/*
+		 * Peer requested ORD becomes requested local IRD,
+		 * peer requested IRD becomes requested local ORD.
+		 * IRD and ORD get limited by global maximum values.
+		 */
+		cep->ord = ntohs(v2->ird) & MPA_IRD_ORD_MASK;
+		cep->ord = min(cep->ord, SIW_MAX_ORD);
+		cep->ird = ntohs(v2->ord) & MPA_IRD_ORD_MASK;
+		cep->ird = min(cep->ird, SIW_MAX_IRD);
+
+		/* May get overwritten by locally negotiated values */
+		cep->mpa.v2_ctrl.ird = htons(cep->ird);
+		cep->mpa.v2_ctrl.ord = htons(cep->ord);
 
 		/*
 		 * Support for peer sent zero length Write or Read to
 		 * let local side enter RTS. Writes are preferred.
 		 * Sends would require pre-posting a Receive and are
 		 * not supported.
+		 * Propose zero length Write if none of Read and Write
+		 * is indicated.
 		 */ 
 		if (v2->ird & MPA_V2_PEER_TO_PEER) {
+			cep->mpa.v2_ctrl.ird |= MPA_V2_PEER_TO_PEER;
+
 			if (v2->ord & MPA_V2_RDMA_WRITE_RTR)
 				cep->mpa.v2_ctrl.ord |= MPA_V2_RDMA_WRITE_RTR;
 			else if (v2->ord & MPA_V2_RDMA_READ_RTR)
 				cep->mpa.v2_ctrl.ord |= MPA_V2_RDMA_READ_RTR;
+			else
+				cep->mpa.v2_ctrl.ord |= MPA_V2_RDMA_WRITE_RTR;
 		}
 	}
 
@@ -825,6 +831,27 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 		siw_cep_put(cep);
 out:
 	return rv;
+
+reject_conn:
+	dprint(DBG_CM|DBG_ON, " Reject: CRC %d:%d:%d, M %d:%d\n",
+		req->params.bits & MPA_RR_FLAG_CRC ? 1 : 0,
+		mpa_crc_required, mpa_crc_strict,
+		req->params.bits & MPA_RR_FLAG_MARKERS ? 1 : 0, 0);
+
+	req->params.bits &= ~MPA_RR_FLAG_MARKERS;
+	req->params.bits |= MPA_RR_FLAG_REJECT;
+
+	if (!mpa_crc_required && mpa_crc_strict)
+		req->params.bits &= ~MPA_RR_FLAG_CRC;
+
+	if (pd_len)
+		kfree(cep->mpa.pdata);
+
+	cep->mpa.pdata = NULL;
+
+	(void)siw_send_mpareqrep(cep, NULL, 0);
+
+	return -EOPNOTSUPP;
 }
 
 
@@ -905,7 +932,7 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 
 		if (cep->ird < rep_ord &&
 		    (relaxed_ird_negotiation == false ||
-		     rep_ord > cep->sdev->attrs.max_ord)) {
+		     rep_ord > cep->sdev->attrs.max_ird)) {
 			dprint(DBG_CM, " IRD %d, REP_ORD %d, MAX_ORD %d\n",
 				cep->ird, rep_ord, cep->sdev->attrs.max_ord);
 			ird_insufficient = true;
@@ -1525,12 +1552,17 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	struct siw_cep	*cep = NULL;
 	struct socket	*s = NULL;
 	struct sockaddr	*laddr, *raddr;
+	bool p2p_mode = peer_to_peer;
 
 	u16 pd_len = params->private_data_len;
 	int version = mpa_version, rv;
 
 	if (pd_len > MPA_MAX_PRIVDATA)
 		return -EINVAL;
+
+	if (params->ird > sdev->attrs.max_ird ||
+	    params->ord > sdev->attrs.max_ord)
+		return -ENOMEM;
 
 	qp = siw_qp_id2obj(sdev, params->qpn);
 	BUG_ON(!qp);
@@ -1594,7 +1626,7 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	cep->ird = params->ird;
 	cep->ord = params->ord;
 
-	if (peer_to_peer && cep->ord == 0)
+	if (p2p_mode && cep->ord == 0)
 		cep->ord = 1;
 
 	cep->state = SIW_EPSTATE_CONNECTING;
@@ -1619,7 +1651,7 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 
 	/*
 	 * Set MPA Request bits: CRC if required, no MPA Markers,
-	 * MPA Rev. according to module parameter 'version', Key 'Request'.
+	 * MPA Rev. according to module parameter 'mpa_version', Key 'Request'.
 	 */
 	cep->mpa.hdr.params.bits = 0;
 	if (version > MPA_REVISION_2) {
@@ -1634,17 +1666,22 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		cep->mpa.hdr.params.bits |= MPA_RR_FLAG_CRC;
 
 	/*
-	 * set MPAv2 bits if required.
+	 * If MPA version == 2:
+	 * o Include ORD and IRD.
+	 * o Indicate peer-to-peer mode, if required by module
+	 *   parameter 'peer_to_peer'.
 	 */
 	if (version == MPA_REVISION_2) {
 		cep->enhanced_rdma_conn_est = true;
 		cep->mpa.hdr.params.bits |= MPA_RR_FLAG_ENHANCED;
 
 		cep->mpa.v2_ctrl.ird = htons(cep->ird);
-		if (peer_to_peer)
-			cep->mpa.v2_ctrl.ird |= MPA_V2_PEER_TO_PEER;
+		cep->mpa.v2_ctrl.ord = htons(cep->ord);
 
-		cep->mpa.v2_ctrl.ord = htons(cep->ord) | rtr_type;
+		if (p2p_mode) {
+			cep->mpa.v2_ctrl.ird |= MPA_V2_PEER_TO_PEER;
+			cep->mpa.v2_ctrl.ord |= rtr_type;
+		}
 		/* Remember own P2P mode requested */
 		cep->mpa.v2_ctrl_req = cep->mpa.v2_ctrl;
 	}
@@ -1758,18 +1795,18 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		id, QP_ID(qp), sdev->ofa_dev.name);
 
 	if (params->ord > sdev->attrs.max_ord ||
-	    params->ird > sdev->attrs.max_ord) {
+	    params->ird > sdev->attrs.max_ird) {
 		dprint(DBG_CM|DBG_ON, "(id=0x%p, QP%d): "
 			"ORD: %d (max: %d), IRD: %d (max: %d)\n",
 			id, QP_ID(qp),
-			params->ord, qp->attrs.orq_size,
-			params->ird, qp->attrs.irq_size);
+			params->ord, sdev->attrs.max_ord,
+			params->ird, sdev->attrs.max_ird);
 		rv = -EINVAL;
 		up_write(&qp->state_lock);
 		goto error;
 	}
 	if (cep->enhanced_rdma_conn_est)
-		max_priv_data -= 4;
+		max_priv_data -= sizeof(struct mpa_v2_data);
 
 	if (params->private_data_len > max_priv_data) {
 		dprint(DBG_CM|DBG_ON, "(id=0x%p, QP%d): "
@@ -1782,9 +1819,9 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	}
 
 	if (cep->enhanced_rdma_conn_est) {
-		if (params->ord > cep->ird) {
+		if (params->ord > cep->ord) {
 			if (relaxed_ird_negotiation)
-				params->ord = cep->ird;
+				params->ord = cep->ord;
 			else {
 				cep->ird = params->ird;
 				cep->ord = params->ord;
@@ -1793,10 +1830,10 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 				goto error;
 			}
 		}
-		if (params->ird < cep->ord) {
+		if (params->ird < cep->ird) {
 			if (relaxed_ird_negotiation &&
-			    cep->ord <= sdev->attrs.max_ord)
-				params->ird = cep->ord;
+			    cep->ird <= sdev->attrs.max_ird)
+				params->ird = cep->ird;
 			else {
 				rv = -ENOMEM;
 				up_write(&qp->state_lock);
@@ -1806,6 +1843,13 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		if (cep->mpa.v2_ctrl.ord &
 		    (MPA_V2_RDMA_WRITE_RTR | MPA_V2_RDMA_READ_RTR))
 			wait_for_peer_rts = true;
+		/*
+		 * Signal back negotiated IRD and ORD values
+		 */
+		cep->mpa.v2_ctrl.ord = htons(params->ord & MPA_IRD_ORD_MASK) |
+				(cep->mpa.v2_ctrl.ord & ~MPA_IRD_ORD_MASK);
+		cep->mpa.v2_ctrl.ird = htons(params->ird & MPA_IRD_ORD_MASK) |
+				(cep->mpa.v2_ctrl.ird & ~MPA_IRD_ORD_MASK);
 	}
 	cep->ird = params->ird;
 	cep->ord = params->ord;
@@ -2121,12 +2165,6 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, netdev=%s backlog=%d\n",
 		id, ofa_dev->name, sdev->netdev->name, backlog);
 
-	/*
-	 * IPv4/v6 design differences regarding multi-homing
-	 * propagate up to iWARP:
-	 * o For IPv4, use sdev->netdev->ip_ptr
-	 * o For IPv6, use sdev->netdev->ipv6_ptr
-	 */
 	if (to_sockaddr_in(id->local_addr).sin_family == AF_INET) {
 		/* IPv4 */
 		struct sockaddr_in	laddr = to_sockaddr_in(id->local_addr);

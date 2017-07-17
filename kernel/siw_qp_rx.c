@@ -403,13 +403,22 @@ static struct siw_wqe *siw_rqe_get(struct siw_qp *qp)
 	struct siw_rqe *rqe;
 	struct siw_srq *srq = qp->srq;
 	struct siw_wqe *wqe = NULL;
+	unsigned long flags;
+	bool srq_used = false;
 
-	if (!srq)
-		rqe = &qp->recvq[qp->rq_get % qp->attrs.rq_size];
-	else {
-		lock_srq(srq);
+	if (srq) {
+		/*
+		 * 'srq_used' usage:
+		 * convince gcc we know what we do. testing validity
+		 * of 'srq' should be sufficient but gives
+		 * "‘flags’ may be used uninitialized ..." later for unlock
+		 */
+		srq_used = true;
+		lock_srq_rxsave(srq, flags);
 		rqe = &srq->recvq[srq->rq_get % srq->num_rqe];
-	}
+	} else
+		rqe = &qp->recvq[qp->rq_get % qp->attrs.rq_size];
+
 	if (likely(rqe->flags == SIW_WQE_VALID)) {
 		int num_sge = rqe->num_sge;
 		if (likely(num_sge <= SIW_MAX_SGE)) {
@@ -437,7 +446,7 @@ static struct siw_wqe *siw_rqe_get(struct siw_qp *qp)
 			pr_info("RQE: too many SGE's: %d\n", rqe->num_sge);
 			goto out;
 		}
-		if (!srq)
+		if (srq_used == false)
 			qp->rq_get++;
 		else {
 			if (srq->armed) {
@@ -456,8 +465,8 @@ static struct siw_wqe *siw_rqe_get(struct siw_qp *qp)
 		}
 	} 
 out:
-	if (srq)
-		unlock_srq(qp->srq);
+	if (srq_used)
+		unlock_srq_rxsave(srq, flags);
 
 	return wqe;
 }
@@ -705,8 +714,9 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			lkey	= be32_to_cpu(rctx->hdr.rreq.source_stag),
 			rkey	= be32_to_cpu(rctx->hdr.rreq.sink_stag);
 	int run_sq = 1, rv = 0;
+	unsigned long flags;
 
-	lock_sq(qp);
+	lock_sq_rxsave(qp, flags);
 
 	if (tx_work->wr_status == SR_WR_IDLE) {
 		/*
@@ -740,7 +750,7 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rv = -EPROTO;
 	}
 
-	unlock_sq(qp);
+	unlock_sq_rxsave(qp, flags);
 
 	if (run_sq)
 		siw_sq_queue_work(qp);
@@ -1071,8 +1081,9 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 	struct siw_wqe *tx_waiting = tx_wqe(qp);
 	struct siw_sqe *rreq;
 	int resume_tx = 0;
+	unsigned long flags;
 
-	lock_sq(qp);
+	lock_orq_rxsave(qp, flags);
 
 	/* free current orq entry */
 	rreq = orq_get_current(qp);
@@ -1089,9 +1100,10 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 		    tx_waiting->sqe.opcode == SIW_OP_READ_LOCAL_INV) {
 
 			rreq = orq_get_tail(qp);
-			if (unlikely(!rreq))
+			if (unlikely(!rreq)) {
+				pr_warn("QP[%d]: no ORQ\n", QP_ID(qp)); 
 				goto out;
-
+			}
 			siw_read_to_orq(rreq, &tx_waiting->sqe);
 
 			qp->orq_put++;
@@ -1108,7 +1120,7 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 	}
 	qp->orq_get++;
 out:
-	unlock_sq(qp);
+	unlock_orq_rxsave(qp, flags);
 
 	if (resume_tx)
 		siw_sq_queue_work(qp);

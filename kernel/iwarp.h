@@ -52,7 +52,7 @@
 #define MPA_MAX_PRIVDATA	RDMA_MAX_PRIVATE_DATA
 #define MPA_KEY_REQ		"MPA ID Req Frame"
 #define MPA_KEY_REP		"MPA ID Rep Frame"
-#define	MPA_IRD_ORD_MASK	0x3fff;
+#define	MPA_IRD_ORD_MASK	0x3fff
 
 struct mpa_rr_params {
 	__be16	bits;

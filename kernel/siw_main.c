@@ -431,7 +431,8 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	    (1ull << IB_USER_VERBS_CMD_POST_SRQ_RECV);
 
 	ofa_dev->node_type = RDMA_NODE_RNIC;
-	memcpy(ofa_dev->node_desc, SIW_NODE_DESC_COMMON, sizeof(SIW_NODE_DESC_COMMON));
+	memcpy(ofa_dev->node_desc, SIW_NODE_DESC_COMMON,
+	       sizeof(SIW_NODE_DESC_COMMON));
 
 	/*
 	 * Current model (one-to-one device association):

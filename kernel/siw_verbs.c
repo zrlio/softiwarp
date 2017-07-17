@@ -599,8 +599,6 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 		dprint(DBG_OBJ, " QP(%d): SRQ(%p) attached\n",
 			QP_ID(qp), qp->srq);
 	} else if (num_rqe) {
-		qp->srq = NULL;
-
 		if (qp->kernel_verbs)
 			qp->recvq = vmalloc(num_rqe * sizeof(struct siw_rqe));
 		else
@@ -626,11 +624,13 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 
 	qp->attrs.state = SIW_QP_STATE_IDLE;
 
-	if (qp->kernel_verbs && num_sqe) /* vmalloc_user already zeroes mem */
-		memset(qp->sendq, 0, num_sqe * sizeof(struct siw_sqe));
-	if (qp->kernel_verbs && num_rqe) /* vmalloc_user already zeroes mem */
-		memset(qp->recvq, 0, num_rqe * sizeof(struct siw_rqe));
-
+	/* vmalloc_user already zeroes SQ and RQ memory */
+	if (qp->kernel_verbs) {
+	       	if (qp->sendq)
+			memset(qp->sendq, 0, num_sqe * sizeof(struct siw_sqe));
+		if (qp->recvq)
+			memset(qp->recvq, 0, num_rqe * sizeof(struct siw_rqe));
+	}
 	if (udata) {
 		struct siw_uresp_create_qp uresp;
 		struct siw_ucontext *ctx;
@@ -845,7 +845,7 @@ static inline void siw_copy_sgl(struct ib_sge *ofa_sge, struct siw_sge *siw_sge,
 {
 	while (num_sge--) {
 		siw_sge->laddr = ofa_sge->addr;
-		siw_sge->length  = ofa_sge->length;
+		siw_sge->length = ofa_sge->length;
 		siw_sge->lkey = ofa_sge->lkey;
 
 		siw_sge++; ofa_sge++;
