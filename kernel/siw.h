@@ -88,10 +88,6 @@ enum siw_if_type {
 #define SENDPAGE_THRESH		PAGE_SIZE /* min bytes for using sendpage() */
 #define SQ_USER_MAXBURST	10
 
-#if defined __NR_rdma_db
-#define SIW_DB_SYSCALL
-#endif
-
 struct siw_devinfo {
 	unsigned		device;
 	unsigned		version;
@@ -561,8 +557,6 @@ struct siw_iwarp_tx {
 	int			in_syscall;	/* TX out of user context */
 };
 
-#define USE_SQ_KTHREAD
-
 struct siw_qp {
 	struct ib_qp		ofa_qp;
 	struct siw_objhdr	hdr;
@@ -585,9 +579,7 @@ struct siw_qp {
 	struct siw_sqe		*sendq;	/* send queue element array */
 	uint32_t		sq_get;	/* consumer index into sq array */
 	uint32_t		sq_put;	/* kernel prod. index into sq array */
-#ifdef USE_SQ_KTHREAD
 	struct llist_node	tx_list;
-#endif
 
 	struct siw_sqe		*irq;	/* inbound read queue element array */
 	uint32_t		irq_get;/* consumer index into irq array */
@@ -705,7 +697,7 @@ extern void siw_pbl_free(struct siw_pbl *);
 extern int siw_qp_sq_process(struct siw_qp *);
 extern int siw_sq_worker_init(void);
 extern void siw_sq_worker_exit(void);
-extern int siw_sq_queue_work(struct siw_qp *qp);
+extern int siw_sq_start(struct siw_qp *);
 extern int siw_activate_tx(struct siw_qp *);
 
 /* QP RX path functions */

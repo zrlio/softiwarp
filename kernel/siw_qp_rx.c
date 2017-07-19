@@ -753,7 +753,7 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	spin_unlock_irqrestore(&qp->sq_lock, flags);
 
 	if (run_sq)
-		siw_sq_queue_work(qp);
+		siw_sq_start(qp);
 
 	return rv;
 }
@@ -1123,7 +1123,7 @@ out:
 	spin_unlock_irqrestore(&qp->orq_lock, flags);
 
 	if (resume_tx)
-		siw_sq_queue_work(qp);
+		siw_sq_start(qp);
 }
 
 /*

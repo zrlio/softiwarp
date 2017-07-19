@@ -56,12 +56,10 @@
 #include "siw_obj.h"
 #include "siw_cm.h"
 
-#ifdef USE_SQ_KTHREAD
 #include <linux/kthread.h>
 
 extern struct task_struct *qp_tx_thread[];
 extern int default_tx_cpu;
-#endif
 
 static bool zcopy_tx = 1;
 module_param(zcopy_tx, bool, 0644);
@@ -1016,17 +1014,19 @@ next_segment:
 		rv = siw_tx_hdt(c_tx, s);
 
 	if (!rv) {
-		/* Verbs, 6.4.: Try stopping sending after a full DDP segment
-		 * if the connection goes down (== peer halfclose)
+		/*
+		 * One segment sent. Processing completed if last
+		 * segment, Do next segment otherwise.
 		 */
 		if (unlikely(c_tx->tx_suspend)) {
+			/*
+			 * Verbs, 6.4.: Try stopping sending after a full
+			 * DDP segment if the connection goes down
+			 * (== peer halfclose)
+			 */
 			rv = -ECONNABORTED;
 			goto tx_done;
 		} else if (c_tx->pkt.ctrl.ddp_rdmap_ctrl & DDP_FLAG_LAST) {
-			/*
-			 * One segment sent. Processing completed if last
-			 * segment, Do next segment otherwise.
-			 */
 			dprint(DBG_TX, "(QP%d): WR completed\n", QP_ID(qp));
 			goto tx_done;
 		}
@@ -1210,7 +1210,7 @@ next_wqe:
 		rv = 0;
 		goto done;
 	} else if (rv == -EINPROGRESS) {
-		siw_sq_queue_work(qp);
+		siw_sq_start(qp);
 		rv = 0;
 		goto done;
 	} else {
@@ -1309,57 +1309,6 @@ void siw_sq_worker_exit(void)
 	}
 }
 
-#ifndef USE_SQ_KTHREAD
-/*
- * siw_sq_work_handler()
- *
- * Scheduled by siw_qp_llp_write_space() socket callback if socket
- * send space became available again. This function resumes SQ
- * processing.
- */
-static void siw_sq_work_handler(struct work_struct *w)
-{
-	struct siw_sq_work	*this_work;
-	struct siw_qp		*qp;
-	int			rv;
-
-	this_work = container_of(w, struct siw_sq_work, work);
-	qp = container_of(this_work, struct siw_qp, sq_work);
-
-	dprint(DBG_TX|DBG_OBJ, "(QP%d)\n", QP_ID(qp));
-
-	if (down_read_trylock(&qp->state_lock)) {
-		if (likely(qp->attrs.state == SIW_QP_STATE_RTS &&
-			   !qp->tx_ctx.tx_suspend)) {
-
-			if (qp->tx_ctx.orq_fence) {
-				pr_warn("QP[%d]: work handler in fence\n",
-					QP_ID(qp));
-				goto out;
-			}
-			rv = siw_qp_sq_process(qp);
-			up_read(&qp->state_lock);
-			if (rv < 0) {
-				dprint(DBG_TX, "(QP%d): failed: %d\n",
-					QP_ID(qp), rv);
-
-				if (!qp->tx_ctx.tx_suspend)
-					siw_qp_cm_drop(qp, 0);
-			}
-		} else {
-			dprint(DBG_ON|DBG_TX, "(QP%d): state: %d %d\n",
-				QP_ID(qp), qp->attrs.state,
-					qp->tx_ctx.tx_suspend);
-			up_read(&qp->state_lock);
-		}
-	} else {
-		dprint(DBG_ON|DBG_TX, "(QP%d): QP locked\n", QP_ID(qp));
-	}
-out:
-	siw_qp_put(qp);
-}
-#else
-
 void siw_sq_run(unsigned long arg)
 {
 	struct siw_qp *qp = (struct siw_qp *)arg;
@@ -1397,7 +1346,6 @@ int siw_run_sq(void *data)
 	const int nr_cpu = (unsigned int)(long)data;
 	struct llist_node *active;
 	struct siw_qp *qp;
-	struct siw_qp *next_qp;
 	unsigned long stoptime = jiffies;
 	struct tx_task_t *tx_task = &per_cpu(tx_task_g, nr_cpu);
 
@@ -1425,22 +1373,9 @@ int siw_run_sq(void *data)
 
 		active = llist_del_all(&tx_task->active);
 		if (active != NULL) {
-/*
- * llist_for_each_entry_safe() is #defined as a macro
- * only for kernel versions >= 3.12.
- */
-#if defined llist_for_each_entry_safe
+			struct siw_qp *next_qp;
 			llist_for_each_entry_safe(qp, next_qp, active,
 						  tx_list) {
-#else
-			qp = llist_entry(active, struct siw_qp, tx_list);
-			
-			for (; &qp->tx_list != NULL &&
-			       (next_qp = llist_entry(qp->tx_list.next,
-						      struct siw_qp,
-						      tx_list), true);
-			     qp = next_qp) {
-#endif
 				qp->tx_list.next = NULL;
 				siw_sq_run((unsigned long)qp);
 			}
@@ -1465,9 +1400,11 @@ int siw_run_sq(void *data)
 	return 0;
 }
 
-static int siw_qp_to_tx(struct siw_qp *qp)
+int siw_sq_start(struct siw_qp *qp)
 {
 	int cpu = qp->cpu;
+
+	dprint(DBG_TX|DBG_OBJ, "(qp%d)\n", QP_ID(qp));
 
 	if (!cpu_online(cpu) || qp_tx_thread[cpu] == NULL)
 		cpu = default_tx_cpu;
@@ -1495,19 +1432,4 @@ static int siw_qp_to_tx(struct siw_qp *qp)
 
 out:
 	return 0;
-}
-#endif
-
-
-int siw_sq_queue_work(struct siw_qp *qp)
-{
-	dprint(DBG_TX|DBG_OBJ, "(qp%d)\n", QP_ID(qp));
-
-#ifdef USE_SQ_KTHREAD
-	return siw_qp_to_tx(qp);
-#else
-	siw_qp_get(qp);
-	INIT_WORK(&qp->sq_work.work, siw_sq_work_handler);
-	return queue_work(siw_sq_wq, &qp->sq_work.work);
-#endif
 }

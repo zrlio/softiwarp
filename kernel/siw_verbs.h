@@ -75,8 +75,8 @@ extern struct ib_qp *siw_create_qp(struct ib_pd *, struct ib_qp_init_attr *,
 				   struct ib_udata *);
 extern int siw_query_qp(struct ib_qp *, struct ib_qp_attr *, int,
 			struct ib_qp_init_attr *);
-extern int siw_ofed_modify_qp(struct ib_qp *, struct ib_qp_attr *, int,
-			      struct ib_udata *);
+extern int siw_verbs_modify_qp(struct ib_qp *, struct ib_qp_attr *, int,
+			       struct ib_udata *);
 extern int siw_destroy_qp(struct ib_qp *);
 extern int siw_post_send(struct ib_qp *, struct ib_send_wr *,
 			 struct ib_send_wr **);

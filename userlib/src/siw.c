@@ -53,7 +53,6 @@
 #include "siw_abi.h"
 
 
-int rdma_db_nr = -1;
 extern const int siw_debug;
 
 static struct ibv_context_ops siw_context_ops = {
@@ -102,7 +101,6 @@ static struct ibv_context *siw_alloc_context(struct ibv_device *ofa_dev, int fd)
 	context->ofa_ctx.device = ofa_dev;
 	context->ofa_ctx.ops = siw_context_ops;
 	context->dev_id = resp.siw.dev_id;
-	rdma_db_nr = resp.siw.rdma_db_nr;
 
 	/*
 	 * here we take the chance to put in two versions of fast path

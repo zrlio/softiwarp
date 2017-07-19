@@ -54,9 +54,7 @@
 #include "siw_obj.h"
 #include "siw_cm.h"
 #include "siw_verbs.h"
-#ifdef USE_SQ_KTHREAD
 #include <linux/kthread.h>
-#endif
 
 
 MODULE_AUTHOR("Bernard Metzler");
@@ -76,7 +74,6 @@ MODULE_PARM_DESC(loopback_enabled, "enable_loopback");
 LIST_HEAD(siw_devlist);
 DEFINE_SPINLOCK(siw_dev_lock);
 
-#ifdef USE_SQ_KTHREAD
 static char *tx_cpu_list[NR_CPUS];
 module_param_array(tx_cpu_list, charp, NULL, 0444);
 MODULE_PARM_DESC(tx_cpu_list, "List of CPUs siw TX thread shall be bound to");
@@ -85,12 +82,6 @@ int default_tx_cpu = -1;
 static int tx_on_all_cpus = 1;
 extern int siw_run_sq(void *);
 struct task_struct *qp_tx_thread[NR_CPUS];
-#endif
-
-#ifdef SIW_DB_SYSCALL
-extern long siw_doorbell(u32, u32, u32);
-long (*db_orig_call) (u32, u32, u32);
-#endif
 
 static ssize_t show_sw_version(struct device *dev,
 			       struct device_attribute *attr, char *buf)
@@ -262,7 +253,6 @@ static struct siw_dev *siw_dev_from_netdev(struct net_device *dev)
 	return NULL;
 }
 
-#ifdef USE_SQ_KTHREAD
 static int siw_tx_qualified(int cpu)
 {
 	int i = 0;
@@ -310,7 +300,6 @@ static int siw_create_tx_threads(int max_threads, int check_qualified)
 	}
 	return assigned;
 }
-#endif
 
 static int siw_dev_qualified(struct net_device *netdev)
 {
@@ -333,12 +322,20 @@ static int siw_dev_qualified(struct net_device *netdev)
 	return 0;
 }
 
-static void siw_sq_flush_ofa(struct ib_qp *ofa_qp) {
-	 siw_sq_flush(siw_qp_ofa2siw(ofa_qp));
+static void siw_verbs_sq_flush(struct ib_qp *ofa_qp) {
+	struct siw_qp *qp = siw_qp_ofa2siw(ofa_qp);
+
+	down_write(&qp->state_lock);
+	siw_sq_flush(qp);
+	up_write(&qp->state_lock);
 }
 
-static void siw_rq_flush_ofa(struct ib_qp *ofa_qp) {
-	 siw_rq_flush(siw_qp_ofa2siw(ofa_qp));
+static void siw_verbs_rq_flush(struct ib_qp *ofa_qp) {
+	struct siw_qp *qp = siw_qp_ofa2siw(ofa_qp);
+
+	down_write(&qp->state_lock);
+	siw_rq_flush(qp);
+	up_write(&qp->state_lock);
 }
 
 static struct ib_ah *siw_create_ah(struct ib_pd *pd, struct ib_ah_attr *attr,
@@ -449,7 +446,7 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->create_ah = siw_create_ah;
 	ofa_dev->destroy_ah = siw_destroy_ah;
 	ofa_dev->create_qp = siw_create_qp;
-	ofa_dev->modify_qp = siw_ofed_modify_qp;
+	ofa_dev->modify_qp = siw_verbs_modify_qp;
 	ofa_dev->destroy_qp = siw_destroy_qp;
 	ofa_dev->create_cq = siw_create_cq;
 	ofa_dev->destroy_cq = siw_destroy_cq;
@@ -476,8 +473,8 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->post_send = siw_post_send;
 	ofa_dev->post_recv = siw_post_receive;
 
-	ofa_dev->drain_sq = siw_sq_flush_ofa;
-	ofa_dev->drain_rq = siw_rq_flush_ofa;
+	ofa_dev->drain_sq = siw_verbs_sq_flush;
+	ofa_dev->drain_rq = siw_verbs_rq_flush;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 	ofa_dev->dma_ops = &siw_dma_mapping_ops;
@@ -645,9 +642,6 @@ done:
 static struct notifier_block siw_netdev_nb = {
 	.notifier_call = siw_netdev_event,
 };
-#ifdef SIW_DB_SYSCALL
-extern long (*doorbell_call)(u32, u32, u32);
-#endif
 
 /*
  * siw_init_module - Initialize Softiwarp module and register with netdev
@@ -656,9 +650,7 @@ extern long (*doorbell_call)(u32, u32, u32);
 static __init int siw_init_module(void)
 {
 	int rv;
-#ifdef USE_SQ_KTHREAD
 	int nr_cpu;
-#endif
 
 	if (SENDPAGE_THRESH < SIW_MAX_INLINE) {
 		pr_info("SENDPAGE_THRESH: %d < SIW_MAX_INLINE: %d"
@@ -697,17 +689,6 @@ static __init int siw_init_module(void)
 		siw_debugfs_delete();
 		goto out_unregister;
 	}
-#ifdef SIW_DB_SYSCALL
-	db_orig_call = doorbell_call;
-	doorbell_call = siw_doorbell;
-
-	pr_info("SoftiWARP: doorbell call assigned, syscall # %d\n",
-		__NR_rdma_db);
-#else
-	pr_info("SoftiWARP: no doorbell call\n");
-#endif
-
-#ifdef USE_SQ_KTHREAD
 	for (nr_cpu = 0; nr_cpu < NR_CPUS; nr_cpu++) {
 		qp_tx_thread[nr_cpu] = NULL;
 		if (tx_cpu_list[nr_cpu])
@@ -721,19 +702,16 @@ static __init int siw_init_module(void)
 			goto out_unregister;
 		}
 	}
-#endif
 	pr_info("SoftiWARP attached\n");
 	return 0;
 
 out_unregister:
-#ifdef USE_SQ_KTHREAD
 	for (nr_cpu = 0; nr_cpu < NR_CPUS; nr_cpu++) {
 		if (qp_tx_thread[nr_cpu]) {
 			kthread_stop(qp_tx_thread[nr_cpu]);
 			qp_tx_thread[nr_cpu] = NULL;
 		}
 	}
-#endif
 	device_unregister(&siw_generic_dma_device);
 
 out:
@@ -749,7 +727,6 @@ out_nobus:
 
 static void __exit siw_exit_module(void)
 {
-#ifdef USE_SQ_KTHREAD
 	int nr_cpu;
 
 	for (nr_cpu = 0; nr_cpu < NR_CPUS; nr_cpu++) {
@@ -758,18 +735,12 @@ static void __exit siw_exit_module(void)
 			qp_tx_thread[nr_cpu] = NULL;
 		}
 	}
-#endif
-
 	spin_lock(&siw_dev_lock);
 	unregister_netdevice_notifier(&siw_netdev_nb);
 	spin_unlock(&siw_dev_lock);
 
 	siw_sq_worker_exit();
 	siw_cm_exit();
-
-#ifdef SIW_DB_SYSCALL
-	doorbell_call = db_orig_call;
-#endif
 
 	while (!list_empty(&siw_devlist)) {
 		struct siw_dev  *sdev =

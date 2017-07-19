@@ -45,10 +45,6 @@
 #include <stdint.h>
 #endif
 
-/*
- * user commands/command responses must correlate with the siw_abi
- * in user land.
- */
 /*Common string that is matched to accept the device by the user library*/
 #define SIW_NODE_DESC_COMMON	"Software iWARP stack"
 
@@ -90,11 +86,6 @@ struct siw_uresp_create_srq {
 
 struct siw_uresp_alloc_ctx {
 	uint32_t	dev_id;
-	uint32_t	rdma_db_nr;
-};
-
-enum siw_db_type {
-	SIW_DB_SQ		= 1
 };
 
 enum siw_opcode {

@@ -274,13 +274,13 @@ void siw_qp_llp_write_space(struct sock *sk)
 	struct socket *sock = sk->sk_socket;
 	if (sk_stream_wspace(sk) >= (int)cep->qp.tx_ctx.fpdu_len && sock) {
 		clear_bit(SOCK_NOSPACE, &sock->flags);
-		siw_sq_queue_work(cep->qp);
+		siw_sq_start(cep->qp);
 	}
 #else
 	cep->sk_write_space(sk);
 
 	if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
-		siw_sq_queue_work(cep->qp);
+		siw_sq_start(cep->qp);
 #endif
 }
 
@@ -377,7 +377,7 @@ error:
 int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 {
 	struct siw_wqe	*wqe = tx_wqe(qp);
-	unsigned long flags, flags2;
+	unsigned long flags;
 	int rv = 0;
 
 	spin_lock_irqsave(&qp->sq_lock, flags);
@@ -402,6 +402,7 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 		wqe->sqe.opcode = SIW_OP_WRITE;
 	else if (ctrl & MPA_V2_RDMA_READ_RTR) {
 		struct siw_sqe	*rreq;
+		unsigned long flags2;
 
 		wqe->sqe.opcode = SIW_OP_READ;
 
@@ -424,7 +425,7 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 	spin_unlock_irqrestore(&qp->sq_lock, flags);
 
 	if (!rv)
-		siw_sq_queue_work(qp);
+		siw_sq_start(qp);
 
 	return rv;
 }
@@ -985,12 +986,12 @@ int siw_sqe_complete(struct siw_qp *qp, struct siw_sqe *sqe, u32 bytes,
 {
 	struct siw_cq *cq = qp->scq;
 	struct siw_cqe *cqe;
-	unsigned long flags;
 	u32 idx;
 	int rv = 0;
 
 	if (cq) {
 		u32 sqe_flags = sqe->flags;
+		unsigned long flags;
 
 		spin_lock_irqsave(&cq->lock, flags);
 
@@ -1032,12 +1033,12 @@ int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
 {
 	struct siw_cq *cq = qp->rcq;
 	struct siw_cqe *cqe;
-	unsigned long flags;
 	u32 idx;
 	int rv = 0;
 
 	if (cq) {
 		u32 rqe_flags = rqe->flags;
+		unsigned long flags;
 
 		spin_lock_irqsave(&cq->lock, flags);
 
@@ -1093,16 +1094,15 @@ void siw_sq_flush(struct siw_qp *qp)
 {
 	struct siw_sqe	*sqe;
 	struct siw_wqe	*wqe = tx_wqe(qp);
-	unsigned long	flags;
 	int		async_event = 0;
 
 	dprint(DBG_OBJ|DBG_CM|DBG_WR, "(QP%d): Enter\n", QP_ID(qp));
 	/*
 	 * Start with completing any work currently on the ORQ
 	 */
-	spin_lock_irqsave(&qp->orq_lock, flags);
-
-	while (qp->attrs.orq_size) {
+	for (;;) {
+		if (qp->attrs.orq_size == 0)
+			break;
 		sqe = &qp->orq[qp->orq_get % qp->attrs.orq_size];
 		if (!sqe->flags)
 			break;
@@ -1113,7 +1113,6 @@ void siw_sq_flush(struct siw_qp *qp)
 
 		qp->orq_get++;
 	}
-	spin_unlock_irqrestore(&qp->orq_lock, flags);
 	/*
 	 * Flush the in-progress wqe, if there.
 	 */

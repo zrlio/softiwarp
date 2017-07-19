@@ -106,25 +106,10 @@ struct mpa_v2_data {
 	__be16		ord;
 };
 
-/*
- * Don't change the layout/size of this struct!
- */
 struct mpa_marker {
 	__be16	rsvd;
 	__be16	fpdu_hmd; /* FPDU header-marker distance (= MPA's FPDUPTR) */
 };
-
-#define MPA_MARKER_SPACING	512
-#define MPA_HDR_SIZE		2
-
-/*
- * MPA marker size:
- * - Standards-compliant marker insertion: Use sizeof(struct mpa_marker)
- * - "Invisible markers" for testing sender's marker insertion
- *   without affecting receiver: Use 0
- */
-#define MPA_MARKER_SIZE		sizeof(struct mpa_marker)
-
 
 /*
  * maximum MPA trailer
@@ -134,6 +119,7 @@ struct mpa_trailer {
 	__be32	crc;
 };
 
+#define MPA_HDR_SIZE	2
 #define MPA_CRC_SIZE	4
 
 

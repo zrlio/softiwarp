@@ -59,7 +59,6 @@
 				} while (0)
 
 extern const int siw_debug;
-extern int rdma_db_nr;
 
 int siw_notify_cq(struct ibv_cq *ibcq, int solicited)
 {
@@ -289,11 +288,7 @@ int siw_post_send_mapped(struct ibv_qp *ofa_qp, struct ibv_send_wr *wr,
 		wr = wr->next;
 	}
 	if (sq_put != qp->sq_put) {
-		if (rdma_db_nr > 0)
-			rv = syscall(rdma_db_nr, SIW_DB_SQ,
-				     qp->dev_id, qp->id);
-		else
-			rv = siw_db_ofa(ofa_qp);
+		rv = siw_db_ofa(ofa_qp);
 		if (rv)
 			*bad_wr = wr;
 

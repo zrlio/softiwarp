@@ -200,11 +200,6 @@ struct ib_ucontext *siw_alloc_ucontext(struct ib_device *ofa_dev,
 
 		memset(&uresp, 0, sizeof uresp);
 		uresp.dev_id = sdev->attrs.vendor_part_id;
-#ifdef SIW_DB_SYSCALL
-		uresp.rdma_db_nr = __NR_rdma_db;
-#else
-		uresp.rdma_db_nr = -1;
-#endif
 
 		rv = ib_copy_to_udata(udata, &uresp, sizeof uresp);
 		if (rv)
@@ -723,8 +718,8 @@ int siw_query_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *qp_attr,
 	return 0;
 }
 
-int siw_ofed_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
-		       int attr_mask, struct ib_udata *udata)
+int siw_verbs_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
+			int attr_mask, struct ib_udata *udata)
 {
 	struct siw_qp_attrs	new_attrs;
 	enum siw_qp_attr_mask	siw_attr_mask = 0;
@@ -884,102 +879,6 @@ static int siw_copy_inline_sgl(struct ib_send_wr *ofa_wr, struct siw_sqe *sqe)
 	return bytes;
 }
 
-#ifdef SIW_DB_SYSCALL
-extern long (*db_orig_call) (u32, u32, u32);
-extern struct list_head siw_devlist;
-
-
-static long siw_doorbell_sq(u32 dev_id, u32 qp_id)
-{
-	struct siw_qp *qp = NULL;
-	int rv = 0;
-
-	if (likely(qp_id)) {
-		struct siw_dev *sdev = NULL;
-		if (likely(!list_empty(&siw_devlist))) {
-			struct list_head *pos;
-			list_for_each(pos, &siw_devlist) {
-				sdev = list_entry(pos, struct siw_dev, list);
-				if (sdev->attrs.vendor_part_id == dev_id)
-					break;
-				sdev = NULL;
-			}
-		}
-		if (unlikely(!sdev)) {
-			pr_info("Doorbell: No such device: ID %d, QP[%d]\n",
-				dev_id, qp_id);
-			rv = -ENODEV;
-			goto out;
-		}
-		qp = siw_qp_id2obj(sdev, qp_id);
-		if (likely(qp)) {
-			unsigned long flags;
-
-			if (unlikely(!down_read_trylock(&qp->state_lock))) {
-				pr_info("QP[%d]: DB: cannot get state lock\n",
-					QP_ID(qp));
-				rv = -ENOTCONN;
-				goto out;
-			}
-			if (unlikely(qp->attrs.state != SIW_QP_STATE_RTS ||
-				     qp->tx_ctx.tx_suspend)) {
-				pr_info("QP[%d]: DB: out of state\n",
-					QP_ID(qp));
-				rv = -ENOTCONN;
-				up_read(&qp->state_lock);
-				goto out;
-			}
-			spin_lock_irqsave(&qp->sq_lock, flags);
-
-			if (tx_wqe(qp)->wr_status == SR_WR_IDLE) {
-
-				rv = siw_activate_tx(qp);
-				spin_unlock_irqrestore(&qp->sq_lock, flags);
-
-				if (rv > 0) {
-
-					qp->tx_ctx.in_syscall = 1;
-					rv = siw_qp_sq_process(qp);
-					qp->tx_ctx.in_syscall = 0;
-
-					if (unlikely(rv < 0 ||
-					    qp->tx_ctx.tx_suspend))
-						siw_qp_cm_drop(qp, 0);
-				} else if (rv < 0)
-					siw_qp_cm_drop(qp, 0);
-			} else
-				spin_unlock_irqrestore(&qp->sq_lock, flags);
-
-			up_read(&qp->state_lock);
-			rv = 0;
-		} else {
-			pr_info("not found QP %d for dev %s\n",
-				qp_id, sdev->ofa_dev.name);
-			rv = -EINVAL;
-		}
-	}
-out:
-	if (likely(qp))
-		siw_qp_put(qp);
-
-	return rv;
-}
-
-long siw_doorbell(u32 resource, u32 id, u32 arg)
-{
-	switch (resource) {
-
-	case SIW_DB_SQ:		return siw_doorbell_sq(id, arg);
-
-	default:
-		if (db_orig_call)
-			return (*db_orig_call)(resource, id, arg);
-
-		pr_warn("unknown doorbell %u\n", resource);
-		return -ENOSYS;
-	}
-}
-#endif
 
 /*
  * siw_post_send()
@@ -1190,7 +1089,7 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 		goto skip_direct_sending;
 
 	if (qp->kernel_verbs)
-		siw_sq_queue_work(qp);
+		siw_sq_start(qp);
 	else {
 		qp->tx_ctx.in_syscall = 1;
 
