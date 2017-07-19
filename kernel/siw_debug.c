@@ -96,9 +96,9 @@ static ssize_t siw_show_qps(struct file *f, char __user *buf, size_t space,
 
 	list_for_each_safe(pos, tmp, &sdev->qp_list) {
 		struct siw_qp *qp = list_entry(pos, struct siw_qp, devq);
+
 		n = snprintf(kbuf + len, space,
-			     "%-7d%-6d%-6d%-5d%-5d%-5d%-5d%d/%-3d0x%-17p"
-			     " 0x%-18p\n",
+			"%-7d%-6d%-6d%-5d%-5d%-5d%-5d%d/%-3d0x%-17p  0x%-18p\n",
 			     QP_ID(qp),
 			     qp->attrs.state,
 			     refcount_read(&qp->hdr.ref),
@@ -170,8 +170,7 @@ static ssize_t siw_show_ceps(struct file *f, char __user *buf, size_t space,
 		struct siw_cep *cep = list_entry(pos, struct siw_cep, devq);
 
 		n = snprintf(kbuf + len, space,
-			     "0x%-18p%-6d%-6d%-7d%-3s%-3s%-4d0x%-18p"
-			     " 0x%-16p\n",
+			     "0x%-18p%-6d%-6d%-7d%-3s%-3s%-4d0x%-18p 0x%-16p\n",
 			     cep, cep->state,
 			     refcount_read(&cep->ref),
 			     cep->qp ? QP_ID(cep->qp) : -1,
@@ -263,17 +262,17 @@ void siw_debugfs_add_device(struct siw_dev *sdev)
 
 	sdev->debugfs = debugfs_create_dir(sdev->ofa_dev.name, siw_debugfs);
 	if (sdev->debugfs) {
-		entry = debugfs_create_file("qp", S_IRUSR, sdev->debugfs,
+		entry = debugfs_create_file("qp", 0400, sdev->debugfs,
 					    (void *)sdev, &siw_qp_debug_fops);
 		if (!entry)
 			dprint(DBG_DM, ": could not create 'qp' entry\n");
 
-		entry = debugfs_create_file("cep", S_IRUSR, sdev->debugfs,
+		entry = debugfs_create_file("cep", 0400, sdev->debugfs,
 					    (void *)sdev, &siw_cep_debug_fops);
 		if (!entry)
 			dprint(DBG_DM, ": could not create 'cep' entry\n");
 
-		entry = debugfs_create_file("stats", S_IRUSR, sdev->debugfs,
+		entry = debugfs_create_file("stats", 0400, sdev->debugfs,
 					    (void *)sdev,
 					    &siw_stats_debug_fops);
 		if (!entry)
@@ -283,10 +282,8 @@ void siw_debugfs_add_device(struct siw_dev *sdev)
 
 void siw_debugfs_del_device(struct siw_dev *sdev)
 {
-	if (sdev->debugfs) {
-		debugfs_remove_recursive(sdev->debugfs);
-		sdev->debugfs = NULL;
-	}
+	debugfs_remove_recursive(sdev->debugfs);
+	sdev->debugfs = NULL;
 }
 
 void siw_debug_init(void)
@@ -304,9 +301,7 @@ void siw_debug_init(void)
 
 void siw_debugfs_delete(void)
 {
-	if (siw_debugfs)
-		debugfs_remove_recursive(siw_debugfs);
-
+	debugfs_remove_recursive(siw_debugfs);
 	siw_debugfs = NULL;
 }
 
@@ -363,15 +358,15 @@ void siw_print_hdr(union iwarp_hdrs *hdr, int qp_id, char *msg)
 	switch (__rdmap_opcode(&hdr->ctrl)) {
 
 	case RDMAP_RDMA_WRITE:
-		pr_info("QP%04d %s(WRITE, MPA len %d): "
-			"%08x %016llx\n",
+		pr_info("QP%04d %s(WRITE, MPA len %d): %08x %016llx\n",
 			qp_id, msg, ntohs(hdr->ctrl.mpa_len),
 			hdr->rwrite.sink_stag, hdr->rwrite.sink_to);
 		break;
 
 	case RDMAP_RDMA_READ_REQ:
 		pr_info("QP%04d %s(RREQ, MPA len %d): %08x %08x "
-			"%08x %08x %016llx %08x %08x %016llx\n", qp_id, msg,
+			"%08x %08x %016llx %08x %08x %016llx\n",
+			qp_id, msg,
 			ntohs(hdr->ctrl.mpa_len),
 			hdr->rreq.ddp_qn, hdr->rreq.ddp_msn,
 			hdr->rreq.ddp_mo, hdr->rreq.sink_stag,
@@ -380,35 +375,34 @@ void siw_print_hdr(union iwarp_hdrs *hdr, int qp_id, char *msg)
 
 		break;
 	case RDMAP_RDMA_READ_RESP:
-		pr_info("QP%04d %s(RRESP, MPA len %d):"
-			" %08x %016llx\n",
+		pr_info("QP%04d %s(RRESP, MPA len %d): %08x %016llx\n",
 			qp_id, msg, ntohs(hdr->ctrl.mpa_len),
 			hdr->rresp.sink_stag, hdr->rresp.sink_to);
 		break;
 
 	case RDMAP_SEND:
-		pr_info("QP%04d %s(SEND, MPA len %d): %08x %08x "
-			"%08x\n", qp_id, msg, ntohs(hdr->ctrl.mpa_len),
+		pr_info("QP%04d %s(SEND, MPA len %d): %08x %08x %08x\n",
+			qp_id, msg, ntohs(hdr->ctrl.mpa_len),
 			hdr->send.ddp_qn, hdr->send.ddp_msn, hdr->send.ddp_mo);
 		break;
 
 	case RDMAP_SEND_INVAL:
-		pr_info("QP%04d %s(S_INV, MPA len %d): %08x %08x "
-			"%08x\n", qp_id, msg, ntohs(hdr->ctrl.mpa_len),
+		pr_info("QP%04d %s(S_INV, MPA len %d): %08x %08x %08x\n",
+			qp_id, msg, ntohs(hdr->ctrl.mpa_len),
 			hdr->send.ddp_qn, hdr->send.ddp_msn,
 			hdr->send.ddp_mo);
 		break;
 
 	case RDMAP_SEND_SE:
-		pr_info("QP%04d %s(S_SE, MPA len %d): %08x %08x "
-			"%08x\n", qp_id, msg, ntohs(hdr->ctrl.mpa_len),
+		pr_info("QP%04d %s(S_SE, MPA len %d): %08x %08x %08x\n",
+			qp_id, msg, ntohs(hdr->ctrl.mpa_len),
 			hdr->send.ddp_qn, hdr->send.ddp_msn,
 			hdr->send.ddp_mo);
 		break;
 
 	case RDMAP_SEND_SE_INVAL:
-		pr_info("QP%04d %s(S_SE_INV, MPA len %d): %08x %08x "
-			"%08x\n", qp_id, msg, ntohs(hdr->ctrl.mpa_len),
+		pr_info("QP%04d %s(S_SE_INV, MPA len %d): %08x %08x %08x\n",
+			qp_id, msg, ntohs(hdr->ctrl.mpa_len),
 			hdr->send.ddp_qn, hdr->send.ddp_msn,
 			hdr->send.ddp_mo);
 		break;
@@ -430,13 +424,13 @@ void siw_print_rctx(struct siw_iwarp_rx *rctx)
 	siw_print_hdr(&rctx->hdr, RX_QPID(rctx), "\nCurrent Pkt:\t");
 	pr_info("Skbuf State:\tp:0x%p, new:%d, off:%d, copied:%d\n",
 		rctx->skb, rctx->skb_new, rctx->skb_offset, rctx->skb_copied);
-	pr_info("FPDU State:\trx_state:%d,\n\t\trcvd:%d, rem:%d, "
-		"pad:%d\n", rctx->state, rctx->fpdu_part_rcvd,
+	pr_info("FPDU State:\trx_state:%d,\n\t\trcvd:%d, rem:%d, pad:%d\n",
+		rctx->state, rctx->fpdu_part_rcvd,
 		rctx->fpdu_part_rem, rctx->pad);
 	pr_info("Rx Mem:\t\tp:0x%p, stag:0x%08x, mem_id:%d\n",
 		&rctx->wqe_active, rctx->ddp_stag, rctx->ddp_stag >> 8);
-	pr_info("DDP State:\tprev_op:%d, first_seg:%d, "
-		"more_segs:%d\n", rctx->prev_rdmap_opcode, rctx->first_ddp_seg,
+	pr_info("DDP State:\tprev_op:%d, first_seg:%d, more_segs:%d\n",
+		rctx->prev_rdmap_opcode, rctx->first_ddp_seg,
 		rctx->more_ddp_segs);
 	pr_info("MPA State:\tlen:%d, crc_enabled:%d, crc:0x%x\n",
 		ntohs(rctx->hdr.ctrl.mpa_len), rctx->mpa_crc_hd ? 1 : 0,

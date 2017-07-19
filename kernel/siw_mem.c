@@ -84,6 +84,7 @@ void siw_umem_release(struct siw_umem *umem)
 
 	for (i = 0; num_pages; i++) {
 		int to_free = min_t(int, PAGES_PER_CHUNK, num_pages);
+
 		siw_free_plist(&umem->page_chunk[i], to_free);
 		kfree(umem->page_chunk[i].p);
 		num_pages -= to_free;
@@ -91,6 +92,7 @@ void siw_umem_release(struct siw_umem *umem)
 	put_pid(umem->pid);
 	if (task) {
 		struct mm_struct *mm_s = get_task_mm(task);
+
 		put_task_struct(task);
 		if (mm_s) {
 			if (down_write_trylock(&mm_s->mmap_sem)) {
@@ -99,7 +101,7 @@ void siw_umem_release(struct siw_umem *umem)
 				mmput(mm_s);
 			} else {
 				/*
-				 * Schedule delayed accounting if 
+				 * Schedule delayed accounting if
 				 * mm semaphore not available
 				 */
 				INIT_WORK(&umem->work, siw_umem_update_stats);
@@ -131,8 +133,10 @@ u64 siw_pbl_get_buffer(struct siw_pbl *pbl, u64 off, int *len, int *idx)
 
 	while (i < pbl->num_buf) {
 		struct siw_pble *pble = &pbl->pbe[i];
+
 		if (pble->pbl_off + pble->size > off) {
 			u64 pble_off = off - pble->pbl_off;
+
 			if (len)
 				*len = pble->size - pble_off;
 			if (idx)
@@ -150,7 +154,7 @@ u64 siw_pbl_get_buffer(struct siw_pbl *pbl, u64 off, int *len, int *idx)
 struct siw_pbl *siw_pbl_alloc(u32 num_buf)
 {
 	struct siw_pbl *pbl;
-	int buf_size = sizeof *pbl;
+	int buf_size = sizeof(*pbl);
 
 	if (num_buf == 0)
 		return ERR_PTR(-EINVAL);
@@ -183,7 +187,7 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 	num_pages = PAGE_ALIGN(start + len - first_page_va) >> PAGE_SHIFT;
 	num_chunks = (num_pages >> CHUNK_SHIFT) + 1;
 
-	umem = kzalloc(sizeof *umem, GFP_KERNEL);
+	umem = kzalloc(sizeof(*umem), GFP_KERNEL);
 	if (!umem)
 		return ERR_PTR(-ENOMEM);
 
@@ -210,6 +214,7 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 	}
 	for (i = 0; num_pages; i++) {
 		int got, nents = min_t(int, num_pages, PAGES_PER_CHUNK);
+
 		umem->page_chunk[i].p = kzalloc(nents * sizeof(struct page *),
 						GFP_KERNEL);
 		if (!umem->page_chunk[i].p) {
@@ -219,9 +224,10 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 		got = 0;
 		while (nents) {
 			struct page **plist = &umem->page_chunk[i].p[got];
+
 			rv = get_user_pages(first_page_va, nents, FOLL_WRITE,
 					    plist, NULL);
-			if (rv < 0 )
+			if (rv < 0)
 				goto out;
 
 			umem->num_pages += rv;
@@ -242,8 +248,6 @@ out:
 
 	return ERR_PTR(rv);
 }
-
-#if 1
 
 /*
  * DMA mapping/address translation functions.
@@ -474,7 +478,7 @@ static int siw_dma_generic_set_mask(struct device *dev, u64 mask)
 	return 0;
 }
 
-struct dma_map_ops siw_dma_generic_ops = {
+const struct dma_map_ops siw_dma_generic_ops = {
 	.alloc			= siw_dma_generic_alloc,
 	.free			= siw_dma_generic_free,
 	.map_page		= siw_dma_generic_map_page,
@@ -490,4 +494,3 @@ struct dma_map_ops siw_dma_generic_ops = {
 	.set_dma_mask		= siw_dma_generic_set_mask,
 	.is_phys		= 1
 };
-#endif

@@ -694,19 +694,20 @@ extern void siw_pbl_free(struct siw_pbl *);
 
 
 /* QP TX path functions */
-extern int siw_qp_sq_process(struct siw_qp *);
+extern int siw_run_sq(void *arg);
+extern int siw_qp_sq_process(struct siw_qp *qp);
 extern int siw_sq_worker_init(void);
 extern void siw_sq_worker_exit(void);
-extern int siw_sq_start(struct siw_qp *);
-extern int siw_activate_tx(struct siw_qp *);
+extern int siw_sq_start(struct siw_qp *qp);
+extern int siw_activate_tx(struct siw_qp *qp);
 
 /* QP RX path functions */
-extern int siw_proc_send(struct siw_qp *, struct siw_iwarp_rx *);
-extern int siw_proc_rreq(struct siw_qp *, struct siw_iwarp_rx *);
-extern int siw_proc_rresp(struct siw_qp *, struct siw_iwarp_rx *);
-extern int siw_proc_write(struct siw_qp *, struct siw_iwarp_rx *);
-extern int siw_proc_terminate(struct siw_qp*, struct siw_iwarp_rx *);
-extern int siw_proc_unsupp(struct siw_qp *, struct siw_iwarp_rx *);
+extern int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rx);
+extern int siw_proc_rreq(struct siw_qp *qp, struct siw_iwarp_rx *rx);
+extern int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rx);
+extern int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rx);
+extern int siw_proc_terminate(struct siw_qp *qp, struct siw_iwarp_rx *rx);
+extern int siw_proc_unsupp(struct siw_qp *qp, struct siw_iwarp_rx *rx);
 
 extern int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 			   unsigned int off, size_t len);
@@ -724,12 +725,15 @@ static inline int siw_crc_page(struct shash_desc *desc, struct page *p,
 	return crypto_shash_update(desc, page_address(p) + off, len);
 }
 
+extern struct task_struct *qp_tx_thread[];
+extern int default_tx_cpu;
+
 
 /* Varia */
-extern void siw_cq_flush(struct siw_cq *);
-extern void siw_sq_flush(struct siw_qp *);
-extern void siw_rq_flush(struct siw_qp *);
-extern int siw_reap_cqe(struct siw_cq *, struct ib_wc *);
+extern void siw_cq_flush(struct siw_cq *cq);
+extern void siw_sq_flush(struct siw_qp *qp);
+extern void siw_rq_flush(struct siw_qp *qp);
+extern int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *wc);
 
 /* RDMA core event dipatching */
 extern void siw_qp_event(struct siw_qp *, enum ib_event_type);

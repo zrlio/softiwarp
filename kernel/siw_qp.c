@@ -167,8 +167,7 @@ void siw_qp_llp_data_ready(struct sock *sk)
 		   down_read_trylock(&qp->state_lock))) {
 		read_descriptor_t rd_desc = {.arg.data = qp, .count = 1};
 
-		dprint(DBG_SK|DBG_RX, "(QP%d): "
-			"state (before tcp_read_sock)=%d\n",
+		dprint(DBG_SK|DBG_RX, "(QP%d): state (before read_sock)=%d\n",
 			QP_ID(qp), qp->attrs.state);
 
 		if (likely(qp->attrs.state == SIW_QP_STATE_RTS))
@@ -180,14 +179,12 @@ void siw_qp_llp_data_ready(struct sock *sk)
 			 */
 			tcp_read_sock(sk, &rd_desc, siw_tcp_rx_data);
 
-		dprint(DBG_SK|DBG_RX, "(QP%d): "
-			"state (after tcp_read_sock)=%d\n",
+		dprint(DBG_SK|DBG_RX, "(QP%d): state (after read_sock)=%d\n",
 			QP_ID(qp), qp->attrs.state);
 
 		up_read(&qp->state_lock);
 	} else {
-		dprint(DBG_SK|DBG_RX, "(QP%d): "
-			"Unable to RX: rx_suspend: %d\n",
+		dprint(DBG_SK|DBG_RX, "(QP%d): Unable to RX: rx_suspend: %d\n",
 			QP_ID(qp), qp->rx_ctx.rx_suspend);
 	}
 done:
@@ -272,6 +269,7 @@ void siw_qp_llp_write_space(struct sock *sk)
 	 */
 #ifdef SIW_TX_FULLSEGS
 	struct socket *sock = sk->sk_socket;
+
 	if (sk_stream_wspace(sk) >= (int)cep->qp.tx_ctx.fpdu_len && sock) {
 		clear_bit(SOCK_NOSPACE, &sock->flags);
 		siw_sq_start(cep->qp);
@@ -332,7 +330,7 @@ static int siw_qp_enable_crc(struct siw_qp *qp)
 	if (IS_ERR(rxsh)) {
 		rv = -PTR_ERR(rxsh);
 		rxsh = NULL;
-	 	goto error;
+		goto error;
 	}
 
 	c_tx->mpa_crc_hd = kzalloc(sizeof(struct shash_desc) +
@@ -345,7 +343,6 @@ static int siw_qp_enable_crc(struct siw_qp *qp)
 		rv = -ENOMEM;
 		goto error;
 	}
-		
 	c_tx->mpa_crc_hd->tfm = txsh;
 	c_rx->mpa_crc_hd->tfm = rxsh;
 
@@ -386,7 +383,7 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 		spin_unlock_irqrestore(&qp->sq_lock, flags);
 		return -EIO;
 	}
-	memset(wqe->mem, 0, sizeof *wqe->mem * SIW_MAX_SGE);
+	memset(wqe->mem, 0, sizeof(*wqe->mem) * SIW_MAX_SGE);
 
 	wqe->wr_status = SR_WR_QUEUED;
 	wqe->sqe.flags = 0;
@@ -503,8 +500,8 @@ int siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 				rv = -EINVAL;
 				break;
 			}
-			dprint(DBG_CM, "(QP%d): Enter RTS: "
-				"peer 0x%08x, local 0x%08x\n", QP_ID(qp),
+			dprint(DBG_CM, "(QP%d): Enter RTS\n", QP_ID(qp));
+			dprint(DBG_CM, " peer 0x%08x, local 0x%08x\n",
 				qp->cep->llp.raddr.sin_addr.s_addr,
 				qp->cep->llp.laddr.sin_addr.s_addr);
 			/*
@@ -751,8 +748,7 @@ int siw_check_mem(struct siw_pd *pd, struct siw_mem *mem, u64 addr,
 	 * check access permissions
 	 */
 	if ((mem->perms & perms) < perms) {
-		dprint(DBG_WR|DBG_ON, "(PD%d): "
-			"INSUFFICIENT permissions 0x%08x : 0x%08x\n",
+		dprint(DBG_WR|DBG_ON, "(PD%d): permissions 0x%08x < 0x%08x\n",
 			OBJ_ID(pd), mem->perms, perms);
 		return -EPERM;
 	}
@@ -860,7 +856,7 @@ int siw_activate_tx(struct siw_qp *qp)
 	sqe = &qp->irq[qp->irq_get % qp->attrs.irq_size];
 
 	if (sqe->flags & SIW_WQE_VALID) {
-		memset(wqe->mem, 0, sizeof *wqe->mem * SIW_MAX_SGE);
+		memset(wqe->mem, 0, sizeof(*wqe->mem) * SIW_MAX_SGE);
 		wqe->wr_status = SR_WR_QUEUED;
 
 		/* start READ RESPONSE */
@@ -875,20 +871,21 @@ int siw_activate_tx(struct siw_qp *qp)
 
 		wqe->processed = 0;
 		qp->irq_get++;
+		/* mark current IRQ entry free */
 		smp_store_mb(sqe->flags, 0);
 
 		goto out;
-	} 
+	}
 
 	sqe = sq_get_next(qp);
 	if (sqe) {
 		unsigned long flags;
 
-		memset(wqe->mem, 0, sizeof *wqe->mem * SIW_MAX_SGE);
+		memset(wqe->mem, 0, sizeof(*wqe->mem) * SIW_MAX_SGE);
 		wqe->wr_status = SR_WR_QUEUED;
 
 		/* First copy SQE to kernel private memory */
-		memcpy(&wqe->sqe, sqe, sizeof *sqe);
+		memcpy(&wqe->sqe, sqe, sizeof(*sqe));
 
 		if (wqe->sqe.opcode >= SIW_NUM_OPCODES) {
 			rv = -EINVAL;
@@ -896,7 +893,7 @@ int siw_activate_tx(struct siw_qp *qp)
 		}
 
 		if (wqe->sqe.flags & SIW_WQE_INLINE) {
-			if (wqe->sqe.opcode != SIW_OP_SEND && 
+			if (wqe->sqe.opcode != SIW_OP_SEND &&
 			    wqe->sqe.opcode != SIW_OP_WRITE) {
 				rv = -EINVAL;
 				goto out;
@@ -909,7 +906,7 @@ int siw_activate_tx(struct siw_qp *qp)
 			wqe->sqe.sge[0].lkey = 0;
 			wqe->sqe.num_sge = 1;
 		}
-		
+
 		if (wqe->sqe.flags & SIW_WQE_READ_FENCE) {
 			/* A READ cannot be fenced */
 			if (unlikely(wqe->sqe.opcode == SIW_OP_READ ||
@@ -955,7 +952,7 @@ int siw_activate_tx(struct siw_qp *qp)
 		qp->sq_get++;
 	} else
 		rv = 0;
-	
+
 out:
 	if (unlikely(rv < 0)) {
 		pr_warn("QP[%d]: error %d in activate_tx\n", QP_ID(qp), rv);
@@ -973,9 +970,10 @@ static void siw_cq_notify(struct siw_cq *cq, u32 flags)
 
 	cq_notify = _load_shared(*cq->notify);
 
-	if ((cq_notify & SIW_NOTIFY_NEXT_COMPLETION) || 
+	if ((cq_notify & SIW_NOTIFY_NEXT_COMPLETION) ||
 	    ((cq_notify & SIW_NOTIFY_SOLICITED) &&
 	     (flags & SIW_WQE_SOLICITED))) {
+		/* de-arm CQ */
 		smp_store_mb(*cq->notify, SIW_NOTIFY_NOT);
 		(*cq->ofa_cq.comp_handler)(&cq->ofa_cq, cq->ofa_cq.cq_context);
 	}
@@ -1011,7 +1009,9 @@ int siw_sqe_complete(struct siw_qp *qp, struct siw_sqe *sqe, u32 bytes,
 			} else
 				cqe->qp_id = QP_ID(qp);
 
+			/* mark CQE valid for application */
 			smp_store_mb(cqe->flags, SIW_WQE_VALID);
+			/* recycle SQE */
 			smp_store_mb(sqe->flags, 0);
 
 			cq->cq_put++;
@@ -1022,7 +1022,7 @@ int siw_sqe_complete(struct siw_qp *qp, struct siw_sqe *sqe, u32 bytes,
 			rv = -ENOMEM;
 			siw_cq_event(cq, IB_EVENT_CQ_ERR);
 		}
-	} else
+	} else /* recycle SQE */
 		smp_store_mb(sqe->flags, 0);
 
 	return rv;
@@ -1058,7 +1058,9 @@ int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
 			} else
 				cqe->qp_id = QP_ID(qp);
 
+			/* mark CQE valid for application */
 			smp_store_mb(cqe->flags, SIW_WQE_VALID);
+			/* recycle RQE */
 			smp_store_mb(rqe->flags, 0);
 
 			cq->cq_put++;
@@ -1069,7 +1071,7 @@ int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
 			rv = -ENOMEM;
 			siw_cq_event(cq, IB_EVENT_CQ_ERR);
 		}
-	} else
+	} else /* recycle RQE */
 		smp_store_mb(rqe->flags, 0);
 
 	return rv;

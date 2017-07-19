@@ -60,11 +60,11 @@ static bool mpa_crc_strict = true;
 module_param(mpa_crc_strict, bool, 0644);
 static bool mpa_crc_required;
 module_param(mpa_crc_required, bool, 0644);
-static bool tcp_nodelay = false;
+static bool tcp_nodelay; /* default false */
 module_param(tcp_nodelay, bool, 0644);
 static u_char  mpa_version = MPA_REVISION_2;
 module_param(mpa_version, byte, 0644);
-static bool peer_to_peer = false;	/* if we don't need RTR */
+static bool peer_to_peer;	/* default false: no need for P2P mode */
 module_param(peer_to_peer, bool, 0644);
 
 MODULE_PARM_DESC(mpa_crc_required, "MPA CRC required");
@@ -122,6 +122,7 @@ static void siw_sk_assign_cm_upcalls(struct sock *sk)
 static void siw_sk_save_upcalls(struct sock *sk)
 {
 	struct siw_cep *cep = sk_to_cep(sk);
+
 	BUG_ON(!cep);
 
 	write_lock_bh(&sk->sk_callback_lock);
@@ -221,12 +222,14 @@ void siw_sk_assign_rtr_upcalls(struct siw_cep *cep)
 static inline int kernel_peername(struct socket *s, struct sockaddr_in *addr)
 {
 	int unused;
+
 	return s->ops->getname(s, (struct sockaddr *)addr, &unused, 1);
 }
 
 static inline int kernel_localname(struct socket *s, struct sockaddr_in *addr)
 {
 	int unused;
+
 	return s->ops->getname(s, (struct sockaddr *)addr, &unused, 0);
 }
 
@@ -242,7 +245,8 @@ static void siw_cep_socket_assoc(struct siw_cep *cep, struct socket *s)
 
 static struct siw_cep *siw_cep_alloc(struct siw_dev  *sdev)
 {
-	struct siw_cep *cep = kzalloc(sizeof *cep, GFP_KERNEL);
+	struct siw_cep *cep = kzalloc(sizeof(*cep), GFP_KERNEL);
+
 	if (cep) {
 		unsigned long flags;
 
@@ -382,7 +386,7 @@ static int siw_cm_alloc_work(struct siw_cep *cep, int num)
 	BUG_ON(!list_empty(&cep->work_freelist));
 
 	while (num--) {
-		work = kmalloc(sizeof *work, GFP_KERNEL);
+		work = kmalloc(sizeof(*work), GFP_KERNEL);
 		if (!work) {
 			if (!(list_empty(&cep->work_freelist)))
 				siw_cm_free_work(cep);
@@ -407,7 +411,7 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 	struct iw_cm_event	event;
 	struct iw_cm_id		*cm_id;
 
-	memset(&event, 0, sizeof event);
+	memset(&event, 0, sizeof(event));
 	event.status = status;
 	event.event = reason;
 
@@ -440,7 +444,7 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 		to_sockaddr_in(event.remote_addr) = cep->llp.raddr;
 	}
 	/* Signal IRD and ORD */
-	if (reason == IW_CM_EVENT_ESTABLISHED || 
+	if (reason == IW_CM_EVENT_ESTABLISHED ||
 	    reason == IW_CM_EVENT_CONNECT_REPLY) {
 		/* Signal negotiated IRD/ORD values we will use */
 		event.ird = cep->ird;
@@ -449,8 +453,8 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 		event.ird = cep->ord;
 		event.ord = cep->ird;
 	}
-	dprint(DBG_CM, " (QP%d): cep=0x%p, id=0x%p, dev(id)=%s, "
-		"reason=%d, status=%d\n",
+	dprint(DBG_CM,
+	       " (QP%d): cep=0x%p, id=0x%p, dev=%s, reason=%d, status=%d\n",
 		cep->qp ? QP_ID(cep->qp) : -1, cep, cm_id,
 		cm_id->device->name, reason, status);
 
@@ -461,7 +465,7 @@ void siw_send_terminate(struct siw_qp *qp, u8 layer, u8 etype, u8 ecode)
 {
 	struct iwarp_terminate	pkt;
 
-	memset(&pkt, 0, sizeof pkt);
+	memset(&pkt, 0, sizeof(pkt));
 	pkt.term_ctrl = (layer & 0xf) | ((etype & 0xf) << 4) |
 			((u32)ecode << 8);
 	pkt.term_ctrl = cpu_to_be32(pkt.term_ctrl);
@@ -502,10 +506,8 @@ void siw_qp_cm_drop(struct siw_qp *qp, int schedule)
 		/*
 		 * Immediately close socket
 		 */
-		dprint(DBG_CM, "(): immediate close, cep=0x%p, state=%d, "
-			"id=0x%p, sock=0x%p, QP%d\n", cep, cep->state,
-			cep->cm_id, cep->llp.sock,
-			cep->qp ? QP_ID(cep->qp) : -1);
+		dprint(DBG_CM, "(QP%d): immediate close, cep state %d\n",
+			cep->qp ? QP_ID(cep->qp) : -1, cep->state);
 
 		if (cep->cm_id) {
 			switch (cep->state) {
@@ -597,17 +599,17 @@ static int siw_send_mpareqrep(struct siw_cep *cep, const void *pdata,
 	int		iovec_num = 0;
 	int		mpa_len;
 
-	memset(&msg, 0, sizeof msg);
+	memset(&msg, 0, sizeof(msg));
 
 	iov[iovec_num].iov_base = rr;
-	iov[iovec_num].iov_len = sizeof *rr;
-	mpa_len = sizeof *rr;
+	iov[iovec_num].iov_len = sizeof(*rr);
+	mpa_len = sizeof(*rr);
 
 	if (cep->enhanced_rdma_conn_est) {
 		iovec_num++;
 		iov[iovec_num].iov_base = &cep->mpa.v2_ctrl;
-		iov[iovec_num].iov_len = sizeof cep->mpa.v2_ctrl;
-		mpa_len += sizeof cep->mpa.v2_ctrl;
+		iov[iovec_num].iov_len = sizeof(cep->mpa.v2_ctrl);
+		mpa_len += sizeof(cep->mpa.v2_ctrl);
 	}
 	if (pd_len) {
 		iovec_num++;
@@ -616,7 +618,7 @@ static int siw_send_mpareqrep(struct siw_cep *cep, const void *pdata,
 		mpa_len += pd_len;
 	}
 	if (cep->enhanced_rdma_conn_est)
-		pd_len += sizeof cep->mpa.v2_ctrl;
+		pd_len += sizeof(cep->mpa.v2_ctrl);
 
 	rr->params.pd_len = cpu_to_be16(pd_len);
 
@@ -675,7 +677,7 @@ static int siw_recv_mpa_rr(struct siw_cep *cep)
 		 */
 		u32 word;
 
-		rcvd = ksock_recv(s, (char *)&word, sizeof word, MSG_DONTWAIT);
+		rcvd = ksock_recv(s, (char *)&word, sizeof(word), MSG_DONTWAIT);
 		if (rcvd == -EAGAIN)
 			return 0;
 
@@ -754,7 +756,7 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 	memcpy(req->key, MPA_KEY_REP, 16);
 
 	if (version == MPA_REVISION_2 &&
-            (req->params.bits & MPA_RR_FLAG_ENHANCED)) {
+	    (req->params.bits & MPA_RR_FLAG_ENHANCED)) {
 		/*
 		 * MPA version 2 must signal IRD/ORD values and P2P mode
 		 * in private data if header flag MPA_RR_FLAG_ENHANCED
@@ -809,7 +811,7 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 		 * not supported.
 		 * Propose zero length Write if none of Read and Write
 		 * is indicated.
-		 */ 
+		 */
 		if (v2->ird & MPA_V2_PEER_TO_PEER) {
 			cep->mpa.v2_ctrl.ird |= MPA_V2_PEER_TO_PEER;
 
@@ -917,8 +919,8 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 			 * Protocol failure: The responder MUST reply with
 			 * MPA version 2 and MUST set MPA_RR_FLAG_ENHANCED.
 			 */
-			dprint(DBG_CM|DBG_ON, " MPA reply failure: version %d,"
-				" enhanced %d\n",
+			dprint(DBG_CM|DBG_ON,
+				" MPA reply error: version %d, enhanced %d\n",
 				__mpa_rr_revision(rep->params.bits),
 				rep->params.bits & MPA_RR_FLAG_ENHANCED ? 1:0);
 			(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
@@ -955,7 +957,7 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 			 * responder ORD, send a TERM.
 			 */
 			siw_send_terminate(qp, RDMAP_ERROR_LAYER_LLP,
-				           LLP_ETYPE_MPA,
+					   LLP_ETYPE_MPA,
 					   LLP_ECODE_INSUFFICIENT_IRD);
 			rv = -ENOMEM;
 			goto out_err;
@@ -975,11 +977,11 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 			 * Only zero length READ and WRITE are supported,
 			 * send a TERM otherwise.
 			 */
-			dprint(DBG_ON, " Peer refuses requested RTR mode: "
-				       " Req %2x, Got %2x\n",
-				       mpa_p2p_mode,
-				       v2->ord & (MPA_V2_RDMA_WRITE_RTR |
-					          MPA_V2_RDMA_READ_RTR));
+			dprint(DBG_ON,
+				" Peer refuses RTR mode:  Req %2x, Got %2x\n",
+				mpa_p2p_mode,
+				v2->ord & (MPA_V2_RDMA_WRITE_RTR |
+					   MPA_V2_RDMA_READ_RTR));
 
 			siw_send_terminate(qp, RDMAP_ERROR_LAYER_LLP,
 					   LLP_ETYPE_MPA,
@@ -989,7 +991,7 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 		}
 	}
 
-	memset(&qp_attrs, 0, sizeof qp_attrs);
+	memset(&qp_attrs, 0, sizeof(qp_attrs));
 	qp_attrs.mpa.marker_rcv = 0;
 	qp_attrs.mpa.marker_snd = 0;
 	qp_attrs.mpa.crc = cep->mpa.hdr.params.bits & MPA_RR_FLAG_CRC ? 1 : 0;
@@ -1071,34 +1073,38 @@ static void siw_accept_newconn(struct siw_cep *cep)
 		 * TODO: Already aborted by peer?
 		 * Is there anything we should do?
 		 */
-		dprint(DBG_CM|DBG_ON, "(cep=0x%p): ERROR: "
-			"kernel_accept(): rv=%d\n", cep, rv);
+		dprint(DBG_CM|DBG_ON,
+			"(cep=0x%p): ERROR: kernel_accept(): rv=%d\n",
+			cep, rv);
 		goto error;
 	}
 	new_cep->llp.sock = new_s;
 	siw_cep_get(new_cep);
 	new_s->sk->sk_user_data = new_cep;
 
-	dprint(DBG_CM, "(cep=0x%p, s=0x%p, new_s=0x%p): "
-		"New LLP connection accepted\n", cep, s, new_s);
+	dprint(DBG_CM, "(cep=0x%p, s=0x%p, new_s=0x%p): LLP conn accepted\n",
+		cep, s, new_s);
 
 	rv = siw_sock_nodelay(new_s);
 	if (rv != 0) {
-		dprint(DBG_CM|DBG_ON, "(cep=0x%p): ERROR: "
-			"siw_sock_nodelay(): rv=%d\n", cep, rv);
+		dprint(DBG_CM|DBG_ON,
+			"(cep=0x%p): ERROR: siw_sock_nodelay(): rv=%d\n",
+			cep, rv);
 		goto error;
 	}
 
 	rv = kernel_peername(new_s, &new_cep->llp.raddr);
 	if (rv != 0) {
-		dprint(DBG_CM|DBG_ON, "(cep=0x%p): ERROR: "
-			"kernel_peername(): rv=%d\n", cep, rv);
+		dprint(DBG_CM|DBG_ON,
+			"(cep=0x%p): ERROR: kernel_peername(): rv=%d\n",
+			cep, rv);
 		goto error;
 	}
 	rv = kernel_localname(new_s, &new_cep->llp.laddr);
 	if (rv != 0) {
-		dprint(DBG_CM|DBG_ON, "(cep=0x%p): ERROR: "
-			"kernel_localname(): rv=%d\n", cep, rv);
+		dprint(DBG_CM|DBG_ON,
+			"(cep=0x%p): ERROR: kernel_localname(): rv=%d\n",
+			cep, rv);
 		goto error;
 	}
 
@@ -1203,15 +1209,15 @@ static void siw_cm_work_handler(struct work_struct *w)
 			 * any connection management already done.
 			 * silently ignore the mpa packet.
 			 */
-			dprint(DBG_CM, "(): CEP not in MPA "
-				"handshake state: %d\n", cep->state);
+			dprint(DBG_CM,
+				"(): CEP not in MPA handshake state: %d\n",
+				cep->state);
 			if (cep->state == SIW_EPSTATE_RDMA_MODE) {
 				cep->llp.sock->sk->sk_data_ready(
 					cep->llp.sock->sk);
 				pr_info("cep already in RDMA mode");
 			} else
 				pr_info("cep out of state: %d\n", cep->state);
-				
 		}
 		if (rv && rv != EAGAIN)
 			release_cep = 1;
@@ -1234,8 +1240,8 @@ static void siw_cm_work_handler(struct work_struct *w)
 
 	case SIW_CM_WORK_PEER_CLOSE:
 
-		dprint(DBG_CM, "(): SIW_CM_WORK_PEER_CLOSE, "
-			"cep->state=%d\n", cep->state);
+		dprint(DBG_CM, "(): SIW_CM_WORK_PEER_CLOSE, cep->state=%d\n",
+			cep->state);
 
 		if (cep->cm_id) {
 			switch (cep->state) {
@@ -1274,16 +1280,15 @@ static void siw_cm_work_handler(struct work_struct *w)
 				/*
 				 * Wait for the CM to call its accept/reject
 				 */
-				dprint(DBG_CM, "(): STATE_RECVD_MPAREQ: "
-					"wait for CM:\n");
+				dprint(DBG_CM,
+					"(): MPAREQ received, wait for CM\n");
 				break;
 			case SIW_EPSTATE_AWAIT_MPAREQ:
 				/*
 				 * Socket close before MPA request received.
 				 */
 				dprint(DBG_CM,
-					"(): STATE_AWAIT_MPAREQ: "
-					"unlink from Listener\n");
+					"(): await MPAREQ: drop Listener\n");
 				siw_cep_put(cep->listen_cep);
 				cep->listen_cep = NULL;
 
@@ -1331,9 +1336,8 @@ static void siw_cm_work_handler(struct work_struct *w)
 	}
 
 	if (release_cep) {
-
-		dprint(DBG_CM, " (CEP 0x%p): Release: "
-			"mpa_timer=%s, sock=0x%p, QP%d, id=0x%p\n",
+		dprint(DBG_CM,
+		" (CEP 0x%p): Release: timer=%s, sock=0x%p, QP%d, id=0x%p\n",
 			cep, cep->mpa_timer ? "y" : "n", cep->llp.sock,
 			cep->qp ? QP_ID(cep->qp) : -1, cep->cm_id);
 
@@ -1402,8 +1406,8 @@ int siw_cm_queue_work(struct siw_cep *cep, enum siw_work_type type)
 		else
 			delay = MPAREP_TIMEOUT;
 	}
-	dprint(DBG_CM, " (QP%d): WORK type: %d, CEP: 0x%p, work 0x%p, "
-		"timeout %lu\n",
+	dprint(DBG_CM,
+		" (QP%d): WORK type: %d, CEP: 0x%p, work 0x%p, timeout %lu\n",
 		cep->qp ? QP_ID(cep->qp) : -1, type, cep, work, delay);
 
 	queue_delayed_work(siw_cm_wq, &work->work, delay);
@@ -1526,7 +1530,7 @@ static int kernel_bindconnect(struct socket *s,
 	 * chooses ports in use
 	 */
 	err = kernel_setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char *)&s_val,
-				sizeof s_val);
+				sizeof(s_val));
 	if (err < 0)
 		goto done;
 
@@ -1588,8 +1592,8 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	 * mode. Might be reconsidered for async connection setup at
 	 * TCP level.
 	 */
-	rv = kernel_bindconnect(s, laddr, sizeof *laddr, raddr,
-				sizeof *raddr, 0);
+	rv = kernel_bindconnect(s, laddr, sizeof(*laddr), raddr,
+				sizeof(*raddr), 0);
 	if (rv != 0) {
 		dprint(DBG_CM, "(id=0x%p, QP%d): kernel_bindconnect: rv=%d\n",
 			id, QP_ID(qp), rv);
@@ -1796,8 +1800,8 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 
 	if (params->ord > sdev->attrs.max_ord ||
 	    params->ird > sdev->attrs.max_ird) {
-		dprint(DBG_CM|DBG_ON, "(id=0x%p, QP%d): "
-			"ORD: %d (max: %d), IRD: %d (max: %d)\n",
+		dprint(DBG_CM|DBG_ON,
+			"(id=0x%p, QP%d): ORD %d (max %d), IRD %d (max %d)\n",
 			id, QP_ID(qp),
 			params->ord, sdev->attrs.max_ord,
 			params->ird, sdev->attrs.max_ird);
@@ -1809,8 +1813,8 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		max_priv_data -= sizeof(struct mpa_v2_data);
 
 	if (params->private_data_len > max_priv_data) {
-		dprint(DBG_CM|DBG_ON, "(id=0x%p, QP%d): "
-			"Private data too long: %d (max: %d)\n",
+		dprint(DBG_CM|DBG_ON,
+			"(id=0x%p, QP%d): Private data length: %d (max %d)\n",
 			id, QP_ID(qp),
 			params->private_data_len, max_priv_data);
 		rv =  -EINVAL;
@@ -1857,7 +1861,7 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	cep->cm_id = id;
 	id->add_ref(id);
 
-	memset(&qp_attrs, 0, sizeof qp_attrs);
+	memset(&qp_attrs, 0, sizeof(qp_attrs));
 	qp_attrs.orq_size = cep->ord;
 	qp_attrs.irq_size = cep->ird;
 	qp_attrs.llp_stream_handle = cep->llp.sock;
@@ -1992,8 +1996,8 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 
 	rv = sock_create(AF_INET, SOCK_STREAM, IPPROTO_TCP, &s);
 	if (rv < 0) {
-		dprint(DBG_CM|DBG_ON, "(id=0x%p): ERROR: "
-			"sock_create(): rv=%d\n", id, rv);
+		dprint(DBG_CM|DBG_ON,
+			"(id=0x%p): ERROR: sock_create(): rv=%d\n", id, rv);
 		return rv;
 	}
 
@@ -2003,14 +2007,15 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 	 */
 	s_val = 1;
 	rv = kernel_setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char *)&s_val,
-			       sizeof s_val);
+			       sizeof(s_val));
 	if (rv != 0) {
-		dprint(DBG_CM|DBG_ON, "(id=0x%p): ERROR: "
-			"kernel_setsockopt(): rv=%d\n", id, rv);
+		dprint(DBG_CM|DBG_ON,
+			"(id=0x%p): ERROR: kernel_setsockopt(): rv=%d\n",
+			id, rv);
 		goto error;
 	}
 
-	rv = s->ops->bind(s, laddr, sizeof *laddr);
+	rv = s->ops->bind(s, laddr, sizeof(*laddr));
 	if (rv != 0) {
 		dprint(DBG_CM|DBG_ON, "(id=0x%p): ERROR: bind(): rv=%d\n",
 			id, rv);
@@ -2026,8 +2031,8 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 
 	rv = siw_cm_alloc_work(cep, backlog);
 	if (rv != 0) {
-		dprint(DBG_CM|DBG_ON, "(id=0x%p): ERROR: "
-			"siw_cm_alloc_work(backlog=%d): rv=%d\n",
+		dprint(DBG_CM|DBG_ON,
+			"(id=0x%p): ERROR: alloc_work(backlog=%d): rv=%d\n",
 			id, backlog, rv);
 		goto error;
 	}
@@ -2043,8 +2048,8 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 	 * TODO: Do we really need the copies of local_addr and remote_addr
 	 *	 in CEP ???
 	 */
-	memcpy(&cep->llp.laddr, &id->local_addr, sizeof cep->llp.laddr);
-	memcpy(&cep->llp.raddr, &id->remote_addr, sizeof cep->llp.raddr);
+	memcpy(&cep->llp.laddr, &id->local_addr, sizeof(cep->llp.laddr));
+	memcpy(&cep->llp.raddr, &id->remote_addr, sizeof(cep->llp.raddr));
 
 	cep->cm_id = id;
 	id->add_ref(id);
@@ -2079,8 +2084,8 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 		INIT_LIST_HEAD((struct list_head *)id->provider_data);
 	}
 
-	dprint(DBG_CM, "(id=0x%p): dev(id)=%s, netdev=%s, "
-		"id->provider_data=0x%p, cep=0x%p\n",
+	dprint(DBG_CM,
+		"(id=0x%p): dev=%s, netdev=%s, provider_data=0x%p, cep=0x%p\n",
 		id, id->device->name,
 		siw_dev_ofa2siw(id->device)->netdev->name,
 		id->provider_data, cep);
@@ -2120,8 +2125,8 @@ static void siw_drop_listeners(struct iw_cm_id *id)
 	 * a listener's IWCM id is associated with more than one listening CEP.
 	 */
 	list_for_each_safe(p, tmp, (struct list_head *)id->provider_data) {
-
 		struct siw_cep *cep = list_entry(p, struct siw_cep, listenq);
+
 		list_del(p);
 
 		dprint(DBG_CM, "(id=0x%p): drop CEP 0x%p, state %d\n",
@@ -2173,19 +2178,18 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 
 		l_ip = (u8 *) &to_sockaddr_in(id->local_addr).sin_addr.s_addr;
 		r_ip = (u8 *) &to_sockaddr_in(id->remote_addr).sin_addr.s_addr;
-		dprint(DBG_CM, "(id=0x%p): "
-			"laddr(id)  : ipv4=%d.%d.%d.%d, port=%d; "
-			"raddr(id)  : ipv4=%d.%d.%d.%d, port=%d\n",
-			id,
-			l_ip[0], l_ip[1], l_ip[2], l_ip[3],
+		dprint(DBG_CM,
+			"(id=0x%p): laddr: ipv4=%d.%d.%d.%d, port=%d; "
+			"raddr: ipv4=%d.%d.%d.%d, port=%d\n",
+			id, l_ip[0], l_ip[1], l_ip[2], l_ip[3],
 			ntohs(to_sockaddr_in(id->local_addr).sin_port),
 			r_ip[0], r_ip[1], r_ip[2], r_ip[3],
 			ntohs(to_sockaddr_in(id->remote_addr).sin_port));
 
 		in_dev = in_dev_get(sdev->netdev);
 		if (!in_dev) {
-			dprint(DBG_CM|DBG_ON, "(id=0x%p): "
-				"netdev has no in_device\n", id);
+			dprint(DBG_CM|DBG_ON,
+				"(id=0x%p): netdev has no in_device\n", id);
 			return -ENODEV;
 		}
 
@@ -2202,10 +2206,9 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 				laddr.sin_addr.s_addr = ifa->ifa_address;
 
 				l_ip = (u8 *) &laddr.sin_addr.s_addr;
-				dprint(DBG_CM, "(id=0x%p): "
-					"laddr(bind): ipv4=%d.%d.%d.%d,"
-					" port=%d\n", id,
-					l_ip[0], l_ip[1], l_ip[2],
+				dprint(DBG_CM,
+				"(id=0x%p): bind: ipv4=%d.%d.%d.%d, port=%d\n",
+					id, l_ip[0], l_ip[1], l_ip[2],
 					l_ip[3], ntohs(laddr.sin_port));
 
 				rv = siw_listen_address(id, backlog,

@@ -58,9 +58,6 @@
 
 #include <linux/kthread.h>
 
-extern struct task_struct *qp_tx_thread[];
-extern int default_tx_cpu;
-
 static bool zcopy_tx = 1;
 module_param(zcopy_tx, bool, 0644);
 MODULE_PARM_DESC(zcopy_tx, "Zero copy user data transmit if possible");
@@ -86,6 +83,7 @@ static inline struct page *siw_get_pblpage(struct siw_mr *mr,
 	struct siw_pbl *pbl = mr->pbl;
 	u64 offset = addr - mr->mem.va;
 	u64 paddr = siw_pbl_get_buffer(pbl, offset, NULL, idx);
+
 	if (paddr)
 		return virt_to_page(paddr);
 	return NULL;
@@ -179,7 +177,7 @@ static int siw_try_1seg(struct siw_iwarp_tx *c_tx, char *payload)
 static int siw_qp_prepare_tx(struct siw_iwarp_tx *c_tx)
 {
 	struct siw_wqe		*wqe = &c_tx->wqe_active;
-	char 			*crc = NULL;
+	char			*crc = NULL;
 	int			data = 0;
 
 	dprint(DBG_TX, "(QP%d):\n", TX_QPID(c_tx));
@@ -584,6 +582,7 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 			BUG_ON(plen <= 0);
 			if (!is_kva) {
 				struct page *p;
+
 				if (mr->mem.is_pbl)
 					p = siw_get_pblpage(mr,
 						sge->laddr + sge_off,
@@ -603,6 +602,7 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 						     fp_off, plen);
 			} else {
 				u64 pa = ((sge->laddr + sge_off) & PAGE_MASK);
+
 				page_array[seg] = virt_to_page(pa);
 				if (do_crc)
 					siw_crc_array(c_tx->mpa_crc_hd,
@@ -620,6 +620,7 @@ static int siw_tx_hdt(struct siw_iwarp_tx *c_tx, struct socket *s)
 				       TX_QPID(c_tx));
 				if (!is_kva && !c_tx->use_sendpage) {
 					int i = (hdr_len > 0) ? 1 : 0;
+
 					seg--;
 					while (i < seg)
 						kunmap(page_array[i++]);
@@ -685,6 +686,7 @@ sge_done:
 				    hdr_len + data_len + trl_len);
 		if (!is_kva) {
 			int i = (hdr_len > 0) ? 1 : 0;
+
 			while (i < seg)
 				kunmap(page_array[i++]);
 		}
@@ -894,9 +896,8 @@ int siw_check_sgl_tx(struct siw_pd *pd, struct siw_wqe *wqe,
 		return -EINVAL;
 
 	while (num_sge-- > 0) {
-		dprint(DBG_WR, "(PD%d): sge=%p, perms=0x%x, "
-			"len=%d, sge->len=%d\n",
-			OBJ_ID(pd), sge, perms, len, sge->length);
+		dprint(DBG_WR, "(PD%d): perms=0x%x, len=%d, sge->len=%d\n",
+			OBJ_ID(pd), perms, len, sge->length);
 		/*
 		 * rdma verbs: do not check stag for a zero length sge
 		 */
@@ -1265,9 +1266,9 @@ next_wqe:
 			break;
 
 		case SIW_OP_READ_RESPONSE:
-			dprint(DBG_WR|DBG_TX|DBG_ON, "(QP%d): "
-				   "Processing RRESPONSE failed with %d\n",
-				    QP_ID(qp), rv);
+			dprint(DBG_WR|DBG_TX|DBG_ON,
+				"(QP%d): Processing RRESPONSE failed: %d\n",
+				QP_ID(qp), rv);
 
 			siw_qp_event(qp, IB_EVENT_QP_REQ_ERR);
 
@@ -1309,15 +1310,15 @@ void siw_sq_worker_exit(void)
 	}
 }
 
-void siw_sq_run(unsigned long arg)
+static void siw_sq_resume(struct siw_qp *qp)
 {
-	struct siw_qp *qp = (struct siw_qp *)arg;
 
 	if (down_read_trylock(&qp->state_lock)) {
 		if (likely(qp->attrs.state == SIW_QP_STATE_RTS &&
 			!qp->tx_ctx.tx_suspend)) {
 
 			int rv = siw_qp_sq_process(qp);
+
 			up_read(&qp->state_lock);
 
 			if (unlikely(rv < 0)) {
@@ -1329,7 +1330,7 @@ void siw_sq_run(unsigned long arg)
 		} else
 			up_read(&qp->state_lock);
 	} else
-		pr_info("QP[%d]: sq_run while QP locked\n", QP_ID(qp));
+		pr_info("QP[%d]: Resume SQ while QP locked\n", QP_ID(qp));
 
 	siw_qp_put(qp);
 }
@@ -1374,10 +1375,11 @@ int siw_run_sq(void *data)
 		active = llist_del_all(&tx_task->active);
 		if (active != NULL) {
 			struct siw_qp *next_qp;
+
 			llist_for_each_entry_safe(qp, next_qp, active,
 						  tx_list) {
 				qp->tx_list.next = NULL;
-				siw_sq_run((unsigned long)qp);
+				siw_sq_resume(qp);
 			}
 			stoptime = jiffies + HZ;
 		}
@@ -1390,7 +1392,7 @@ int siw_run_sq(void *data)
 	if (active != NULL) {
 		llist_for_each_entry(qp, active, tx_list) {
 			qp->tx_list.next = NULL;
-			siw_sq_run((unsigned long)qp);
+			siw_sq_resume(qp);
 		}
 	}
 
@@ -1415,6 +1417,7 @@ int siw_sq_start(struct siw_qp *qp)
 	}
 	if (!llist_empty(&per_cpu(tx_task_g, cpu).active)) {
 		int new_cpu;
+
 		for_each_online_cpu(new_cpu) {
 			if (qp_tx_thread[new_cpu] != NULL &&
 			    llist_empty(&per_cpu(tx_task_g, new_cpu).active)) {

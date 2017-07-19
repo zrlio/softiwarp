@@ -66,18 +66,18 @@ static int siw_wc_op_siw2ofa[SIW_NUM_OPCODES] = {
 
 static struct {
 	enum siw_opcode   siw;
-        enum ib_wc_opcode ofa;
-} map_cqe_status [SIW_NUM_WC_STATUS] = {
-	{SIW_WC_SUCCESS,	IB_WC_SUCCESS},
-	{SIW_WC_LOC_LEN_ERR,	IB_WC_LOC_LEN_ERR},
-	{SIW_WC_LOC_PROT_ERR,	IB_WC_LOC_PROT_ERR},
-	{SIW_WC_LOC_QP_OP_ERR,	IB_WC_LOC_QP_OP_ERR},
-	{SIW_WC_WR_FLUSH_ERR,	IB_WC_WR_FLUSH_ERR},
-	{SIW_WC_BAD_RESP_ERR,	IB_WC_BAD_RESP_ERR},
-	{SIW_WC_LOC_ACCESS_ERR,	IB_WC_LOC_ACCESS_ERR},
-	{SIW_WC_REM_ACCESS_ERR,	IB_WC_REM_ACCESS_ERR},
-	{SIW_WC_REM_INV_REQ_ERR,IB_WC_REM_INV_REQ_ERR},
-	{SIW_WC_GENERAL_ERR,	IB_WC_GENERAL_ERR}
+	enum ib_wc_opcode ofa;
+} map_cqe_status[SIW_NUM_WC_STATUS] = {
+	{SIW_WC_SUCCESS,		IB_WC_SUCCESS},
+	{SIW_WC_LOC_LEN_ERR,		IB_WC_LOC_LEN_ERR},
+	{SIW_WC_LOC_PROT_ERR,		IB_WC_LOC_PROT_ERR},
+	{SIW_WC_LOC_QP_OP_ERR,		IB_WC_LOC_QP_OP_ERR},
+	{SIW_WC_WR_FLUSH_ERR,		IB_WC_WR_FLUSH_ERR},
+	{SIW_WC_BAD_RESP_ERR,		IB_WC_BAD_RESP_ERR},
+	{SIW_WC_LOC_ACCESS_ERR,		IB_WC_LOC_ACCESS_ERR},
+	{SIW_WC_REM_ACCESS_ERR,		IB_WC_REM_ACCESS_ERR},
+	{SIW_WC_REM_INV_REQ_ERR,	IB_WC_REM_INV_REQ_ERR},
+	{SIW_WC_GENERAL_ERR,		IB_WC_GENERAL_ERR}
 };
 
 /*
@@ -85,7 +85,7 @@ static struct {
  */
 static void siw_wc_siw2ofa(struct siw_cqe *cqe, struct ib_wc *ofa_wc)
 {
-	memset(ofa_wc, 0, sizeof *ofa_wc);
+	memset(ofa_wc, 0, sizeof(*ofa_wc));
 
 	ofa_wc->wr_id = cqe->id;
 	ofa_wc->status = map_cqe_status[cqe->status].ofa;
@@ -124,10 +124,9 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 	if (cqe->flags & SIW_WQE_VALID) {
 		siw_wc_siw2ofa(cqe, ofa_wc);
 
-		dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d, p: %p "
-			" at idx %d\n",
+		dprint(DBG_WR, " QP%d, CQ%d: Reap WQE type: %d at idx %d\n",
 			QP_ID((struct siw_qp *)cqe->qp), OBJ_ID(cq),
-			cqe->opcode, cqe, cq->cq_get % cq->num_cqe);
+			cqe->opcode, cq->cq_get % cq->num_cqe);
 
 		if (cq->kernel_verbs)
 			siw_qp_put(cqe->qp);
@@ -135,6 +134,7 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *ofa_wc)
 		cqe->flags = 0;
 		cq->cq_get++;
 
+		/* Make cqe state visible to all */
 		smp_wmb();
 
 		spin_unlock_irqrestore(&cq->lock, flags);

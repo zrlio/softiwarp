@@ -79,9 +79,9 @@ module_param_array(tx_cpu_list, charp, NULL, 0444);
 MODULE_PARM_DESC(tx_cpu_list, "List of CPUs siw TX thread shall be bound to");
 
 int default_tx_cpu = -1;
-static int tx_on_all_cpus = 1;
-extern int siw_run_sq(void *);
 struct task_struct *qp_tx_thread[NR_CPUS];
+
+static int tx_on_all_cpus = 1;
 
 static ssize_t show_sw_version(struct device *dev,
 			       struct device_attribute *attr, char *buf)
@@ -99,8 +99,8 @@ static ssize_t show_if_type(struct device *dev,
 	return sprintf(buf, "%d\n", sdev->attrs.iftype);
 }
 
-static DEVICE_ATTR(sw_version, S_IRUGO, show_sw_version, NULL);
-static DEVICE_ATTR(if_type, S_IRUGO, show_if_type, NULL);
+static DEVICE_ATTR(sw_version, 0444, show_sw_version, NULL);
+static DEVICE_ATTR(if_type, 0444, show_if_type, NULL);
 
 static struct device_attribute *siw_dev_attributes[] = {
 	&dev_attr_sw_version,
@@ -141,17 +141,16 @@ static void siw_device_register(struct siw_dev *sdev)
 
 	rv = ib_register_device(ofa_dev, NULL);
 	if (rv) {
-		dprint(DBG_DM|DBG_ON, "(dev=%s): "
-		       "ib_register_device failed: rv=%d\n", ofa_dev->name, rv);
+		dprint(DBG_DM|DBG_ON, " %s: ib register error: rv=%d\n",
+			ofa_dev->name, rv);
 		return;
 	}
 
 	for (i = 0; i < ARRAY_SIZE(siw_dev_attributes); ++i) {
 		rv = device_create_file(&ofa_dev->dev, siw_dev_attributes[i]);
 		if (rv) {
-			dprint(DBG_DM|DBG_ON, "(dev=%s): "
-				"device_create_file failed: i=%d, rv=%d\n",
-				ofa_dev->name, i, rv);
+			dprint(DBG_DM|DBG_ON, " %s: create file error: rv=%d\n",
+				ofa_dev->name, rv);
 			ib_unregister_device(ofa_dev);
 			return;
 		}
@@ -160,8 +159,7 @@ static void siw_device_register(struct siw_dev *sdev)
 
 	sdev->attrs.vendor_part_id = dev_id++;
 
-	dprint(DBG_DM, ": Registered '%s' for interface '%s', "
-		"HWaddr=%02x.%02x.%02x.%02x.%02x.%02x\n",
+	dprint(DBG_DM, ": '%s' at '%s', HWaddr=%02x.%02x.%02x.%02x.%02x.%02x\n",
 		ofa_dev->name, sdev->netdev->name,
 		*(u8 *)sdev->netdev->dev_addr,
 		*((u8 *)sdev->netdev->dev_addr + 1),
@@ -210,7 +208,7 @@ static void siw_device_deregister(struct siw_dev *sdev)
 		i++;
 	}
 	if (i)
-		pr_warning("siw_device_deregister: free'd %d CEPs\n", i);
+		pr_warn("siw_device_deregister: free'd %d CEPs\n", i);
 
 	sdev->is_registered = 0;
 }
@@ -243,6 +241,7 @@ static struct siw_dev *siw_dev_from_netdev(struct net_device *dev)
 {
 	if (!list_empty(&siw_devlist)) {
 		struct list_head *pos;
+
 		list_for_each(pos, &siw_devlist) {
 			struct siw_dev *sdev =
 				list_entry(pos, struct siw_dev, list);
@@ -322,7 +321,8 @@ static int siw_dev_qualified(struct net_device *netdev)
 	return 0;
 }
 
-static void siw_verbs_sq_flush(struct ib_qp *ofa_qp) {
+static void siw_verbs_sq_flush(struct ib_qp *ofa_qp)
+{
 	struct siw_qp *qp = siw_qp_ofa2siw(ofa_qp);
 
 	down_write(&qp->state_lock);
@@ -330,7 +330,8 @@ static void siw_verbs_sq_flush(struct ib_qp *ofa_qp) {
 	up_write(&qp->state_lock);
 }
 
-static void siw_verbs_rq_flush(struct ib_qp *ofa_qp) {
+static void siw_verbs_rq_flush(struct ib_qp *ofa_qp)
+{
 	struct siw_qp *qp = siw_qp_ofa2siw(ofa_qp);
 
 	down_write(&qp->state_lock);
@@ -341,18 +342,18 @@ static void siw_verbs_rq_flush(struct ib_qp *ofa_qp) {
 static struct ib_ah *siw_create_ah(struct ib_pd *pd, struct ib_ah_attr *attr,
 			    struct ib_udata *udata)
 {
-	return ERR_PTR(-ENOSYS);
+	return ERR_PTR(-EOPNOTSUPP);
 }
 
 static int siw_destroy_ah(struct ib_ah *ah)
 {
-	return -ENOSYS;
+	return -EOPNOTSUPP;
 }
 
 
 static struct siw_dev *siw_device_create(struct net_device *netdev)
 {
-	struct siw_dev *sdev = (struct siw_dev *)ib_alloc_device(sizeof *sdev);
+	struct siw_dev *sdev = (struct siw_dev *)ib_alloc_device(sizeof(*sdev));
 	struct ib_device *ofa_dev;
 
 	if (!sdev)
@@ -382,7 +383,8 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 		 * The loopback device does not have a HW address,
 		 * but connection mangagement lib expects gid != 0
 		 */
-		size_t gidlen = min(strlen(ofa_dev->name), (size_t)6);
+		size_t gidlen = min_t(size_t, strlen(ofa_dev->name), 6);
+
 		memcpy(&ofa_dev->node_guid, ofa_dev->name, gidlen);
 	}
 	ofa_dev->owner = THIS_MODULE;
@@ -653,10 +655,8 @@ static __init int siw_init_module(void)
 	int nr_cpu;
 
 	if (SENDPAGE_THRESH < SIW_MAX_INLINE) {
-		pr_info("SENDPAGE_THRESH: %d < SIW_MAX_INLINE: %d"
-			" -- check SIW_MAX_SGE (%d)\n",
-			(int)SENDPAGE_THRESH, (int)SIW_MAX_INLINE,
-			(int)SIW_MAX_SGE);
+		pr_info("siw: sendpage threshold too small: %u\n",
+			(int)SENDPAGE_THRESH);
 		rv = EINVAL;
 		goto out;
 	}
@@ -694,8 +694,7 @@ static __init int siw_init_module(void)
 		if (tx_cpu_list[nr_cpu])
 			tx_on_all_cpus = 0;
 	}
-
-        if (siw_create_tx_threads(NR_CPUS, 1) == 0) {
+	if (siw_create_tx_threads(NR_CPUS, 1) == 0) {
 		pr_info("Try starting default TX thread\n");
 		if (siw_create_tx_threads(1, 0) == 0) {
 			pr_info("Could not start any TX thread\n");

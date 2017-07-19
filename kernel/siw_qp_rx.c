@@ -760,10 +760,11 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 /*
  * Only called at start of Read.Resonse processing.
- * Fetch pending Read from ORQ, but keep it valid until
- * Read.Response processing done. No Queue locking needed.
+ * Transfer pending Read from tip of ORQ into currrent rx wqe,
+ * but keep ORQ entry valid until Read.Response processing done.
+ * No Queue locking needed.
  */
-static struct siw_wqe *siw_orqe_get(struct siw_qp *qp)
+static int siw_orqe_start_rx(struct siw_qp *qp)
 {
 	struct siw_sqe *orqe;
 	struct siw_wqe *wqe = NULL;
@@ -785,8 +786,10 @@ static struct siw_wqe *siw_orqe_get(struct siw_qp *qp)
 		wqe->mem[0].obj = NULL;
 		wqe->wr_status = SR_WR_INPROGRESS;
 		smp_wmb();
+
+		return 0;
 	}
-	return wqe;
+	return -EPROTO;
 }
 
 
@@ -801,7 +804,7 @@ static struct siw_wqe *siw_orqe_get(struct siw_qp *qp)
  */
 int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 {
-	struct siw_wqe		*wqe;
+	struct siw_wqe		*wqe = rx_wqe(qp);
 	union siw_mem_resolved	*mem;
 	struct siw_sge		*sge;
 	struct siw_mr		*mr;
@@ -809,22 +812,21 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 				rv;
 
 	if (rctx->first_ddp_seg) {
-		if (unlikely(rx_wqe(qp)->wr_status != SR_WR_IDLE)) {
+		if (unlikely(wqe->wr_status != SR_WR_IDLE)) {
 			pr_warn("QP[%d]: Start RRESP: RX status %d, op %d\n",
-				QP_ID(qp), rx_wqe(qp)->wr_status,
-				rx_wqe(qp)->sqe.opcode);
+				QP_ID(qp), wqe->wr_status,
+				wqe->sqe.opcode);
 			rv = -EPROTO;
 			goto done;
 		}
 		/*
 		 * fetch pending RREQ from orq
 		 */
-		wqe = siw_orqe_get(qp);
-		if (unlikely(!wqe)) {
+		rv = siw_orqe_start_rx(qp);
+		if (rv) {
 			dprint(DBG_RX|DBG_ON, "(QP%d): ORQ empty at idx %d\n",
 				QP_ID(qp),
 				qp->orq_get % qp->attrs.orq_size);
-			rv = -EPROTO;
 			goto done;
 		}
 		rv = siw_rresp_check_ntoh(rctx);
@@ -833,10 +835,9 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			goto done;
 		}
 	} else {
-		wqe = rx_wqe(qp);
 		if (unlikely(wqe->wr_status != SR_WR_INPROGRESS)) {
 			pr_warn("QP[%d]: Resume RRESP: status %d\n",
-				QP_ID(qp), rx_wqe(qp)->wr_status);
+				QP_ID(qp), wqe->wr_status);
 			rv = -EPROTO;
 			goto done;
 		}
