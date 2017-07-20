@@ -337,8 +337,8 @@ static void siw_verbs_rq_flush(struct ib_qp *ofa_qp)
 	up_write(&qp->state_lock);
 }
 
-static struct ib_ah *siw_create_ah(struct ib_pd *pd, struct ib_ah_attr *attr,
-			    struct ib_udata *udata)
+static struct ib_ah *siw_create_ah(struct ib_pd *pd, struct rdma_ah_attr *attr,
+				   struct ib_udata *udata)
 {
 	return ERR_PTR(-EOPNOTSUPP);
 }
