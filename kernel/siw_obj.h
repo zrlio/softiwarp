@@ -88,26 +88,26 @@ static inline void siw_mem_get(struct siw_mem *mem)
 extern void siw_remove_obj(spinlock_t *lock, struct idr *idr,
 				struct siw_objhdr *hdr);
 
-extern void siw_objhdr_init(struct siw_objhdr *);
-extern void siw_idr_init(struct siw_dev *);
-extern void siw_idr_release(struct siw_dev *);
+extern void siw_objhdr_init(struct siw_objhdr *hdr);
+extern void siw_idr_init(struct siw_dev *dev);
+extern void siw_idr_release(struct siw_dev *dev);
 
-extern struct siw_cq *siw_cq_id2obj(struct siw_dev *, int);
-extern struct siw_qp *siw_qp_id2obj(struct siw_dev *, int);
-extern struct siw_mem *siw_mem_id2obj(struct siw_dev *, int);
+extern struct siw_cq *siw_cq_id2obj(struct siw_dev *dev, int id);
+extern struct siw_qp *siw_qp_id2obj(struct siw_dev *dev, int id);
+extern struct siw_mem *siw_mem_id2obj(struct siw_dev *dev, int id);
 
-extern int siw_qp_add(struct siw_dev *, struct siw_qp *);
-extern int siw_cq_add(struct siw_dev *, struct siw_cq *);
-extern int siw_pd_add(struct siw_dev *, struct siw_pd *);
-extern int siw_mem_add(struct siw_dev *, struct siw_mem *m);
+extern int siw_qp_add(struct siw_dev *dev, struct siw_qp *qp);
+extern int siw_cq_add(struct siw_dev *dev, struct siw_cq *cq);
+extern int siw_pd_add(struct siw_dev *dev, struct siw_pd *pd);
+extern int siw_mem_add(struct siw_dev *dev, struct siw_mem *mem);
 
-extern struct siw_wqe *siw_freeq_wqe_get(struct siw_qp *);
+extern struct siw_wqe *siw_freeq_wqe_get(struct siw_qp *qp);
 
-extern void siw_cq_put(struct siw_cq *);
-extern void siw_qp_put(struct siw_qp *);
-extern void siw_pd_put(struct siw_pd *);
-extern void siw_mem_put(struct siw_mem *);
-extern void siw_wqe_put_mem(struct siw_wqe *, enum siw_opcode);
+extern void siw_cq_put(struct siw_cq *cq);
+extern void siw_qp_put(struct siw_qp *qp);
+extern void siw_pd_put(struct siw_pd *pd);
+extern void siw_mem_put(struct siw_mem *mem);
+extern void siw_wqe_put_mem(struct siw_wqe *wqe, enum siw_opcode opcode);
 
-extern int siw_invalidate_stag(struct siw_pd *, u32);
+extern int siw_invalidate_stag(struct siw_pd *pd, u32 stag);
 #endif

@@ -106,20 +106,16 @@ struct siw_iwarp_rx;
 union iwarp_hdrs;
 
 extern void siw_debug_init(void);
-extern void siw_debugfs_add_device(struct siw_dev *);
-extern void siw_debugfs_del_device(struct siw_dev *);
+extern void siw_debugfs_add_device(struct siw_dev *dev);
+extern void siw_debugfs_del_device(struct siw_dev *dev);
 extern void siw_debugfs_delete(void);
 
-extern void siw_print_hdr(union iwarp_hdrs *, int, char *);
-extern void siw_print_rctx(struct siw_iwarp_rx *);
-extern void siw_print_qp_attr_mask(enum ib_qp_attr_mask, char *);
+extern void siw_print_hdr(union iwarp_hdrs *hdr, int id, char *msg);
+extern void siw_print_rctx(struct siw_iwarp_rx *rctx);
+extern void siw_print_qp_attr_mask(enum ib_qp_attr_mask mask, char *msg);
 
 #ifndef refcount_read
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-#define refcount_read(x)	atomic_read(x.refcount)
-#else
 #define refcount_read(x)	atomic_read(x.refcount.refs)
-#endif
 #endif
 
 #undef DEBUG

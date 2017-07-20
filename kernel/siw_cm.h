@@ -130,15 +130,15 @@ struct siw_cm_work {
  */
 #define to_sockaddr_in(a) (*(struct sockaddr_in *)(&(a)))
 
-extern int siw_connect(struct iw_cm_id *, struct iw_cm_conn_param *);
-extern int siw_accept(struct iw_cm_id *, struct iw_cm_conn_param *);
-extern int siw_reject(struct iw_cm_id *, const void *, u8);
-extern int siw_create_listen(struct iw_cm_id *, int);
-extern int siw_destroy_listen(struct iw_cm_id *);
+extern int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *parm);
+extern int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *param);
+extern int siw_reject(struct iw_cm_id *id, const void *data, u8 len);
+extern int siw_create_listen(struct iw_cm_id *id, int backlog);
+extern int siw_destroy_listen(struct iw_cm_id *id);
 
-extern void siw_cep_get(struct siw_cep *);
-extern void siw_cep_put(struct siw_cep *);
-extern int siw_cm_queue_work(struct siw_cep *, enum siw_work_type);
+extern void siw_cep_get(struct siw_cep *cep);
+extern void siw_cep_put(struct siw_cep *cep);
+extern int siw_cm_queue_work(struct siw_cep *cep, enum siw_work_type type);
 
 extern int siw_cm_init(void);
 extern void siw_cm_exit(void);

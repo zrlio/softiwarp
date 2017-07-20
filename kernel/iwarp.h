@@ -89,6 +89,7 @@ static inline void __mpa_rr_set_revision(u16 *bits, u8 rev)
 static inline u8 __mpa_rr_revision(u16 mpa_rr_bits)
 {
 	u16 rev = mpa_rr_bits & MPA_RR_MASK_REVISION;
+
 	return (u8)be16_to_cpu(rev);
 }
 
@@ -159,6 +160,7 @@ static inline void __ddp_set_version(struct iwarp_ctrl *ctrl, u8 version)
 static inline u8 __rdmap_version(struct iwarp_ctrl *ctrl)
 {
 	u16 ver = ctrl->ddp_rdmap_ctrl & RDMAP_MASK_VERSION;
+
 	return (u8)(be16_to_cpu(ver) >> 6);
 };
 

@@ -43,9 +43,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
 #include <linux/pid.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #include <linux/sched/mm.h>
-#endif
 
 #include "siw.h"
 #include "siw_debug.h"
@@ -206,7 +204,7 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 	}
 	umem->fp_addr = first_page_va;
 
-	umem->page_chunk = kzalloc(num_chunks * sizeof(struct siw_page_chunk),
+	umem->page_chunk = kcalloc(num_chunks, sizeof(struct siw_page_chunk),
 				   GFP_KERNEL);
 	if (!umem->page_chunk) {
 		rv = -ENOMEM;
@@ -215,7 +213,7 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 	for (i = 0; num_pages; i++) {
 		int got, nents = min_t(int, num_pages, PAGES_PER_CHUNK);
 
-		umem->page_chunk[i].p = kzalloc(nents * sizeof(struct page *),
+		umem->page_chunk[i].p = kcalloc(nents, sizeof(struct page *),
 						GFP_KERNEL);
 		if (!umem->page_chunk[i].p) {
 			rv = -ENOMEM;
@@ -344,36 +342,6 @@ static void siw_dma_free_coherent(struct ib_device *dev, size_t size,
 {
 	free_pages((unsigned long) kva, get_order(size));
 }
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-static u64 siw_dma_map_single(struct ib_device *dev, void *kva, size_t size,
-			       enum dma_data_direction dir)
-{
-	/* siw uses kernel virtual addresses for data transfer */
-	return (u64) kva;
-}
-
-static void siw_dma_unmap_single(struct ib_device *dev,
-				 u64 addr, size_t size,
-				 enum dma_data_direction dir)
-{
-	/* NOP */
-}
-
-struct ib_dma_mapping_ops siw_dma_mapping_ops = {
-	.mapping_error		= siw_mapping_error,
-	.map_single		= siw_dma_map_single,
-	.unmap_single		= siw_dma_unmap_single,
-	.map_page		= siw_dma_map_page,
-	.unmap_page		= siw_dma_unmap_page,
-	.map_sg			= siw_dma_map_sg,
-	.unmap_sg		= siw_dma_unmap_sg,
-	.sync_single_for_cpu	= siw_sync_single_for_cpu,
-	.sync_single_for_device	= siw_sync_single_for_device,
-	.alloc_coherent		= siw_dma_alloc_coherent,
-	.free_coherent		= siw_dma_free_coherent
-};
-#endif
 
 static void *siw_dma_generic_alloc(struct device *dev, size_t size,
 				   dma_addr_t *dma_handle, gfp_t gfp,

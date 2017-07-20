@@ -152,8 +152,8 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 		rv = skb_copy_bits(rctx->skb, rctx->skb_offset, dest + pg_off,
 				   bytes);
 
-		dprint(DBG_RX, "(QP%d): Page %p, "
-			"bytes=%u, rv=%d returned by skb_copy_bits()\n",
+		dprint(DBG_RX,
+			"(QP%d): skb_copy_bits():: Page %p, bytes=%u, rv=%d\n",
 			RX_QPID(rctx), p, bytes, rv);
 
 		if (likely(!rv)) {
@@ -284,8 +284,7 @@ static inline int siw_rresp_check_ntoh(struct siw_iwarp_rx *rctx)
 	if (!rctx->more_ddp_segs && (wqe->processed + rctx->fpdu_part_rem
 				     != wqe->bytes)) {
 		dprint(DBG_RX|DBG_ON,
-			" RRESP length does not match RREQ, "
-			"peer sent=%d, expected %d\n",
+			" RRESP len error, peer sent %d, RREQ asked %d\n",
 			wqe->processed + rctx->fpdu_part_rem, wqe->bytes);
 		return -EINVAL;
 	}
@@ -421,6 +420,7 @@ static struct siw_wqe *siw_rqe_get(struct siw_qp *qp)
 
 	if (likely(rqe->flags == SIW_WQE_VALID)) {
 		int num_sge = rqe->num_sge;
+
 		if (likely(num_sge <= SIW_MAX_SGE)) {
 			int i = 0;
 
@@ -463,7 +463,7 @@ static struct siw_wqe *siw_rqe_get(struct siw_qp *qp)
 			}
 			srq->rq_get++;
 		}
-	} 
+	}
 out:
 	if (srq_used)
 		spin_unlock_irqrestore(&srq->lock, flags);
@@ -630,8 +630,8 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		rx_wqe(qp)->wr_status = SR_WR_INPROGRESS;
 	}
 	if (unlikely(!rx_mem(qp))) {
-		dprint(DBG_RX|DBG_ON, "(QP%d): "
-			"Sink STag not found or invalid,  STag=0x%08x\n",
+		dprint(DBG_RX|DBG_ON,
+			"(QP%d): Sink STag not found/invalid,  STag=0x%08x\n",
 			QP_ID(qp), rctx->ddp_stag);
 		return -EINVAL;
 	}
@@ -742,6 +742,7 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		resp->rkey = rkey;
 		resp->num_sge = length ? 1 : 0;
 
+		/* RRESP now valid as current TX wqe or placed into IRQ */
 		smp_store_mb(resp->flags, SIW_WQE_VALID);
 	} else {
 		dprint(DBG_RX|DBG_ON, ": QP[%d]: IRQ %d exceeded %d!\n",
@@ -769,6 +770,7 @@ static int siw_orqe_start_rx(struct siw_qp *qp)
 	struct siw_sqe *orqe;
 	struct siw_wqe *wqe = NULL;
 
+	/* make sure ORQ indices are current */
 	smp_mb();
 
 	orqe = orq_get_current(qp);
@@ -784,8 +786,9 @@ static int siw_orqe_start_rx(struct siw_qp *qp)
 		wqe->bytes = orqe->sge[0].length;
 		wqe->processed = 0;
 		wqe->mem[0].obj = NULL;
-		wqe->wr_status = SR_WR_INPROGRESS;
+		/* make sure WQE is completely written before valid */
 		smp_wmb();
+		wqe->wr_status = SR_WR_INPROGRESS;
 
 		return 0;
 	}
@@ -1086,8 +1089,9 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 
 	spin_lock_irqsave(&qp->orq_lock, flags);
 
-	/* free current orq entry */
 	rreq = orq_get_current(qp);
+
+	/* free current orq entry */
 	smp_store_mb(rreq->flags, 0);
 
 	if (qp->tx_ctx.orq_fence) {
@@ -1102,7 +1106,7 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 
 			rreq = orq_get_tail(qp);
 			if (unlikely(!rreq)) {
-				pr_warn("QP[%d]: no ORQ\n", QP_ID(qp)); 
+				pr_warn("QP[%d]: no ORQ\n", QP_ID(qp));
 				goto out;
 			}
 			siw_read_to_orq(rreq, &tx_waiting->sqe);
@@ -1405,8 +1409,8 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 			break;
 		}
 		if (rv) {
-			dprint(DBG_RX, "(QP%d): "
-				"Misaligned FPDU: State: %d, missing: %d\n",
+			dprint(DBG_RX,
+				"(QP%d): FPDU truncated. state %d,  %d\n",
 				QP_ID(qp), rctx->state, rctx->fpdu_part_rem);
 			break;
 		}

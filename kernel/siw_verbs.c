@@ -86,7 +86,7 @@ static u32 siw_insert_uobj(struct siw_ucontext *uctx, void *vaddr, u32 size)
 	struct siw_uobj *uobj;
 	u32	key = SIW_INVAL_UOBJ_KEY;
 
-	uobj = kzalloc(sizeof *uobj, GFP_KERNEL);
+	uobj = kzalloc(sizeof(*uobj), GFP_KERNEL);
 	if (!uobj)
 		goto out;
 
@@ -105,7 +105,7 @@ static u32 siw_insert_uobj(struct siw_ucontext *uctx, void *vaddr, u32 size)
 	if (key > SIW_MAX_UOBJ_KEY) {
 		uctx->uobj_key -= size;
 		key = SIW_INVAL_UOBJ_KEY;
-		kfree (uobj);
+		kfree(uobj);
 		goto out;
 	}
 	uobj->size = size;
@@ -118,15 +118,16 @@ out:
 	return key;
 }
 
-static struct siw_uobj *        
-siw_remove_uobj(struct siw_ucontext *uctx, u32 key, u32 size)
-{       
+static struct siw_uobj *siw_remove_uobj(struct siw_ucontext *uctx, u32 key,
+					u32 size)
+{
 	struct list_head *pos, *nxt;
 
 	spin_lock(&uctx->uobj_lock);
 
 	list_for_each_safe(pos, nxt, &uctx->uobj_list) {
 		struct siw_uobj *uobj = list_entry(pos, struct siw_uobj, list);
+
 		if (uobj->key == key && uobj->size == size) {
 			list_del(&uobj->list);
 			spin_unlock(&uctx->uobj_lock);
@@ -138,19 +139,17 @@ siw_remove_uobj(struct siw_ucontext *uctx, u32 key, u32 size)
 	return NULL;
 }
 
-int     
-siw_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
-{       
+int siw_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
+{
 	struct siw_ucontext     *uctx = siw_ctx_ofa2siw(ctx);
 	struct siw_uobj         *uobj;
 	u32     key = vma->vm_pgoff << PAGE_SHIFT;
 	int     size = vma->vm_end - vma->vm_start;
-
 	int     rv = -EINVAL;
 
 	/*
-	* Must be page aligned
-	*/
+	 * Must be page aligned
+	 */
 	if (vma->vm_start & (PAGE_SIZE - 1)) {
 		pr_warn("map not page aligned\n");
 		goto out;
@@ -198,18 +197,17 @@ struct ib_ucontext *siw_alloc_ucontext(struct ib_device *ofa_dev,
 	if (udata) {
 		struct siw_uresp_alloc_ctx uresp;
 
-		memset(&uresp, 0, sizeof uresp);
+		memset(&uresp, 0, sizeof(uresp));
 		uresp.dev_id = sdev->attrs.vendor_part_id;
 
-		rv = ib_copy_to_udata(udata, &uresp, sizeof uresp);
+		rv = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
 		if (rv)
 			goto err_out;
 	}
 	return &ctx->ib_ucontext;
 
 err_out:
-	if (ctx)
-		kfree(ctx);
+	kfree(ctx);
 
 	atomic_dec(&sdev->num_ctx);
 	return ERR_PTR(rv);
@@ -234,7 +232,7 @@ int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr,
 	if (in_interrupt())
 		return -EINVAL;
 
-	memset(attr, 0, sizeof *attr);
+	memset(attr, 0, sizeof(*attr));
 
 	attr->max_mr_size = rlimit(RLIMIT_MEMLOCK); /* per process */
 	attr->vendor_id = sdev->attrs.vendor_id;
@@ -317,7 +315,7 @@ int siw_query_port(struct ib_device *ofa_dev, u8 port,
 {
 	struct siw_dev *sdev = siw_dev_ofa2siw(ofa_dev);
 
-	memset(attr, 0, sizeof *attr);
+	memset(attr, 0, sizeof(*attr));
 
 	attr->state = sdev->state;
 	attr->max_mtu = siw_mtu_net2ofa(sdev->netdev->mtu);
@@ -350,8 +348,8 @@ int siw_get_port_immutable(struct ib_device *ofa_dev, u8 port,
 			   struct ib_port_immutable *port_immutable)
 {
 	struct ib_port_attr attr;
-
 	int rv = siw_query_port(ofa_dev, port, &attr);
+
 	if (rv)
 		return rv;
 
@@ -375,7 +373,7 @@ int siw_query_gid(struct ib_device *ofa_dev, u8 port, int idx,
 	struct siw_dev *sdev = siw_dev_ofa2siw(ofa_dev);
 
 	/* subnet_prefix == interface_id == 0; */
-	memset(gid, 0, sizeof *gid);
+	memset(gid, 0, sizeof(*gid));
 	memcpy(&gid->raw[0], sdev->netdev->dev_addr, 6);
 
 	return 0;
@@ -393,7 +391,7 @@ struct ib_pd *siw_alloc_pd(struct ib_device *ofa_dev,
 		rv = -ENOMEM;
 		goto err_out;
 	}
-	pd = kmalloc(sizeof *pd, GFP_KERNEL);
+	pd = kmalloc(sizeof(*pd), GFP_KERNEL);
 	if (!pd) {
 		dprint(DBG_ON, ": malloc\n");
 		rv = -ENOMEM;
@@ -406,7 +404,7 @@ struct ib_pd *siw_alloc_pd(struct ib_device *ofa_dev,
 		goto err_out;
 	}
 	if (context) {
-		if (ib_copy_to_udata(udata, &pd->hdr.id, sizeof pd->hdr.id)) {
+		if (ib_copy_to_udata(udata, &pd->hdr.id, sizeof(pd->hdr.id))) {
 			rv = -EFAULT;
 			goto err_out_idr;
 		}
@@ -456,7 +454,7 @@ int siw_no_mad(struct ib_device *ofa_dev, int flags, u8 port,
 	       struct ib_mad_hdr *out_mad, size_t *out_mad_size,
 	       u16 *outmad_pkey_index)
 {
-	return -ENOSYS;
+	return -EOPNOTSUPP;
 }
 
 
@@ -528,7 +526,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 		rv = -EINVAL;
 		goto err_out;
 	}
-	qp = kzalloc(sizeof *qp, GFP_KERNEL);
+	qp = kzalloc(sizeof(*qp), GFP_KERNEL);
 	if (!qp) {
 		dprint(DBG_ON, ": kzalloc\n");
 		rv = -ENOMEM;
@@ -551,7 +549,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 
 	num_sqe = roundup_pow_of_two(attrs->cap.max_send_wr);
 	num_rqe = roundup_pow_of_two(attrs->cap.max_recv_wr);
-	
+
 	if (qp->kernel_verbs)
 		qp->sendq = vmalloc(num_sqe * sizeof(struct siw_sqe));
 	else
@@ -613,7 +611,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 
 	/* vmalloc_user already zeroes SQ and RQ memory */
 	if (qp->kernel_verbs) {
-	       	if (qp->sendq)
+		if (qp->sendq)
 			memset(qp->sendq, 0, num_sqe * sizeof(struct siw_sqe));
 		if (qp->recvq)
 			memset(qp->recvq, 0, num_rqe * sizeof(struct siw_rqe));
@@ -622,7 +620,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 		struct siw_uresp_create_qp uresp;
 		struct siw_ucontext *ctx;
 
-		memset(&uresp, 0, sizeof uresp);
+		memset(&uresp, 0, sizeof(uresp));
 		ctx = siw_ctx_ofa2siw(ofa_pd->uobject->context);
 
 		uresp.sq_key = uresp.rq_key = SIW_INVAL_UOBJ_KEY;
@@ -642,7 +640,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 			if (uresp.rq_key > SIW_MAX_UOBJ_KEY)
 				pr_warn("Preparing mmap RQ failed\n");
 		}
-		rv = ib_copy_to_udata(udata, &uresp, sizeof uresp);
+		rv = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
 		if (rv)
 			goto err_out_idr;
 	}
@@ -657,7 +655,7 @@ struct ib_qp *siw_create_qp(struct ib_pd *ofa_pd,
 	list_add_tail(&qp->devq, &sdev->qp_list);
 	spin_unlock_irqrestore(&sdev->idr_lock, flags);
 
-	qp->cpu = (smp_processor_id() + 1) % NR_CPUS;
+	qp->cpu = (smp_processor_id() + 1) % MAX_CPU;
 
 	return &qp->ofa_qp;
 
@@ -732,7 +730,7 @@ int siw_verbs_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
 	}
 	siw_dprint_qp_attr_mask(attr_mask);
 
-	memset(&new_attrs, 0, sizeof new_attrs);
+	memset(&new_attrs, 0, sizeof(new_attrs));
 
 	if (attr_mask & IB_QP_ACCESS_FLAGS) {
 
@@ -1064,13 +1062,14 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 		if (unlikely(rv < 0))
 			break;
 
+		/* make SQE only vaild after completely written */
 		smp_wmb();
 		sqe->flags |= SIW_WQE_VALID;
 
 		qp->sq_put++;
 		wr = wr->next;
 	}
-	
+
 	/*
 	 * Send directly if SQ processing is not in progress.
 	 * Eventual immediate errors (rv < 0) do not affect the involved
@@ -1098,7 +1097,7 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 
 		qp->tx_ctx.in_syscall = 0;
 	}
-	
+
 skip_direct_sending:
 
 	up_read(&qp->state_lock);
@@ -1177,6 +1176,7 @@ int siw_post_receive(struct ib_qp *ofa_qp, struct ib_recv_wr *wr,
 		rqe->num_sge = wr->num_sge;
 		siw_copy_sgl(wr->sg_list, rqe->sge, wr->num_sge);
 
+		/* make sure RQE is completely written before valid */
 		smp_wmb();
 
 		rqe->flags = SIW_WQE_VALID;
@@ -1244,7 +1244,7 @@ struct ib_cq *siw_create_cq(struct ib_device *ofa_dev,
 		rv = -EINVAL;
 		goto err_out;
 	}
-	cq = kzalloc(sizeof *cq, GFP_KERNEL);
+	cq = kzalloc(sizeof(*cq), GFP_KERNEL);
 	if (!cq) {
 		dprint(DBG_ON, ":  kmalloc\n");
 		rv = -ENOMEM;
@@ -1292,7 +1292,7 @@ struct ib_cq *siw_create_cq(struct ib_device *ofa_dev,
 		uresp.cq_id = OBJ_ID(cq);
 		uresp.num_cqe = size;
 
-		rv = ib_copy_to_udata(udata, &uresp, sizeof uresp);
+		rv = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
 		if (rv)
 			goto err_out_idr;
 	}
@@ -1358,8 +1358,10 @@ int siw_req_notify_cq(struct ib_cq *ofa_cq, enum ib_cq_notify_flags flags)
 	dprint(DBG_EH|DBG_CQ, "(CQ%d:) flags: 0x%8x\n", OBJ_ID(cq), flags);
 
 	if ((flags & IB_CQ_SOLICITED_MASK) == IB_CQ_SOLICITED)
+		/* CQ event for next solicited completion */
 		smp_store_mb(*cq->notify, SIW_NOTIFY_SOLICITED);
 	else
+		/* CQ event for any signalled completion */
 		smp_store_mb(*cq->notify, SIW_NOTIFY_ALL);
 
 	if (flags & IB_CQ_REPORT_MISSED_EVENTS)
@@ -1401,7 +1403,8 @@ int siw_dereg_mr(struct ib_mr *ofa_mr)
 static struct siw_mr *siw_create_mr(struct siw_dev *sdev, void *mem_obj,
 				    u64 start, u64 len, int rights)
 {
-	struct siw_mr *mr = kzalloc(sizeof *mr, GFP_KERNEL);
+	struct siw_mr *mr = kzalloc(sizeof(*mr), GFP_KERNEL);
+
 	if (!mr)
 		return NULL;
 
@@ -1455,12 +1458,11 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 	unsigned long mem_limit = rlimit(RLIMIT_MEMLOCK);
 	int rv;
 
-	dprint(DBG_MM|DBG_OBJ, " start: 0x%016llx, "
-		"va: 0x%016llx, len: %llu, ctx: %p\n",
-		(unsigned long long)start,
-		(unsigned long long)rnic_va,
-		(unsigned long long)len,
-		ofa_pd->uobject->context);
+	dprint(DBG_MM|DBG_OBJ,
+		" start: 0x%016llx, va: 0x%016llx, len: %llu, ctx: %p\n",
+		(unsigned long long)start, (unsigned long long)rnic_va,
+		(unsigned long long)len, ofa_pd->uobject->context);
+
 	if (atomic_inc_return(&sdev->num_mem) > SIW_MAX_MR) {
 		dprint(DBG_ON, ": Out of MRs: %d\n",
 			atomic_read(&sdev->num_mem));
@@ -1501,7 +1503,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 	}
 
 	if (udata) {
-		rv = ib_copy_from_udata(&ureq, udata, sizeof ureq);
+		rv = ib_copy_from_udata(&ureq, udata, sizeof(ureq));
 		if (rv)
 			goto err_out_mr;
 
@@ -1509,7 +1511,7 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *ofa_pd, u64 start, u64 len,
 		mr->ofa_mr.rkey |= ureq.stag_key; /* XXX ??? */
 		uresp.stag = mr->ofa_mr.lkey;
 
-		rv = ib_copy_to_udata(udata, &uresp, sizeof uresp);
+		rv = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
 		if (rv)
 			goto err_out_mr;
 	}
@@ -1550,7 +1552,7 @@ struct ib_mr *siw_alloc_mr(struct ib_pd *ofa_pd, enum ib_mr_type mr_type,
 	}
 	if (mr_type != IB_MR_TYPE_MEM_REG) {
 		dprint(DBG_ON, ": Unsupported MR type's: %d\n", mr_type);
-		rv = -ENOSYS;
+		rv = -EOPNOTSUPP;
 		goto err_out;
 	}
 	if (max_sge > SIW_MAX_SGE_PBL) {
@@ -1584,7 +1586,7 @@ err_out:
 		siw_pbl_free(pbl);
 
 	dprint(DBG_ON, ": failed: %d\n", rv);
-		
+
 	atomic_dec(&sdev->num_mem);
 
 	return ERR_PTR(rv);
@@ -1629,19 +1631,20 @@ int siw_map_mr_sg(struct ib_mr *ofa_mr, struct scatterlist *sl, int num_sle,
 			pbl->num_buf = 1;
 			continue;
 		}
-		if (pble->addr + pble->size != sg_dma_address(slp)) {
+		/* Merge PBL entries if adjacent */
+		if (pble->addr + pble->size == sg_dma_address(slp))
+			pble->size += sg_dma_len(slp);
+		else {
 			pble++;
 			pbl->num_buf++;
 			pble->addr = sg_dma_address(slp);
 			pble->size = sg_dma_len(slp);
 			pble->pbl_off = pbl_size;
-		} else
-			pble->size += sg_dma_len(slp);
-
+		}
 		pbl_size += sg_dma_len(slp);
 
-		dprint(DBG_MM, " MEM(%d): SGE[%d], reg. %llu byte, "
-			"addr %p, total %llu\n",
+		dprint(DBG_MM,
+			" MEM(%d): SGE[%d], size %llu, addr %p, total %llu\n",
 			OBJ_ID(&mr->mem), i, pble->size, (void *)pble->addr,
 			pbl_size);
 	}
@@ -1649,8 +1652,7 @@ int siw_map_mr_sg(struct ib_mr *ofa_mr, struct scatterlist *sl, int num_sle,
 	if (rv > 0) {
 		mr->mem.len = ofa_mr->length;
 		mr->mem.va = ofa_mr->iova;
-		dprint(DBG_MM, " MEM(%d): got %llu byte, %u SLE "
-			"into %u entries\n",
+		dprint(DBG_MM, " MEM(%d): %llu byte, %u SLE into %u entries\n",
 			OBJ_ID(&mr->mem), mr->mem.len, num_sle, pbl->num_buf);
 	}
 	return rv;
@@ -1731,7 +1733,7 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 		goto err_out;
 	}
 
-	srq = kzalloc(sizeof *srq, GFP_KERNEL);
+	srq = kzalloc(sizeof(*srq), GFP_KERNEL);
 	if (!srq) {
 		dprint(DBG_ON, " malloc\n");
 		rv = -ENOMEM;
@@ -1749,7 +1751,8 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 	if (kernel_verbs)
 		srq->recvq = vmalloc(srq->num_rqe * sizeof(struct siw_rqe));
 	else
-		srq->recvq = vmalloc_user(srq->num_rqe * sizeof(struct siw_rqe));
+		srq->recvq = vmalloc_user(srq->num_rqe *
+					  sizeof(struct siw_rqe));
 
 	if (srq->recvq == NULL) {
 		rv = -ENOMEM;
@@ -1758,12 +1761,11 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 	if (kernel_verbs) {
 		memset(srq->recvq, 0, srq->num_rqe * sizeof(struct siw_rqe));
 		srq->kernel_verbs = 1;
-	}
-	else if (udata) {
+	} else if (udata) {
 		struct siw_uresp_create_srq uresp;
 		struct siw_ucontext *ctx;
 
-		memset(&uresp, 0, sizeof uresp);
+		memset(&uresp, 0, sizeof(uresp));
 		ctx = siw_ctx_ofa2siw(ofa_pd->uobject->context);
 
 		uresp.num_rqe = srq->num_rqe;
@@ -1773,7 +1775,7 @@ struct ib_srq *siw_create_srq(struct ib_pd *ofa_pd,
 		if (uresp.srq_key > SIW_MAX_UOBJ_KEY)
 			pr_warn("Preparing mmap SRQ failed\n");
 
-		rv = ib_copy_to_udata(udata, &uresp, sizeof uresp);
+		rv = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
 		if (rv)
 			goto err_out;
 	}
@@ -1927,6 +1929,7 @@ int siw_post_srq_recv(struct ib_srq *ofa_srq, struct ib_recv_wr *wr,
 		rqe->num_sge = wr->num_sge;
 		siw_copy_sgl(wr->sg_list, rqe->sge, wr->num_sge);
 
+		/* Make sure S-RQE is completely written before valid */
 		smp_wmb();
 
 		rqe->flags = SIW_WQE_VALID;

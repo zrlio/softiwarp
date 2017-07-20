@@ -52,9 +52,7 @@
 #include <linux/version.h>
 #include <linux/llist.h>
 #include <linux/mm.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #include <linux/sched/signal.h>
-#endif
 
 #include <siw_user.h>
 #include "iwarp.h"
@@ -88,35 +86,37 @@ enum siw_if_type {
 #define SENDPAGE_THRESH		PAGE_SIZE /* min bytes for using sendpage() */
 #define SQ_USER_MAXBURST	10
 
+#define MAX_CPU			NR_CPUS
+
 struct siw_devinfo {
-	unsigned		device;
-	unsigned		version;
+	unsigned int	device;
+	unsigned int	version;
 
 	/* close match to ib_device_attr where appropriate */
-	u32			vendor_id;
-	u32			vendor_part_id;
-	u32			sw_version;
-	int			max_qp;
-	int			max_qp_wr;
-	int			max_ord; /* max. outbound read queue depth */
-	int			max_ird; /* max. inbound read queue depth */
+	u32	vendor_id;
+	u32	vendor_part_id;
+	u32	sw_version;
+	int	max_qp;
+	int	max_qp_wr;
+	int	max_ord; /* max. outbound read queue depth */
+	int	max_ird; /* max. inbound read queue depth */
 
-	enum ib_device_cap_flags	cap_flags;
-	int			max_sge;
-	int			max_sge_rd;
-	int			max_cq;
-	int			max_cqe;
-	u64			max_mr_size;
-	int			max_mr;
-	int			max_pd;
-	int			max_mw;
-	int			max_fmr;
-	int			max_srq;
-	int			max_srq_wr;
-	int			max_srq_sge;
+	enum ib_device_cap_flags cap_flags;
+	int	max_sge;
+	int	max_sge_rd;
+	int	max_cq;
+	int	max_cqe;
+	u64	max_mr_size;
+	int	max_mr;
+	int	max_pd;
+	int	max_mw;
+	int	max_fmr;
+	int	max_srq;
+	int	max_srq_wr;
+	int	max_srq_sge;
 	/* end ib_device_attr */
 
-	enum siw_if_type	iftype;
+	enum siw_if_type iftype;
 };
 
 
@@ -376,9 +376,9 @@ struct siw_srq {
 	atomic_t		space;	/* current space for posting wqe's */
 	u32			limit;	/* low watermark for async event */
 	struct siw_rqe		*recvq;
-	u32			rq_put;	
-	u32			rq_get;	
-	u32			num_rqe;	/* max # of wqe's allowed */
+	u32			rq_put;
+	u32			rq_get;
+	u32			num_rqe;/* max # of wqe's allowed */
 	char			armed;	/* inform user if limit hit */
 	char			kernel_verbs; /* '1' if kernel client */
 };
@@ -530,7 +530,7 @@ struct siw_iwarp_tx {
 	u16			ctrl_len;	/* ddp+rdmap hdr */
 	u16			ctrl_sent;
 	int			burst;
-	
+
 	int			bytes_unsent;	/* ddp payload bytes */
 
 	struct shash_desc	*mpa_crc_hd;
@@ -620,7 +620,7 @@ struct siw_qp {
 struct iwarp_msg_info {
 	int			hdr_len;
 	struct iwarp_ctrl	ctrl;
-	int (*proc_data)	(struct siw_qp *, struct siw_iwarp_rx *);
+	int	(*proc_data)(struct siw_qp *qp, struct siw_iwarp_rx *rctx);
 };
 
 extern struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1];
@@ -628,35 +628,35 @@ extern struct siw_dev *siw;
 
 
 /* QP general functions */
-int siw_qp_modify(struct siw_qp *, struct siw_qp_attrs *,
-		  enum siw_qp_attr_mask);
-int siw_qp_mpa_rts(struct siw_qp *, enum mpa_v2_ctrl);
-void siw_qp_llp_close(struct siw_qp *);
-void siw_qp_cm_drop(struct siw_qp *, int);
-void siw_send_terminate(struct siw_qp *, u8, u8, u8);
+int siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attr,
+		  enum siw_qp_attr_mask mask);
+int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl);
+void siw_qp_llp_close(struct siw_qp *qp);
+void siw_qp_cm_drop(struct siw_qp *qp, int when);
+void siw_send_terminate(struct siw_qp *qp, u8 layer, u8 etype, u8 ecode);
 
 
-struct ib_qp *siw_get_ofaqp(struct ib_device *, int);
-void siw_qp_get_ref(struct ib_qp *);
-void siw_qp_put_ref(struct ib_qp *);
+struct ib_qp *siw_get_ofaqp(struct ib_device *dev, int id);
+void siw_qp_get_ref(struct ib_qp *qp);
+void siw_qp_put_ref(struct ib_qp *qp);
 
-enum siw_qp_state siw_map_ibstate(enum ib_qp_state);
+enum siw_qp_state siw_map_ibstate(enum ib_qp_state state);
 
-int siw_check_mem(struct siw_pd *, struct siw_mem *, u64,
-		  enum siw_access_flags, int);
-int siw_check_sge(struct siw_pd *, struct siw_sge *, union siw_mem_resolved *,
-		  enum siw_access_flags, u32, int);
-int siw_check_sgl(struct siw_pd *, struct siw_wqe *,
-		  enum siw_access_flags);
+int siw_check_mem(struct siw_pd *pd, struct siw_mem *mem, u64 addr,
+		  enum siw_access_flags perm, int len);
+int siw_check_sge(struct siw_pd *pd, struct siw_sge *sge,
+		  union siw_mem_resolved *mem, enum siw_access_flags perm,
+		  u32 off, int len);
+int siw_check_sgl(struct siw_pd *pd, struct siw_wqe *wqe,
+		  enum siw_access_flags perm);
 
-void siw_read_to_orq(struct siw_sqe *, struct siw_sqe *);
-
-int siw_sqe_complete(struct siw_qp *, struct siw_sqe *, u32,
-		     enum siw_wc_status);
-int siw_rqe_complete(struct siw_qp *, struct siw_rqe *, u32,
-		     enum siw_wc_status);
-void siw_qp_llp_data_ready(struct sock *);
-void siw_qp_llp_write_space(struct sock *);
+void siw_read_to_orq(struct siw_sqe *rreq, struct siw_sqe *sqe);
+int siw_sqe_complete(struct siw_qp *qp, struct siw_sqe *sqe, u32 bytes,
+		     enum siw_wc_status status);
+int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
+		     enum siw_wc_status status);
+void siw_qp_llp_data_ready(struct sock *sock);
+void siw_qp_llp_write_space(struct sock *sock);
 
 /* SIW user memory management */
 
@@ -685,12 +685,11 @@ static inline struct page *siw_get_upage(struct siw_umem *umem, u64 addr)
 	return NULL;
 }
 
-extern struct siw_umem *siw_umem_get(u64, u64);
-extern struct siw_umem *siw_umem_alloc(u32);
-extern void siw_umem_release(struct siw_umem *);
-extern struct siw_pbl *siw_pbl_alloc(u32);
-extern u64 siw_pbl_get_buffer(struct siw_pbl *, u64, int *, int *);
-extern void siw_pbl_free(struct siw_pbl *);
+extern struct siw_umem *siw_umem_get(u64 start, u64 len);
+extern void siw_umem_release(struct siw_umem *umem);
+extern struct siw_pbl *siw_pbl_alloc(u32 num_buf);
+extern u64 siw_pbl_get_buffer(struct siw_pbl *pbl, u64 off, int *len, int *idx);
+extern void siw_pbl_free(struct siw_pbl *pbl);
 
 
 /* QP TX path functions */
@@ -736,10 +735,11 @@ extern void siw_rq_flush(struct siw_qp *qp);
 extern int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *wc);
 
 /* RDMA core event dipatching */
-extern void siw_qp_event(struct siw_qp *, enum ib_event_type);
-extern void siw_cq_event(struct siw_cq *, enum ib_event_type);
-extern void siw_srq_event(struct siw_srq *, enum ib_event_type);
-extern void siw_port_event(struct siw_dev *, u8, enum ib_event_type);
+extern void siw_qp_event(struct siw_qp *qp, enum ib_event_type type);
+extern void siw_cq_event(struct siw_cq *cq, enum ib_event_type type);
+extern void siw_srq_event(struct siw_srq *srq, enum ib_event_type type);
+extern void siw_port_event(struct siw_dev *dev, u8 port,
+			   enum ib_event_type type);
 
 
 static inline struct siw_qp *siw_qp_ofa2siw(struct ib_qp *ofa_qp)
@@ -755,8 +755,10 @@ static inline int siw_sq_empty(struct siw_qp *qp)
 static inline struct siw_sqe *sq_get_next(struct siw_qp *qp)
 {
 	struct siw_sqe *sqe = &qp->sendq[qp->sq_get % qp->attrs.sq_size];
+
 	if (sqe->flags & SIW_WQE_VALID)
 		return sqe;
+
 	return NULL;
 }
 
@@ -792,6 +794,7 @@ static inline int siw_orq_empty(struct siw_qp *qp)
 static inline struct siw_sqe *irq_alloc_free(struct siw_qp *qp)
 {
 	struct siw_sqe *irq_e = &qp->irq[qp->irq_put % qp->attrs.irq_size];
+
 	if (irq_e->flags == 0) {
 		qp->irq_put++;
 		return irq_e;

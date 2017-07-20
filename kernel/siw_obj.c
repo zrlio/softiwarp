@@ -75,7 +75,7 @@ static inline int siw_add_obj(spinlock_t *lock, struct idr *idr,
 	int id, pre_id;
 
 	do {
-		get_random_bytes(&pre_id, sizeof pre_id);
+		get_random_bytes(&pre_id, sizeof(pre_id));
 		pre_id &= 0xffffff;
 	} while (pre_id == 0);
 again:
@@ -99,9 +99,8 @@ again:
 
 static inline struct siw_objhdr *siw_get_obj(struct idr *idr, int id)
 {
-	struct siw_objhdr *obj;
+	struct siw_objhdr *obj = idr_find(idr, id);
 
-	obj = idr_find(idr, id);
 	if (obj)
 		kref_get(&obj->ref);
 
@@ -111,6 +110,7 @@ static inline struct siw_objhdr *siw_get_obj(struct idr *idr, int id)
 struct siw_cq *siw_cq_id2obj(struct siw_dev *sdev, int id)
 {
 	struct siw_objhdr *obj = siw_get_obj(&sdev->cq_idr, id);
+
 	if (obj)
 		return container_of(obj, struct siw_cq, hdr);
 
@@ -120,6 +120,7 @@ struct siw_cq *siw_cq_id2obj(struct siw_dev *sdev, int id)
 struct siw_qp *siw_qp_id2obj(struct siw_dev *sdev, int id)
 {
 	struct siw_objhdr *obj = siw_get_obj(&sdev->qp_idr, id);
+
 	if (obj)
 		return container_of(obj, struct siw_qp, hdr);
 
@@ -155,6 +156,7 @@ struct siw_mem *siw_mem_id2obj(struct siw_dev *sdev, int id)
 int siw_qp_add(struct siw_dev *sdev, struct siw_qp *qp)
 {
 	int rv = siw_add_obj(&sdev->idr_lock, &sdev->qp_idr, &qp->hdr);
+
 	if (!rv) {
 		dprint(DBG_OBJ, "(QP%d): New Object\n", QP_ID(qp));
 		qp->hdr.sdev = sdev;
@@ -165,6 +167,7 @@ int siw_qp_add(struct siw_dev *sdev, struct siw_qp *qp)
 int siw_cq_add(struct siw_dev *sdev, struct siw_cq *cq)
 {
 	int rv = siw_add_obj(&sdev->idr_lock, &sdev->cq_idr, &cq->hdr);
+
 	if (!rv) {
 		dprint(DBG_OBJ, "(CQ%d): New Object\n", cq->hdr.id);
 		cq->hdr.sdev = sdev;
@@ -175,6 +178,7 @@ int siw_cq_add(struct siw_dev *sdev, struct siw_cq *cq)
 int siw_pd_add(struct siw_dev *sdev, struct siw_pd *pd)
 {
 	int rv = siw_add_obj(&sdev->idr_lock, &sdev->pd_idr, &pd->hdr);
+
 	if (!rv) {
 		dprint(DBG_OBJ, "(PD%d): New Object\n", pd->hdr.id);
 		pd->hdr.sdev = sdev;
@@ -193,7 +197,7 @@ int siw_mem_add(struct siw_dev *sdev, struct siw_mem *m)
 	int id, pre_id;
 
 	do {
-		get_random_bytes(&pre_id, sizeof pre_id);
+		get_random_bytes(&pre_id, sizeof(pre_id));
 		pre_id &= 0xffffff;
 	} while (pre_id == 0);
 again:
@@ -209,7 +213,7 @@ again:
 		}
 		pre_id = 1;
 		goto again;
-	} 
+	}
 	siw_objhdr_init(&m->hdr);
 	m->hdr.id = id;
 	m->hdr.sdev = sdev;
@@ -304,9 +308,11 @@ static void siw_free_mem(struct kref *ref)
 
 	if (SIW_MEM_IS_MW(m)) {
 		struct siw_mw *mw = container_of(m, struct siw_mw, mem);
+
 		kfree_rcu(mw, rcu);
 	} else {
 		struct siw_mr *mr = container_of(m, struct siw_mr, mem);
+
 		dprint(DBG_MM|DBG_OBJ, "(MEM%d): Release obj %p, (PBL %d)\n",
 			OBJ_ID(m), mr->mem_obj, mr->mem.is_pbl ? 1 : 0);
 		if (mr->mem_obj) {
@@ -387,7 +393,7 @@ void siw_wqe_put_mem(struct siw_wqe *wqe, enum siw_opcode op)
 
 	default:
 		/*
-		 *  SIW_OP_INVAL_STAG and SIW_OP_REG_MR 
+		 * SIW_OP_INVAL_STAG and SIW_OP_REG_MR
 		 * do not hold memory references
 		 */
 		break;

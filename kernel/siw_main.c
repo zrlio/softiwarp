@@ -45,6 +45,7 @@
 #include <linux/if_arp.h>
 #include <linux/list.h>
 #include <linux/kernel.h>
+#include <linux/dma-mapping.h>
 
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_smi.h>
@@ -74,12 +75,12 @@ MODULE_PARM_DESC(loopback_enabled, "enable_loopback");
 LIST_HEAD(siw_devlist);
 DEFINE_SPINLOCK(siw_dev_lock);
 
-static char *tx_cpu_list[NR_CPUS];
+static char *tx_cpu_list[MAX_CPU];
 module_param_array(tx_cpu_list, charp, NULL, 0444);
 MODULE_PARM_DESC(tx_cpu_list, "List of CPUs siw TX thread shall be bound to");
 
 int default_tx_cpu = -1;
-struct task_struct *qp_tx_thread[NR_CPUS];
+struct task_struct *qp_tx_thread[MAX_CPU];
 
 static int tx_on_all_cpus = 1;
 
@@ -113,11 +114,7 @@ static void siw_device_release(struct device *dev)
 }
 
 static struct device siw_generic_dma_device = {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-	.archdata.dma_ops	= &siw_dma_generic_ops,
-#else
 	.dma_ops		= &siw_dma_generic_ops,
-#endif
 	.init_name		= "software-rdma-v2",
 	.release		= siw_device_release
 };
@@ -259,8 +256,9 @@ static int siw_tx_qualified(int cpu)
 	if (tx_on_all_cpus)
 		return 1;
 
-	for (i = 0; i < NR_CPUS; i++) {
+	for (i = 0; i < MAX_CPU; i++) {
 		int c;
+
 		if (tx_cpu_list[i] && kstrtoint(tx_cpu_list[i], 0, &c) == 0 &&
 		    cpu == c)
 			return 1;
@@ -272,7 +270,7 @@ static int siw_create_tx_threads(int max_threads, int check_qualified)
 {
 	int cpu, rv, assigned = 0;
 
-	if (max_threads < 0 || max_threads > NR_CPUS)
+	if (max_threads < 0 || max_threads > MAX_CPU)
 		return 0;
 
 	for_each_online_cpu(cpu) {
@@ -428,11 +426,7 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->phys_port_cnt = 1;
 
 	ofa_dev->num_comp_vectors = 1;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-	ofa_dev->dma_device = &siw_generic_dma_device;
-#else
 	ofa_dev->dev.parent = &siw_generic_dma_device;
-#endif
 	ofa_dev->query_device = siw_query_device;
 	ofa_dev->query_port = siw_query_port;
 	ofa_dev->get_port_immutable = siw_get_port_immutable;
@@ -478,11 +472,8 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->drain_sq = siw_verbs_sq_flush;
 	ofa_dev->drain_rq = siw_verbs_rq_flush;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-	ofa_dev->dma_ops = &siw_dma_mapping_ops;
-#else
 	ofa_dev->dev.dma_ops = &dma_virt_ops;
-#endif
+
 	ofa_dev->iwcm->connect = siw_connect;
 	ofa_dev->iwcm->accept = siw_accept;
 	ofa_dev->iwcm->reject = siw_reject;
@@ -689,12 +680,12 @@ static __init int siw_init_module(void)
 		siw_debugfs_delete();
 		goto out_unregister;
 	}
-	for (nr_cpu = 0; nr_cpu < NR_CPUS; nr_cpu++) {
+	for (nr_cpu = 0; nr_cpu < MAX_CPU; nr_cpu++) {
 		qp_tx_thread[nr_cpu] = NULL;
 		if (tx_cpu_list[nr_cpu])
 			tx_on_all_cpus = 0;
 	}
-	if (siw_create_tx_threads(NR_CPUS, 1) == 0) {
+	if (siw_create_tx_threads(MAX_CPU, 1) == 0) {
 		pr_info("Try starting default TX thread\n");
 		if (siw_create_tx_threads(1, 0) == 0) {
 			pr_info("Could not start any TX thread\n");
@@ -705,7 +696,7 @@ static __init int siw_init_module(void)
 	return 0;
 
 out_unregister:
-	for (nr_cpu = 0; nr_cpu < NR_CPUS; nr_cpu++) {
+	for (nr_cpu = 0; nr_cpu < MAX_CPU; nr_cpu++) {
 		if (qp_tx_thread[nr_cpu]) {
 			kthread_stop(qp_tx_thread[nr_cpu]);
 			qp_tx_thread[nr_cpu] = NULL;
@@ -728,7 +719,7 @@ static void __exit siw_exit_module(void)
 {
 	int nr_cpu;
 
-	for (nr_cpu = 0; nr_cpu < NR_CPUS; nr_cpu++) {
+	for (nr_cpu = 0; nr_cpu < MAX_CPU; nr_cpu++) {
 		if (qp_tx_thread[nr_cpu]) {
 			kthread_stop(qp_tx_thread[nr_cpu]);
 			qp_tx_thread[nr_cpu] = NULL;
