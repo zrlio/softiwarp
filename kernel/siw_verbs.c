@@ -112,9 +112,9 @@ static u32 siw_insert_uobj(struct siw_ucontext *uctx, void *vaddr, u32 size)
 	uobj->addr = vaddr;
 
 	list_add_tail(&uobj->list, &uctx->uobj_list);
-
-	spin_unlock(&uctx->uobj_lock);
 out:
+	spin_unlock(&uctx->uobj_lock);
+
 	return key;
 }
 

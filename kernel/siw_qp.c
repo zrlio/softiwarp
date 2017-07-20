@@ -399,11 +399,10 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 		wqe->sqe.opcode = SIW_OP_WRITE;
 	else if (ctrl & MPA_V2_RDMA_READ_RTR) {
 		struct siw_sqe	*rreq;
-		unsigned long flags2;
 
 		wqe->sqe.opcode = SIW_OP_READ;
 
-		spin_lock_irqsave(&qp->orq_lock, flags2);
+		spin_lock(&qp->orq_lock);
 
 		rreq = orq_get_free(qp);
 		if (rreq) {
@@ -412,7 +411,7 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 		} else
 			rv = -EIO;
 
-		spin_unlock_irqrestore(&qp->orq_lock, flags2);
+		spin_unlock(&qp->orq_lock);
 	} else
 		rv = -EINVAL;
 
@@ -836,7 +835,6 @@ void siw_read_to_orq(struct siw_sqe *rreq, struct siw_sqe *sqe)
 	rreq->num_sge = 1;
 }
 
-
 /*
  * Must be called with SQ locked
  */
@@ -879,8 +877,6 @@ int siw_activate_tx(struct siw_qp *qp)
 
 	sqe = sq_get_next(qp);
 	if (sqe) {
-		unsigned long flags;
-
 		memset(wqe->mem, 0, sizeof(*wqe->mem) * SIW_MAX_SGE);
 		wqe->wr_status = SR_WR_QUEUED;
 
@@ -916,13 +912,13 @@ int siw_activate_tx(struct siw_qp *qp)
 				rv = -EINVAL;
 				goto out;
 			}
-			spin_lock_irqsave(&qp->orq_lock, flags);
+			spin_lock(&qp->orq_lock);
 
 			if (!siw_orq_empty(qp)) {
 				qp->tx_ctx.orq_fence = 1;
 				rv = 0;
 			}
-			spin_unlock_irqrestore(&qp->orq_lock, flags);
+			spin_unlock(&qp->orq_lock);
 
 		} else if (wqe->sqe.opcode == SIW_OP_READ ||
 			   wqe->sqe.opcode == SIW_OP_READ_LOCAL_INV) {
@@ -930,7 +926,7 @@ int siw_activate_tx(struct siw_qp *qp)
 
 			wqe->sqe.num_sge = 1;
 
-			spin_lock_irqsave(&qp->orq_lock, flags);
+			spin_lock(&qp->orq_lock);
 
 			rreq = orq_get_free(qp);
 			if (rreq) {
@@ -944,7 +940,7 @@ int siw_activate_tx(struct siw_qp *qp)
 				qp->tx_ctx.orq_fence = 1;
 				rv = 0;
 			}
-			spin_unlock_irqrestore(&qp->orq_lock, flags);
+			spin_unlock(&qp->orq_lock);
 		}
 
 		/* Clear SQE, can be re-used by application */
