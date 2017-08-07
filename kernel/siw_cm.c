@@ -963,9 +963,12 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 			goto out_err;
 		}
 
-		if (cep->mpa.v2_ctrl_req.ird & MPA_V2_PEER_TO_PEER)
-			mpa_p2p_mode = cep->mpa.v2_ctrl_req.ord &
-				(MPA_V2_RDMA_WRITE_RTR | MPA_V2_RDMA_READ_RTR);
+		if (cep->mpa.v2_ctrl_req.ird & MPA_V2_PEER_TO_PEER) {
+			if (v2->ord & MPA_V2_RDMA_READ_RTR)
+				mpa_p2p_mode = MPA_V2_RDMA_READ_RTR;
+			else if (v2->ord & MPA_V2_RDMA_WRITE_RTR)
+				mpa_p2p_mode = MPA_V2_RDMA_WRITE_RTR;
+		}
 
 		/*
 		 * Check if we requested P2P mode, and if peer agrees
@@ -1760,6 +1763,7 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	struct siw_qp_attrs	qp_attrs;
 	int rv, max_priv_data = MPA_MAX_PRIVDATA;
 	bool wait_for_peer_rts = false;
+	u_short			ord;
 
 	siw_cep_set_inuse(cep);
 	siw_cep_put(cep);
@@ -1823,9 +1827,9 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	}
 
 	if (cep->enhanced_rdma_conn_est) {
-		if (params->ord > cep->ord) {
+		if (params->ord > cep->ird) {
 			if (relaxed_ird_negotiation)
-				params->ord = cep->ord;
+				params->ord = cep->ird;
 			else {
 				cep->ird = params->ird;
 				cep->ord = params->ord;
@@ -1834,10 +1838,10 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 				goto error;
 			}
 		}
-		if (params->ird < cep->ird) {
+		if (params->ird < cep->ord) {
 			if (relaxed_ird_negotiation &&
-			    cep->ird <= sdev->attrs.max_ird)
-				params->ird = cep->ird;
+			    cep->ord <= sdev->attrs.max_ird)
+				params->ird = cep->ord;
 			else {
 				rv = -ENOMEM;
 				up_write(&qp->state_lock);
@@ -1850,10 +1854,17 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		/*
 		 * Signal back negotiated IRD and ORD values
 		 */
-		cep->mpa.v2_ctrl.ord = htons(params->ord & MPA_IRD_ORD_MASK) |
-				(cep->mpa.v2_ctrl.ord & ~MPA_IRD_ORD_MASK);
-		cep->mpa.v2_ctrl.ird = htons(params->ird & MPA_IRD_ORD_MASK) |
-				(cep->mpa.v2_ctrl.ird & ~MPA_IRD_ORD_MASK);
+		if (peer_to_peer) {
+			cep->mpa.v2_ctrl.ird |= MPA_V2_PEER_TO_PEER;
+			ord = params->ord & MPA_IRD_ORD_MASK;
+
+			if (cep->ord & MPA_V2_RDMA_READ_RTR)
+				cep->mpa.v2_ctrl.ord =
+					htons(ord |= MPA_V2_RDMA_READ_RTR);
+			else if (cep->ord & MPA_V2_RDMA_WRITE_RTR)
+				cep->mpa.v2_ctrl.ord =
+					htons(ord |= MPA_V2_RDMA_WRITE_RTR);
+		}
 	}
 	cep->ird = params->ird;
 	cep->ord = params->ord;
