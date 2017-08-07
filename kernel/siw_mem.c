@@ -64,7 +64,7 @@ static void siw_umem_update_stats(struct work_struct *work)
 	kfree(umem);
 }
 
-static void siw_free_chunk(struct siw_page_chunk *chunk, int num_pages)
+static void siw_free_plist(struct siw_page_chunk *chunk, int num_pages)
 {
 	struct page **p = chunk->p;
 
@@ -81,7 +81,7 @@ void siw_umem_release(struct siw_umem *umem)
 
 	for (i = 0; num_pages; i++) {
 		int to_free = min_t(int, PAGES_PER_CHUNK, num_pages);
-		siw_free_chunk(&umem->page_chunk[i], to_free);
+		siw_free_plist(&umem->page_chunk[i], to_free);
 		kfree(umem->page_chunk[i].p);
 		num_pages -= to_free;
 	}
@@ -109,6 +109,50 @@ void siw_umem_release(struct siw_umem *umem)
 	}
 	kfree(umem->page_chunk);
 	kfree(umem);
+}
+
+void siw_pbl_free(struct siw_pbl *pbl)
+{
+	kfree(pbl);
+}
+
+u64 siw_pbl_get_buffer(struct siw_pbl *pbl, u64 off, int *len, int *idx)
+{
+	int i = idx ? *idx : 0;
+
+	while (i < pbl->num_buf) {
+		struct siw_pble *pble = &pbl->pbe[i];
+		if (pble->pbl_off + pble->size > off) {
+			u64 pble_off = off - pble->pbl_off;
+			if (len)
+				*len = pble->size - pble_off;
+			if (idx)
+				*idx = i;
+
+			return pble->addr + pble_off;
+		}
+		i++;
+	}
+	return 0;
+}
+
+struct siw_pbl *siw_pbl_alloc(u32 num_buf)
+{
+	struct siw_pbl *pbl;
+	int buf_size = sizeof(struct siw_pbl);
+
+	if (num_buf == 0)
+		return ERR_PTR(-EINVAL);
+
+	buf_size += ((num_buf - 1) * sizeof(struct siw_pble));
+
+	pbl = kzalloc(buf_size, GFP_KERNEL);
+	if (!pbl)
+		return ERR_PTR(-ENOMEM);
+
+	pbl->max_buf = num_buf;
+
+	return pbl;
 }
 
 struct siw_umem *siw_umem_get(u64 start, u64 len)
@@ -157,11 +201,20 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 		int got, nents = min_t(int, num_pages, PAGES_PER_CHUNK);
 		umem->page_chunk[i].p = kzalloc(nents * sizeof(struct page *),
 						GFP_KERNEL);
+		if (!umem->page_chunk[i].p) {
+			rv = -ENOMEM;
+			goto out;
+		}
 		got = 0;
 		while (nents) {
 			struct page **plist = &umem->page_chunk[i].p[got];
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
+			rv = get_user_pages(first_page_va, nents, FOLL_WRITE,
+					    plist, NULL);
+#else
 			rv = get_user_pages(first_page_va, nents, 1, 1, plist,
 					    NULL);
+#endif
 			if (rv < 0 )
 				goto out;
 
@@ -218,7 +271,8 @@ static u64 siw_dma_map_page(struct ib_device *dev, struct page *page,
 
 	BUG_ON(!valid_dma_direction(dir));
 
-	if (offset + size <= PAGE_SIZE) {
+	/* XXX Allow for multiple pages to be mapped */
+	if (1 || offset + size <= PAGE_SIZE) {
 		kva = (u64) page_address(page);
 		if (kva)
 			kva += offset;
@@ -247,7 +301,8 @@ static int siw_dma_map_sg(struct ib_device *dev, struct scatterlist *sgl,
 			n_sge = 0;
 			break;
 		}
-		sg->dma_address = (dma_addr_t) page_address(sg_page(sg));
+		sg->dma_address =
+			(dma_addr_t) (page_address(sg_page(sg)) + sg->offset);
 		sg_dma_len(sg) = sg->length;
 	}
 	return n_sge;

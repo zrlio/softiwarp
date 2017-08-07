@@ -79,8 +79,6 @@ extern int siw_query_gid(struct ib_device *, u8, int, union ib_gid *);
 extern struct ib_pd *siw_alloc_pd(struct ib_device *, struct ib_ucontext *,
 				  struct ib_udata *);
 extern int siw_dealloc_pd(struct ib_pd *);
-extern struct ib_ah *siw_create_ah(struct ib_pd *, struct ib_ah_attr *);
-extern int siw_destroy_ah(struct ib_ah *);
 extern struct ib_qp *siw_create_qp(struct ib_pd *, struct ib_qp_init_attr *,
 				   struct ib_udata *);
 extern int siw_query_qp(struct ib_qp *, struct ib_qp_attr *, int,
@@ -97,7 +95,10 @@ extern int siw_poll_cq(struct ib_cq *, int num_entries, struct ib_wc *);
 extern int siw_req_notify_cq(struct ib_cq *, enum ib_cq_notify_flags);
 extern struct ib_mr *siw_reg_user_mr(struct ib_pd *, u64, u64, u64, int,
 				     struct ib_udata *);
+extern struct ib_mr *siw_alloc_mr(struct ib_pd *, enum ib_mr_type, u32);
 extern struct ib_mr *siw_get_dma_mr(struct ib_pd *, int);
+extern int siw_map_mr_sg(struct ib_mr *, struct scatterlist *, int,
+			 unsigned int *);
 extern int siw_dereg_mr(struct ib_mr *);
 extern struct ib_srq *siw_create_srq(struct ib_pd *, struct ib_srq_init_attr *,
 				     struct ib_udata *);

@@ -103,9 +103,9 @@
 
 static inline int siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
 {
-	crypto_shash_init(&ctx->mpa_crc_hd);
+	crypto_shash_init(ctx->mpa_crc_hd);
 
-	return siw_crc_array(&ctx->mpa_crc_hd, (u8 *)&ctx->hdr,
+	return siw_crc_array(ctx->mpa_crc_hd, (u8 *)&ctx->hdr,
 			     ctx->fpdu_part_rcvd);
 }
 
@@ -119,8 +119,8 @@ static inline int siw_crc_rxhdr(struct siw_iwarp_rx *ctx)
  * currently receiving
  *
  * @rctx:	Receive Context
- * @len:	Number of bytes to place
- * @umen_ends:	1, if rctx chunk pointer should not be updated after len.
+ * @umem:	siw representation of target memory
+ * @dest_addr:	1, if rctx chunk pointer should not be updated after len.
  */
 static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 		       u64 dest_addr, int len)
@@ -147,12 +147,8 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 		}
 
 		bytes  = min(len, (int)PAGE_SIZE - pg_off);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
-		dest = kmap_atomic(p, KM_SOFTIRQ0);
-#else
 		dest = kmap_atomic(p);
-#endif
+
 		rv = skb_copy_bits(rctx->skb, rctx->skb_offset, dest + pg_off,
 				   bytes);
 
@@ -161,8 +157,8 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 			RX_QPID(rctx), p, bytes, rv);
 
 		if (likely(!rv)) {
-			if (rctx->crc_enabled)
-				rv = siw_crc_page(&rctx->mpa_crc_hd, p, pg_off,
+			if (rctx->mpa_crc_hd)
+				rv = siw_crc_page(rctx->mpa_crc_hd, p, pg_off,
 						  bytes);
 
 			rctx->skb_offset += bytes;
@@ -171,12 +167,7 @@ static int siw_rx_umem(struct siw_iwarp_rx *rctx, struct siw_umem *umem,
 			dest_addr += bytes;
 			pg_off = 0;
 		}
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 37)
-		kunmap_atomic(dest, KM_SOFTIRQ0);
-#else
 		kunmap_atomic(dest);
-#endif
 
 		if (unlikely(rv)) {
 			rctx->skb_copied += copied;
@@ -206,20 +197,44 @@ static inline int siw_rx_kva(struct siw_iwarp_rx *rctx, void *kva, int len)
 		len, kva);
 
 	rv = skb_copy_bits(rctx->skb, rctx->skb_offset, kva, len);
-
 	if (likely(!rv)) {
 		rctx->skb_offset += len;
 		rctx->skb_copied += len;
 		rctx->skb_new -= len;
-		if (rctx->crc_enabled) {
-			rv = siw_crc_array(&rctx->mpa_crc_hd, kva, len);
+		if (rctx->mpa_crc_hd) {
+			rv = siw_crc_array(rctx->mpa_crc_hd, kva, len);
 			if (rv)
-				goto done;
+				goto error;
 		}
-		rv = len;
+		return len;
 	}
-done:
+	dprint(DBG_ON, "(QP%d): failed: len %d, addr %p, rv %d\n",
+		RX_QPID(rctx), len, kva, rv);
+error:
 	return rv;
+}
+
+static int siw_rx_pbl(struct siw_iwarp_rx *rctx, struct siw_mr *mr,
+		      u64 addr, int len)
+{
+	struct siw_pbl *pbl = mr->pbl;
+	u64 offset = addr - mr->mem.va;
+	int copied = 0, idx = 0;
+
+	while (len) {
+		int bytes;
+		u64 buf_addr = siw_pbl_get_buffer(pbl, offset, &bytes, &idx);
+		if (buf_addr == 0)
+			break;
+		bytes = min(bytes, len);
+		if (siw_rx_kva(rctx, (void *)buf_addr, bytes) == bytes) {
+			copied += bytes;
+			offset += bytes;
+			len -= bytes;
+		} else
+			break;
+	}
+	return copied;
 }
 
 /*
@@ -333,7 +348,7 @@ static inline int siw_write_check_ntoh(struct siw_iwarp_rx *rctx)
  */
 static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 {
-	struct iwarp_send	*send = &rctx->hdr.send;
+	struct iwarp_send_inv	*send = &rctx->hdr.send_inv;
 	struct siw_wqe		*wqe = &rctx->wqe_active;
 
 	u32 ddp_msn = be32_to_cpu(send->ddp_msn);
@@ -346,8 +361,8 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		return -EINVAL;
 	}
 	if (unlikely(ddp_msn != rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND])) {
-		dprint(DBG_RX|DBG_ON, " received MSN=%d, expected MSN=%d\n",
-			rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND], ddp_msn);
+		dprint(DBG_RX|DBG_ON, " received MSN=%u, expected MSN=%u\n",
+			ddp_msn, rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]);
 		/*
 		 * TODO: Error handling
 		 * async_event= RI_EVENT_QP_RQ_PROTECTION_ERROR_MSN_GAP;
@@ -367,6 +382,8 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 		/* initialize user memory write position */
 		rctx->sge_idx = 0;
 		rctx->sge_off = 0;
+		/* only valid for SEND_INV and SEND_SE_INV operations */
+		rctx->inval_stag = be32_to_cpu(send->inval_stag);
 	}
 	if (unlikely(wqe->bytes < wqe->processed + rctx->fpdu_part_rem)) {
 		dprint(DBG_RX|DBG_ON, " Receive space short: (%d - %d) < %d\n",
@@ -518,13 +535,16 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			break;
 		}
 		mr = siw_mem2mr(mem->obj);
-		if (mr->umem)
-			rv = siw_rx_umem(rctx, mr->umem,
-					 sge->laddr + rctx->sge_off, sge_bytes);
-		else
+		if (mr->mem_obj == NULL)
 			rv = siw_rx_kva(rctx,
 					(void *)(sge->laddr + rctx->sge_off),
 					sge_bytes);
+		else if (!mr->mem.is_pbl)
+			rv = siw_rx_umem(rctx, mr->umem,
+					 sge->laddr + rctx->sge_off, sge_bytes);
+		else
+			rv = siw_rx_pbl(rctx, mr,
+					sge->laddr + rctx->sge_off, sge_bytes);
 
 		if (unlikely(rv != sge_bytes)) {
 			wqe->processed += rcvd_bytes;
@@ -613,15 +633,18 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	}
 
 	mr = siw_mem2mr(mem);
-	if (mr->umem)
-		rv = siw_rx_umem(rctx, mr->umem,
-				 rctx->ddp_to + rctx->fpdu_part_rcvd, bytes);
-	else
+	if (mr->mem_obj == NULL)
 		rv = siw_rx_kva(rctx,
 				(void *)(rctx->ddp_to + rctx->fpdu_part_rcvd),
 				bytes);
+	else if (!mr->mem.is_pbl)
+		rv = siw_rx_umem(rctx, mr->umem,
+				 rctx->ddp_to + rctx->fpdu_part_rcvd, bytes);
+	else
+		rv = siw_rx_pbl(rctx, mr,
+				rctx->ddp_to + rctx->fpdu_part_rcvd, bytes);
 
-	if(unlikely(rv != bytes))
+	if (unlikely(rv != bytes))
 		return -EINVAL;
 
 	rctx->fpdu_part_rem -= rv;
@@ -737,7 +760,7 @@ static struct siw_wqe *siw_orqe_get(struct siw_qp *qp)
 	if (_load_shared(orqe->flags) & SIW_WQE_VALID) {
 		wqe = rx_wqe(qp);
 		wqe->sqe.id = orqe->id;
-		wqe->sqe.opcode = SIW_OP_READ;
+		wqe->sqe.opcode = orqe->opcode;
 		wqe->sqe.sge[0].laddr = orqe->sge[0].laddr;
 		wqe->sqe.sge[0].lkey = orqe->sge[0].lkey;
 		wqe->sqe.sge[0].length = orqe->sge[0].length;
@@ -827,12 +850,15 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	bytes = min(rctx->fpdu_part_rem, rctx->skb_new);
 
 	mr = siw_mem2mr(mem->obj);
-	if (mr->umem)
+	if (mr->mem_obj == NULL)
+		rv = siw_rx_kva(rctx, (void *)(sge->laddr + wqe->processed),
+				bytes);
+	else if (!mr->mem.is_pbl)
 		rv = siw_rx_umem(rctx, mr->umem, sge->laddr + wqe->processed,
 				 bytes);
 	else
-		rv = siw_rx_kva(rctx, (void *)(sge->laddr + wqe->processed),
-				bytes);
+		rv = siw_rx_pbl(rctx, mr, sge->laddr + wqe->processed,
+				 bytes);
 	if (rv != bytes) {
 		wqe->wc_status = SIW_WC_GENERAL_ERR;
 		rv = -EINVAL;
@@ -899,14 +925,14 @@ static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		/*
 		 * check crc if required
 		 */
-		if (!rctx->crc_enabled)
+		if (!rctx->mpa_crc_hd)
 			return 0;
 
-		if (rctx->pad && siw_crc_array(&rctx->mpa_crc_hd,
+		if (rctx->pad && siw_crc_array(rctx->mpa_crc_hd,
 					       tbuf, rctx->pad) != 0)
 			return -EINVAL;
 
-		crypto_shash_final(&rctx->mpa_crc_hd, (u8 *)&crc_own);
+		crypto_shash_final(rctx->mpa_crc_hd, (u8 *)&crc_own);
 
 		/*
 		 * CRC32 is computed, transmitted and received directly in NBO,
@@ -1048,17 +1074,19 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 
 	lock_sq(qp);
 
-	if (qp->tx_ctx.orq_fence == 0) {
-		rreq = &qp->orq[qp->orq_get % qp->attrs.orq_size];
-		smp_store_mb(rreq->flags, 0); /* One new free ORQ entry */
-	} else {
+	/* free current orq entry */
+	rreq = orq_get_current(qp);
+	smp_store_mb(rreq->flags, 0);
+
+	if (qp->tx_ctx.orq_fence) {
 		if (unlikely(tx_waiting->wr_status != SR_WR_QUEUED)) {
 			pr_warn("QP[%d]: Resume from fence: status %d wrong\n",
 				QP_ID(qp), tx_waiting->wr_status);
 			goto out;
 		}
 		/* resume SQ processing */
-		if (tx_waiting->sqe.opcode == SIW_OP_READ) {
+		if (tx_waiting->sqe.opcode == SIW_OP_READ ||
+		    tx_waiting->sqe.opcode == SIW_OP_READ_LOCAL_INV) {
 
 			rreq = orq_get_tail(qp);
 			if (unlikely(!rreq))
@@ -1112,8 +1140,10 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 	switch (opcode) {
 
 	case RDMAP_SEND_SE:
+	case RDMAP_SEND_SE_INVAL:
 		wqe->rqe.flags |= SIW_WQE_SOLICITED;
 	case RDMAP_SEND:
+	case RDMAP_SEND_INVAL:
 		if (wqe->wr_status == SR_WR_IDLE)
 			break;
 
@@ -1122,6 +1152,16 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 		if (error != 0 && wc_status == SIW_WC_SUCCESS)
 			wc_status = SIW_WC_GENERAL_ERR;
 
+		/*
+		 * Handle STag invalidation request
+		 */
+		if (wc_status == SIW_WC_SUCCESS &&
+		    (opcode == RDMAP_SEND_INVAL ||
+		     opcode == RDMAP_SEND_SE_INVAL)) {
+			rv = siw_invalidate_stag(qp->pd, rctx->inval_stag);
+			if (rv)
+				wc_status = SIW_WC_REM_INV_REQ_ERR;
+		}
 		rv = siw_rqe_complete(qp, &wqe->rqe, wqe->processed,
 				      wc_status);
 		siw_wqe_put_mem(wqe, SIW_OP_RECEIVE);
@@ -1141,6 +1181,20 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 
 			if (wc_status == SIW_WC_SUCCESS)
 				wc_status = SIW_WC_GENERAL_ERR;
+		} else if (qp->kernel_verbs) {
+			/*
+			 * Handle any STag invalidation request
+			 */
+			struct siw_sqe *req = orq_get_current(qp);
+
+			if (req->opcode == SIW_OP_READ_LOCAL_INV) {
+				rv = siw_invalidate_stag(qp->pd,
+							 req->sge[0].lkey);
+				if (rv && wc_status == SIW_WC_SUCCESS) {
+					wc_status = SIW_WC_GENERAL_ERR;
+					error = rv;
+				}
+			}
 		}
 		/*
 		 * All errors turn the wqe into signalled.
@@ -1226,7 +1280,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 		case SIW_GET_HDR:
 			rv = siw_get_hdr(rctx);
 			if (!rv) {
-				if (rctx->crc_enabled &&
+				if (rctx->mpa_crc_hd &&
 				    siw_crc_rxhdr(rctx) != 0) {
 					rv = -EINVAL;
 					break;

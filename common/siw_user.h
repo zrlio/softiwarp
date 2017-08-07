@@ -100,20 +100,23 @@ enum siw_db_type {
 enum siw_opcode {
 	SIW_OP_WRITE		= 0,
 	SIW_OP_READ		= 1,
-	SIW_OP_SEND		= 2,
-	SIW_OP_SEND_WITH_IMM	= 3,
+	SIW_OP_READ_LOCAL_INV	= 2,
+	SIW_OP_SEND		= 3,
+	SIW_OP_SEND_WITH_IMM	= 4,
+	SIW_OP_SEND_REMOTE_INV	= 5,
 
 	/* Unsupported */
-	SIW_OP_FETCH_AND_ADD	= 4,
-	SIW_OP_COMP_AND_SWAP	= 5,
-	SIW_OP_INVAL_STAG	= 6,
+	SIW_OP_FETCH_AND_ADD	= 6,
+	SIW_OP_COMP_AND_SWAP	= 7,
 
-	SIW_OP_RECEIVE		= 7,
+	SIW_OP_RECEIVE		= 8,
 #ifdef __KERNEL__
-	SIW_OP_READ_RESPONSE	= 8,	/* provider internal */
-	SIW_NUM_OPCODES		= 9,
+	SIW_OP_READ_RESPONSE	= 9,	/* provider internal */
+	SIW_OP_INVAL_STAG	= 10,
+	SIW_OP_REG_MR		= 11,
+	SIW_NUM_OPCODES		= 13,
 #else
-	SIW_NUM_OPCODES		= 8,
+	SIW_NUM_OPCODES		= 9,
 #endif
 	SIW_OP_INVALID		= SIW_NUM_OPCODES + 1
 };
@@ -152,8 +155,19 @@ struct siw_sqe {
 	uint8_t		num_sge;
 	uint8_t		opcode; /* Actual enum siw_opcode values */
 	uint32_t	rkey;
+#ifdef __KERNEL__
+	union {
+		uint64_t	raddr;
+		uint64_t	ofa_mr;
+	};
+	union {
+		struct siw_sge	sge[SIW_MAX_SGE];
+		uint32_t	access;
+	};
+#else
 	uint64_t	raddr;
 	struct siw_sge	sge[SIW_MAX_SGE];
+#endif
 };
 
 struct siw_rqe {
@@ -182,8 +196,9 @@ enum siw_wc_status {
 	SIW_WC_BAD_RESP_ERR	= 5,
 	SIW_WC_LOC_ACCESS_ERR	= 6,
 	SIW_WC_REM_ACCESS_ERR	= 7,
-	SIW_WC_GENERAL_ERR	= 8,
-	SIW_NUM_WC_STATUS	= 9
+	SIW_WC_REM_INV_REQ_ERR	= 8,
+	SIW_WC_GENERAL_ERR	= 9,
+	SIW_NUM_WC_STATUS	= 10
 };
 
 struct siw_cqe {
