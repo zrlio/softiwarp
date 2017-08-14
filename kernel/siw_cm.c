@@ -1687,7 +1687,8 @@ int siw_connect(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 			cep->mpa.v2_ctrl.ord |= rtr_type;
 		}
 		/* Remember own P2P mode requested */
-		cep->mpa.v2_ctrl_req = cep->mpa.v2_ctrl;
+		cep->mpa.v2_ctrl_req.ird = cep->mpa.v2_ctrl.ird;
+		cep->mpa.v2_ctrl_req.ord = cep->mpa.v2_ctrl.ord;
 	}
 
 	memcpy(cep->mpa.hdr.key, MPA_KEY_REQ, 16);
@@ -1851,9 +1852,9 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		 * Signal back negotiated IRD and ORD values
 		 */
 		cep->mpa.v2_ctrl.ord = htons(params->ord & MPA_IRD_ORD_MASK) |
-				(cep->mpa.v2_ctrl.ord & ~MPA_IRD_ORD_MASK);
+				(cep->mpa.v2_ctrl.ord & ~MPA_V2_MASK_IRD_ORD);
 		cep->mpa.v2_ctrl.ird = htons(params->ird & MPA_IRD_ORD_MASK) |
-				(cep->mpa.v2_ctrl.ird & ~MPA_IRD_ORD_MASK);
+				(cep->mpa.v2_ctrl.ird & ~MPA_V2_MASK_IRD_ORD);
 	}
 	cep->ird = params->ird;
 	cep->ord = params->ord;
