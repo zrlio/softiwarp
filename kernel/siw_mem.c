@@ -250,111 +250,29 @@ out:
 /*
  * DMA mapping/address translation functions.
  * Used to populate siw private DMA mapping functions of
- * struct ib_dma_mapping_ops in struct ib_dev - see rdma/ib_verbs.h
+ * struct dma_map_ops. 
  */
-
-static int siw_mapping_error(struct ib_device *dev, u64 dma_addr)
-{
-	return dma_addr == 0;
-}
-
-static u64 siw_dma_map_page(struct ib_device *dev, struct page *page,
-			    unsigned long offset, size_t size,
-			    enum dma_data_direction dir)
-{
-	u64 kva = 0;
-
-	BUG_ON(!valid_dma_direction(dir));
-
-	/* XXX Allow for multiple pages to be mapped */
-	if (1 || offset + size <= PAGE_SIZE) {
-		kva = (u64) page_address(page);
-		if (kva)
-			kva += offset;
-	}
-	return kva;
-}
-
-static void siw_dma_unmap_page(struct ib_device *dev,
-			       u64 addr, size_t size,
-			       enum dma_data_direction dir)
-{
-	/* NOP */
-}
-
-static int siw_dma_map_sg(struct ib_device *dev, struct scatterlist *sgl,
-			  int n_sge, enum dma_data_direction dir)
-{
-	struct scatterlist *sg;
-	int i;
-
-	BUG_ON(!valid_dma_direction(dir));
-
-	for_each_sg(sgl, sg, n_sge, i) {
-		/* This is just a validity check */
-		if (unlikely(page_address(sg_page(sg)) == NULL)) {
-			n_sge = 0;
-			break;
-		}
-		sg->dma_address =
-			(dma_addr_t) (page_address(sg_page(sg)) + sg->offset);
-		sg_dma_len(sg) = sg->length;
-	}
-	return n_sge;
-}
-
-static void siw_dma_unmap_sg(struct ib_device *dev, struct scatterlist *sgl,
-			     int n_sge, enum dma_data_direction dir)
-{
-	/* NOP */
-}
-
-static void siw_sync_single_for_cpu(struct ib_device *dev, u64 addr,
-				    size_t size, enum dma_data_direction dir)
-{
-	/* NOP */
-}
-
-static void siw_sync_single_for_device(struct ib_device *dev, u64 addr,
-				       size_t size,
-				       enum dma_data_direction dir)
-{
-	/* NOP */
-}
-
-static void *siw_dma_alloc_coherent(struct ib_device *dev, size_t size,
-				    u64 *dma_addr, gfp_t flag)
-{
-	struct page *page;
-	void *kva = NULL;
-
-	page = alloc_pages(flag, get_order(size));
-	if (page)
-		kva = page_address(page);
-	if (dma_addr)
-		*dma_addr = (u64)kva;
-
-	return kva;
-}
-
-static void siw_dma_free_coherent(struct ib_device *dev, size_t size,
-				  void *kva, u64 dma_addr)
-{
-	free_pages((unsigned long) kva, get_order(size));
-}
-
 static void *siw_dma_generic_alloc(struct device *dev, size_t size,
 				   dma_addr_t *dma_handle, gfp_t gfp,
 				   unsigned long attrs)
 {
-	return siw_dma_alloc_coherent(NULL, size, dma_handle, gfp);
+	struct page *page;
+	void *kva = NULL;
+
+	page = alloc_pages(gfp, get_order(size));
+	if (page)
+		kva = page_address(page);
+	if (dma_handle)
+		*dma_handle = (dma_addr_t)kva;
+
+	return kva;
 }
 
 static void siw_dma_generic_free(struct device *dev, size_t size,
 				 void *vaddr, dma_addr_t dma_handle,
 				 unsigned long attrs)
 {
-	siw_dma_free_coherent(NULL, size, vaddr, dma_handle);
+	free_pages((unsigned long) vaddr, get_order(size));
 }
 
 static dma_addr_t siw_dma_generic_map_page(struct device *dev,
@@ -364,7 +282,14 @@ static dma_addr_t siw_dma_generic_map_page(struct device *dev,
 					   enum dma_data_direction dir,
 					   unsigned long attrs)
 {
-	return siw_dma_map_page(NULL, page, offset, size, dir);
+	u64 kva;
+
+	BUG_ON(!valid_dma_direction(dir));
+
+	kva = (u64)page_address(page);
+	if (kva)
+		kva += offset;
+	return kva;
 }
 
 static void siw_dma_generic_unmap_page(struct device *dev,
@@ -373,14 +298,29 @@ static void siw_dma_generic_unmap_page(struct device *dev,
 				       enum dma_data_direction dir,
 				       unsigned long attrs)
 {
-	siw_dma_unmap_page(NULL, handle, size, dir);
+	/* NOP */
 }
 
-static int siw_dma_generic_map_sg(struct device *dev, struct scatterlist *sg,
+static int siw_dma_generic_map_sg(struct device *dev, struct scatterlist *sgl,
 				  int nents, enum dma_data_direction dir,
 				  unsigned long attrs)
 {
-	return siw_dma_map_sg(NULL, sg, nents, dir);
+	struct scatterlist *se;
+	int i;
+
+	BUG_ON(!valid_dma_direction(dir));
+
+	for_each_sg(sgl, se, nents, i) {
+		/* This is just a validity check */
+		if (unlikely(page_address(sg_page(se)) == NULL)) {
+			nents = 0;
+			break;
+		}
+		se->dma_address =
+			(dma_addr_t)(page_address(sg_page(se)) + se->offset);
+		sg_dma_len(se) = se->length;
+	}
+	return nents;
 }
 
 static void siw_dma_generic_unmap_sg(struct device *dev,
@@ -389,7 +329,7 @@ static void siw_dma_generic_unmap_sg(struct device *dev,
 				    enum dma_data_direction dir,
 				    unsigned long attrs)
 {
-	siw_dma_unmap_sg(NULL, sg, nents, dir);
+	/* NOP */
 }
 
 static void siw_generic_sync_single_for_cpu(struct device *dev,
@@ -397,7 +337,7 @@ static void siw_generic_sync_single_for_cpu(struct device *dev,
 					    size_t size,
 					    enum dma_data_direction dir)
 {
-	siw_sync_single_for_cpu(NULL, dma_handle, size, dir);
+	/* NOP */
 }
 
 
@@ -406,7 +346,7 @@ static void siw_generic_sync_single_for_device(struct device *dev,
 					       size_t size,
 					       enum dma_data_direction dir)
 {
-	siw_sync_single_for_device(NULL, dma_handle, size, dir);
+	/* NOP */
 }
 
 static void siw_generic_sync_sg_for_cpu(struct device *dev,
@@ -428,7 +368,7 @@ static void siw_generic_sync_sg_for_device(struct device *dev,
 static int siw_dma_generic_mapping_error(struct device *dev,
 					 dma_addr_t dma_addr)
 {
-	return siw_mapping_error(NULL, dma_addr);
+	return dma_addr == 0;
 }
 
 static int siw_dma_generic_supported(struct device *dev, u64 mask)
