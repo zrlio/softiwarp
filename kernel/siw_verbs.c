@@ -1826,7 +1826,6 @@ int siw_modify_srq(struct ib_srq *ofa_srq, struct ib_srq_attr *attrs,
 		if (attrs->srq_limit) {
 			if (unlikely(attrs->srq_limit > srq->num_rqe)) {
 				rv = -EINVAL;
-				/* FIXME: restore old space & max_wr?? */
 				goto out;
 			}
 			srq->armed = 1;

@@ -49,14 +49,8 @@
 #define _NR_SYSCALL_DB 313
 
 
-enum siw_if_type {
-	SIW_IF_OFED = 0, 	/* only via standard ofed syscall if */
-	SIW_IF_MAPPED = 1	/* private qp and cq mapping */
-};
-
 struct siw_device {
 	struct ibv_device	ofa_dev;
-	enum siw_if_type	if_type; /* private fast path or ofed generic */
 	pthread_spinlock_t	lock;
 };
 
@@ -162,8 +156,7 @@ extern struct ibv_cq *siw_create_cq(struct ibv_context *, int,
 extern int siw_resize_cq(struct ibv_cq *, int);
 extern int siw_destroy_cq(struct ibv_cq *);
 extern int siw_notify_cq(struct ibv_cq *, int);
-extern int siw_poll_cq_ofed(struct ibv_cq *, int, struct ibv_wc *);
-extern int siw_poll_cq_mapped(struct ibv_cq *, int, struct ibv_wc *);
+extern int siw_poll_cq(struct ibv_cq *, int, struct ibv_wc *);
 
 extern struct ibv_srq *siw_create_srq(struct ibv_pd *,
 				     struct ibv_srq_init_attr *);
@@ -176,17 +169,11 @@ extern struct ibv_qp *siw_create_qp(struct ibv_pd *, struct ibv_qp_init_attr *);
 extern int siw_modify_qp(struct ibv_qp *, struct ibv_qp_attr *, int);
 extern int siw_destroy_qp(struct ibv_qp *);
 
-extern int siw_post_send_ofed(struct ibv_qp *, struct ibv_send_wr *,
-			     struct ibv_send_wr **);
-extern int siw_post_send_mapped(struct ibv_qp *, struct ibv_send_wr *,
+extern int siw_post_send(struct ibv_qp *, struct ibv_send_wr *,
 				struct ibv_send_wr **);
-extern int siw_post_recv_ofed(struct ibv_qp *, struct ibv_recv_wr *,
+extern int siw_post_recv(struct ibv_qp *, struct ibv_recv_wr *,
 			     struct ibv_recv_wr **);
-extern int siw_post_recv_mapped(struct ibv_qp *, struct ibv_recv_wr *,
-			     struct ibv_recv_wr **);
-extern int siw_post_srq_recv_ofed(struct ibv_srq *, struct ibv_recv_wr *,
-				  struct ibv_recv_wr **);
-extern int siw_post_srq_recv_mapped(struct ibv_srq *, struct ibv_recv_wr *,
+extern int siw_post_srq_recv(struct ibv_srq *, struct ibv_recv_wr *,
 				    struct ibv_recv_wr **);
 
 extern struct ibv_ah *siw_create_ah(struct ibv_pd *, struct ibv_ah_attr *);

@@ -59,11 +59,6 @@
 
 #define _load_shared(a)		(*(volatile typeof(a) *)&(a))
 
-enum siw_if_type {
-	SIW_IF_OFED = 0,	/* only via standard ofed syscall if */
-	SIW_IF_MAPPED = 1	/* private qp and cq mapping */
-};
-
 #define DEVICE_ID_SOFTIWARP	0x0815
 #define SIW_VENDOR_ID		0x626d74	/* ascii 'bmt' for now */
 #define SIW_VENDORT_PART_ID	0
@@ -114,9 +109,6 @@ struct siw_devinfo {
 	int	max_srq;
 	int	max_srq_wr;
 	int	max_srq_sge;
-	/* end ib_device_attr */
-
-	enum siw_if_type iftype;
 };
 
 

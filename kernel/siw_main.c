@@ -73,7 +73,6 @@ module_param(loopback_enabled, bool, 0644);
 MODULE_PARM_DESC(loopback_enabled, "enable_loopback");
 
 LIST_HEAD(siw_devlist);
-DEFINE_SPINLOCK(siw_dev_lock);
 
 static char *tx_cpu_list[MAX_CPU];
 module_param_array(tx_cpu_list, charp, NULL, 0444);
@@ -92,20 +91,10 @@ static ssize_t show_sw_version(struct device *dev,
 	return sprintf(buf, "%x\n", sdev->attrs.version);
 }
 
-static ssize_t show_if_type(struct device *dev,
-			    struct device_attribute *attr, char *buf)
-{
-	struct siw_dev *sdev = container_of(dev, struct siw_dev, ofa_dev.dev);
-
-	return sprintf(buf, "%d\n", sdev->attrs.iftype);
-}
-
 static DEVICE_ATTR(sw_version, 0444, show_sw_version, NULL);
-static DEVICE_ATTR(if_type, 0444, show_if_type, NULL);
 
 static struct device_attribute *siw_dev_attributes[] = {
-	&dev_attr_sw_version,
-	&dev_attr_if_type
+	&dev_attr_sw_version
 };
 
 static void siw_device_release(struct device *dev)
@@ -482,12 +471,8 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	ofa_dev->iwcm->add_ref = siw_qp_get_ref;
 	ofa_dev->iwcm->rem_ref = siw_qp_put_ref;
 	ofa_dev->iwcm->get_qp = siw_get_ofaqp;
-	/*
-	 * set and register sw version + user if type
-	 */
-	sdev->attrs.version = VERSION_ID_SOFTIWARP;
-	sdev->attrs.iftype  = SIW_IF_MAPPED;
 
+	sdev->attrs.version = VERSION_ID_SOFTIWARP;
 	sdev->attrs.vendor_id = SIW_VENDOR_ID;
 	sdev->attrs.vendor_part_id = SIW_VENDORT_PART_ID;
 	sdev->attrs.sw_version = VERSION_ID_SOFTIWARP;
@@ -541,10 +526,6 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 	dprint(DBG_DM, " (dev=%s): Event %lu\n", netdev->name, event);
 
 	if (dev_net(netdev) != &init_net)
-		goto done;
-
-	if (!spin_trylock(&siw_dev_lock))
-		/* The module is being removed */
 		goto done;
 
 	sdev = siw_dev_from_netdev(netdev);
@@ -627,7 +608,6 @@ static int siw_netdev_event(struct notifier_block *nb, unsigned long event,
 	default:
 		break;
 	}
-	spin_unlock(&siw_dev_lock);
 done:
 	return NOTIFY_OK;
 }
@@ -725,9 +705,7 @@ static void __exit siw_exit_module(void)
 			qp_tx_thread[nr_cpu] = NULL;
 		}
 	}
-	spin_lock(&siw_dev_lock);
 	unregister_netdevice_notifier(&siw_netdev_nb);
-	spin_unlock(&siw_dev_lock);
 
 	siw_sq_worker_exit();
 	siw_cm_exit();
