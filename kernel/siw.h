@@ -64,8 +64,8 @@
 #define SIW_VENDORT_PART_ID	0
 #define SIW_MAX_QP		(1024 * 100)
 #define SIW_MAX_QP_WR		(1024 * 32)
-#define SIW_MAX_ORD		128
-#define SIW_MAX_IRD		128
+#define SIW_MAX_ORD_QP		128
+#define SIW_MAX_IRD_QP		128
 #define SIW_MAX_SGE_PBL		256	/* max num sge's for PBL */
 #define SIW_MAX_SGE_RD		1	/* iwarp limitation. we could relax */
 #define SIW_MAX_CQ		(1024 * 100)

@@ -66,6 +66,10 @@ static bool low_delay_tx = 1;
 module_param(low_delay_tx, bool, 0644);
 MODULE_PARM_DESC(low_delay_tx, "Run tight transmit thread loop if activated\n");
 
+static int gso_seg_limit;
+module_param(gso_seg_limit, int, 0644);
+MODULE_PARM_DESC(gso_seg_limit, "limit TCP GSO to value if set\n");
+
 static inline int siw_crc_txhdr(struct siw_iwarp_tx *ctx)
 {
 	crypto_shash_init(ctx->mpa_crc_hd);
@@ -757,18 +761,29 @@ done:
 	return rv;
 }
 
-static void siw_calculate_tcpseg(struct siw_iwarp_tx *c_tx, struct socket *s)
+static void siw_update_tcpseg(struct siw_iwarp_tx *c_tx, struct socket *s)
 {
+	struct tcp_sock *tp = tcp_sk(s->sk);
+
 	/*
 	 * refresh TCP segement len if we start a new segment or
 	 * remaining segment len is less than MPA_MIN_FRAG or
 	 * the socket send buffer is empty.
 	 */
 	if (c_tx->new_tcpseg || c_tx->tcp_seglen < (int)MPA_MIN_FRAG ||
-	     !tcp_send_head(s->sk))
-		c_tx->tcp_seglen = get_tcp_mss(s->sk);
+	     !tcp_send_head(s->sk)) {
+		if (tp->gso_segs) {
+			if (gso_seg_limit == 0)
+				c_tx->tcp_seglen =
+					tp->mss_cache * tp->gso_segs;
+			else
+				c_tx->tcp_seglen = tp->mss_cache *
+					min_t(unsigned int, gso_seg_limit,
+					      tp->gso_segs);
+		} else
+			c_tx->tcp_seglen = tp->mss_cache;
+	}
 }
-
 
 /*
  * siw_unseg_txlen()
@@ -968,7 +983,7 @@ static int siw_qp_sq_proc_tx(struct siw_qp *qp, struct siw_wqe *wqe)
 		wqe->wr_status = SR_WR_INPROGRESS;
 		wqe->processed = 0;
 
-		siw_calculate_tcpseg(c_tx, s);
+		siw_update_tcpseg(c_tx, s);
 
 		rv = siw_qp_prepare_tx(c_tx);
 		if (rv == PKT_FRAGMENTED) {
@@ -1033,7 +1048,7 @@ next_segment:
 		}
 		c_tx->state = SIW_SEND_HDR;
 
-		siw_calculate_tcpseg(c_tx, s);
+		siw_update_tcpseg(c_tx, s);
 
 		siw_prepare_fpdu(qp, wqe);
 		goto next_segment;
@@ -1143,8 +1158,7 @@ int siw_qp_sq_process(struct siw_qp *qp)
 		 * at least two waiters: that should never happen!
 		 */
 		WARN_ON(1);
-		atomic_dec(&qp->tx_ctx.in_use);
-		return 0;
+		goto done;
 	}
 next_wqe:
 	/*

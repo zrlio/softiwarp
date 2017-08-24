@@ -260,7 +260,6 @@ void siw_qp_llp_close(struct siw_qp *qp)
 void siw_qp_llp_write_space(struct sock *sk)
 {
 	struct siw_cep	*cep = sk_to_cep(sk);
-
 	/*
 	 * TODO:
 	 * Resemble sk_stream_write_space() logic for iWARP constraints:
@@ -530,11 +529,6 @@ int siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			qp->attrs.llp_stream_handle = attrs->llp_stream_handle;
 
 			qp->attrs.state = SIW_QP_STATE_RTS;
-			/*
-			 * set initial mss
-			 */
-			qp->tx_ctx.tcp_seglen =
-				get_tcp_mss(attrs->llp_stream_handle->sk);
 
 			break;
 

@@ -64,8 +64,9 @@ MODULE_LICENSE("Dual BSD/GPL");
 MODULE_VERSION("0.2");
 
 #define SIW_MAX_IF 12
-static char *iface_list[SIW_MAX_IF];
-module_param_array(iface_list, charp, NULL, 0444);
+static int if_cnt;
+static char *iface_list[SIW_MAX_IF] = {[0 ... (SIW_MAX_IF-1)] = '\0'};
+module_param_array(iface_list, charp, &if_cnt, 0444);
 MODULE_PARM_DESC(iface_list, "Interface list siw attaches to if present");
 
 static bool loopback_enabled = 1;
@@ -74,14 +75,13 @@ MODULE_PARM_DESC(loopback_enabled, "enable_loopback");
 
 LIST_HEAD(siw_devlist);
 
-static char *tx_cpu_list[MAX_CPU];
-module_param_array(tx_cpu_list, charp, NULL, 0444);
+static int cpu_cnt;
+static char *tx_cpu_list[MAX_CPU] = {[0 ... (MAX_CPU-1)] = '\0'};
+module_param_array(tx_cpu_list, charp, &cpu_cnt, 0444);
 MODULE_PARM_DESC(tx_cpu_list, "List of CPUs siw TX thread shall be bound to");
 
 int default_tx_cpu = -1;
 struct task_struct *qp_tx_thread[MAX_CPU];
-
-static int tx_on_all_cpus = 1;
 
 static ssize_t show_sw_version(struct device *dev,
 			       struct device_attribute *attr, char *buf)
@@ -109,7 +109,7 @@ static struct device siw_generic_dma_device = {
 };
 
 static struct bus_type siw_bus = {
-	.name	= "siw",
+	.name = "siw",
 };
 
 static int siw_modify_port(struct ib_device *ofa_dev, u8 port, int mask,
@@ -212,15 +212,17 @@ static void siw_device_destroy(struct siw_dev *sdev)
 
 static int siw_match_iflist(struct net_device *dev)
 {
-	int i = 0, found = *iface_list ? 0 : 1;
+	int i;
 
-	while (iface_list[i]) {
-		if (!strcmp(iface_list[i++], dev->name)) {
-			found = 1;
-			break;
-		}
-	}
-	return found;
+	if (if_cnt == 0)
+		return 1;
+
+	if_cnt = min((int)SIW_MAX_IF, if_cnt);
+
+	for (i = 0; i < if_cnt; i++)
+		if (!strcmp(iface_list[i], dev->name))
+			return 1;
+	return 0;
 }
 
 static struct siw_dev *siw_dev_from_netdev(struct net_device *dev)
@@ -240,16 +242,17 @@ static struct siw_dev *siw_dev_from_netdev(struct net_device *dev)
 
 static int siw_tx_qualified(int cpu)
 {
-	int i = 0;
+	int i;
 
-	if (tx_on_all_cpus)
+	if (cpu_cnt == 0)
 		return 1;
 
-	for (i = 0; i < MAX_CPU; i++) {
-		int c;
-
-		if (tx_cpu_list[i] && kstrtoint(tx_cpu_list[i], 0, &c) == 0 &&
-		    cpu == c)
+	for (i = 0; i < cpu_cnt; i++) {
+		int new_cpu;
+	       
+		if (kstrtoint(tx_cpu_list[i], 0, &new_cpu))
+			continue;
+		if (cpu == new_cpu)
 			return 1;
 	}
 	return 0;
@@ -263,7 +266,7 @@ static int siw_create_tx_threads(int max_threads, int check_qualified)
 		return 0;
 
 	for_each_online_cpu(cpu) {
-		if (check_qualified == 0 || siw_tx_qualified(cpu)) {
+		if (siw_tx_qualified(cpu)) {
 			qp_tx_thread[cpu] =
 				kthread_create(siw_run_sq,
 					(unsigned long *)(long)cpu,
@@ -290,7 +293,7 @@ static int siw_create_tx_threads(int max_threads, int check_qualified)
 static int siw_dev_qualified(struct net_device *netdev)
 {
 	if (!siw_match_iflist(netdev)) {
-		dprint(DBG_DM|DBG_ON, ": %s (not selected)\n",
+		dprint(DBG_DM, ": %s (not selected)\n",
 			netdev->name);
 		return 0;
 	}
@@ -478,8 +481,8 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	sdev->attrs.sw_version = VERSION_ID_SOFTIWARP;
 	sdev->attrs.max_qp = SIW_MAX_QP;
 	sdev->attrs.max_qp_wr = SIW_MAX_QP_WR;
-	sdev->attrs.max_ord = SIW_MAX_ORD;
-	sdev->attrs.max_ird = SIW_MAX_IRD;
+	sdev->attrs.max_ord = SIW_MAX_ORD_QP;
+	sdev->attrs.max_ird = SIW_MAX_IRD_QP;
 	sdev->attrs.cap_flags = IB_DEVICE_MEM_MGT_EXTENSIONS;
 	sdev->attrs.max_sge = SIW_MAX_SGE;
 	sdev->attrs.max_sge_rd = SIW_MAX_SGE_RD;
@@ -660,11 +663,9 @@ static __init int siw_init_module(void)
 		siw_debugfs_delete();
 		goto out_unregister;
 	}
-	for (nr_cpu = 0; nr_cpu < MAX_CPU; nr_cpu++) {
+	for (nr_cpu = 0; nr_cpu < MAX_CPU; nr_cpu++)
 		qp_tx_thread[nr_cpu] = NULL;
-		if (tx_cpu_list[nr_cpu])
-			tx_on_all_cpus = 0;
-	}
+
 	if (siw_create_tx_threads(MAX_CPU, 1) == 0) {
 		pr_info("Try starting default TX thread\n");
 		if (siw_create_tx_threads(1, 0) == 0) {

@@ -796,9 +796,9 @@ static int siw_proc_mpareq(struct siw_cep *cep)
 		 * IRD and ORD get limited by global maximum values.
 		 */
 		cep->ord = ntohs(v2->ird) & MPA_IRD_ORD_MASK;
-		cep->ord = min(cep->ord, SIW_MAX_ORD);
+		cep->ord = min(cep->ord, SIW_MAX_ORD_QP);
 		cep->ird = ntohs(v2->ord) & MPA_IRD_ORD_MASK;
-		cep->ird = min(cep->ird, SIW_MAX_IRD);
+		cep->ird = min(cep->ird, SIW_MAX_IRD_QP);
 
 		/* May get overwritten by locally negotiated values */
 		cep->mpa.v2_ctrl.ird = htons(cep->ird);
@@ -970,24 +970,26 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 		/*
 		 * Check if we requested P2P mode, and if peer agrees
 		 */
-		if ((mpa_p2p_mode != MPA_V2_RDMA_NO_RTR) &&
-		    ((mpa_p2p_mode & v2->ord) == 0)) {
-			/*
-			 * We requested RTR mode.
-			 * Only zero length READ and WRITE are supported,
-			 * send a TERM otherwise.
-			 */
-			dprint(DBG_ON,
-				" Peer refuses RTR mode:  Req %2x, Got %2x\n",
-				mpa_p2p_mode,
-				v2->ord & (MPA_V2_RDMA_WRITE_RTR |
-					   MPA_V2_RDMA_READ_RTR));
+		if (mpa_p2p_mode != MPA_V2_RDMA_NO_RTR) {
+			if ((mpa_p2p_mode & v2->ord) == 0) {
+				/*
+				 * We requested RTR mode(s), but the peer
+				 * did not pick any mode we support.
+				 */
+				dprint(DBG_ON,
+					" RTR mode:  Req %2x, Got %2x\n",
+					mpa_p2p_mode,
+					v2->ord & (MPA_V2_RDMA_WRITE_RTR |
+						   MPA_V2_RDMA_READ_RTR));
 
-			siw_send_terminate(qp, RDMAP_ERROR_LAYER_LLP,
-					   LLP_ETYPE_MPA,
-					   LLP_ECODE_NO_MATCHING_RTR);
-			rv = -EPROTO;
-			goto out_err;
+				siw_send_terminate(qp, RDMAP_ERROR_LAYER_LLP,
+						   LLP_ETYPE_MPA,
+						   LLP_ECODE_NO_MATCHING_RTR);
+				rv = -EPROTO;
+				goto out_err;
+			}
+			mpa_p2p_mode = v2->ord &
+				(MPA_V2_RDMA_WRITE_RTR | MPA_V2_RDMA_READ_RTR);
 		}
 	}
 

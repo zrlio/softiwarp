@@ -240,11 +240,6 @@ int siw_query_device(struct ib_device *ofa_dev, struct ib_device_attr *attr,
 	attr->max_qp = sdev->attrs.max_qp;
 	attr->max_qp_wr = sdev->attrs.max_qp_wr;
 
-	/*
-	 * RDMA Read parameters:
-	 * Max. ORD (Outbound Read queue Depth), a.k.a. max_initiator_depth
-	 * Max. IRD (Inbound Read queue Depth), a.k.a. max_responder_resources
-	 */
 	attr->max_qp_rd_atom = sdev->attrs.max_ord;
 	attr->max_qp_init_rd_atom = sdev->attrs.max_ird;
 	attr->max_res_rd_atom = sdev->attrs.max_qp * sdev->attrs.max_ird;
@@ -697,19 +692,21 @@ int siw_query_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *qp_attr,
 		return -EINVAL;
 
 	qp_attr->cap.max_inline_data = SIW_MAX_INLINE;
-	qp_init_attr->cap.max_inline_data = SIW_MAX_INLINE;
-
 	qp_attr->cap.max_send_wr = qp->attrs.sq_size;
-	qp_attr->cap.max_recv_wr = qp->attrs.rq_size;
 	qp_attr->cap.max_send_sge = qp->attrs.sq_max_sges;
+	qp_attr->cap.max_recv_wr = qp->attrs.rq_size;
 	qp_attr->cap.max_recv_sge = qp->attrs.rq_max_sges;
-
 	qp_attr->path_mtu = siw_mtu_net2ofa(sdev->netdev->mtu);
 	qp_attr->max_rd_atomic = qp->attrs.irq_size;
 	qp_attr->max_dest_rd_atomic = qp->attrs.orq_size;
 
 	qp_attr->qp_access_flags = IB_ACCESS_LOCAL_WRITE |
 			IB_ACCESS_REMOTE_WRITE | IB_ACCESS_REMOTE_READ;
+
+	qp_init_attr->qp_type = ofa_qp->qp_type;
+	qp_init_attr->send_cq = ofa_qp->send_cq;
+	qp_init_attr->recv_cq = ofa_qp->recv_cq;
+	qp_init_attr->srq = ofa_qp->srq;
 
 	qp_init_attr->cap = qp_attr->cap;
 

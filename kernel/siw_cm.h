@@ -149,18 +149,4 @@ extern void siw_cm_exit(void);
 #define sk_to_qp(sk)	(((struct siw_cep *)((sk)->sk_user_data))->qp)
 #define sk_to_cep(sk)	((struct siw_cep *)((sk)->sk_user_data))
 
-/*
- * Should we use tcp_current_mss()?
- * But its not exported by kernel.
- */
-static inline unsigned int get_tcp_mss(struct sock *sk)
-{
-	struct tcp_sock *tp = tcp_sk(sk);
-
-	if (tp->gso_segs)
-		return tp->gso_segs * tp->mss_cache;
-	else
-		return tp->mss_cache;
-}
-
 #endif
