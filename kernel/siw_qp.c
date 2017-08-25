@@ -390,7 +390,11 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 	wqe->sqe.sge[0].length = 0;
 	wqe->sqe.sge[0].laddr = 0;
 	wqe->sqe.sge[0].lkey = 0;
-	wqe->sqe.rkey = 0;
+	/*
+	 * While it must not be checked for inbound zero length
+	 * READ/WRITE, some HW may treat STag 0 special.
+	 */
+	wqe->sqe.rkey = 1;
 	wqe->sqe.raddr = 0;
 	wqe->processed = 0;
 

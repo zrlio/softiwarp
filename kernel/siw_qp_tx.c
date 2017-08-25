@@ -58,7 +58,7 @@
 
 #include <linux/kthread.h>
 
-static bool zcopy_tx = 1;
+static bool zcopy_tx = false;
 module_param(zcopy_tx, bool, 0644);
 MODULE_PARM_DESC(zcopy_tx, "Zero copy user data transmit if possible");
 
@@ -68,7 +68,7 @@ MODULE_PARM_DESC(low_delay_tx, "Run tight transmit thread loop if activated\n");
 
 static int gso_seg_limit;
 module_param(gso_seg_limit, int, 0644);
-MODULE_PARM_DESC(gso_seg_limit, "limit TCP GSO to value if set\n");
+MODULE_PARM_DESC(gso_seg_limit, "Limit TCP GSO to value if set\n");
 
 static inline int siw_crc_txhdr(struct siw_iwarp_tx *ctx)
 {
@@ -402,39 +402,8 @@ static inline int siw_tx_ctrl(struct siw_iwarp_tx *c_tx, struct socket *s,
 static int siw_tcp_sendpages(struct socket *s, struct page **page,
 			     int offset, size_t size)
 {
-	int rv = 0;
-
-#ifdef SIW_SENDPAGES_EXPORT
-	struct sock *sk = s->sk;
-
-	if (!(sk->sk_route_caps & NETIF_F_SG) ||
-	    !(sk->sk_route_caps & NETIF_F_ALL_CSUM)) {
-		/* FIXME:
-		 * This should also be handled in a
-		 * loop
-		 */
-		return -EFAULT;
-	}
-
-	lock_sock(sk);
-	TCP_CHECK_TIMER(sk);
-
-	/*
-	 * just return what sendpages has return
-	 */
-	rv = do_tcp_sendpages(sk, page, offset, size, MSG_MORE|MSG_DONTWAIT);
-
-	TCP_CHECK_TIMER(sk);
-	release_sock(sk);
-	if (rv == -EAGAIN)
-		rv = 0;
-#else
-	/*
-	 * If do_tcp_sendpages() function is not exported
-	 * push page by page
-	 */
 	size_t todo = size;
-	int i;
+	int i, rv = 0;
 
 	for (i = 0; size > 0; i++) {
 		size_t bytes = min_t(size_t, PAGE_SIZE - offset, size);
@@ -453,7 +422,7 @@ static int siw_tcp_sendpages(struct socket *s, struct page **page,
 	}
 	if (rv >= 0 || rv == -EAGAIN)
 		rv = todo - size;
-#endif
+
 	return rv;
 }
 
