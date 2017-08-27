@@ -393,20 +393,65 @@ static inline int siw_tx_ctrl(struct siw_iwarp_tx *c_tx, struct socket *s,
 }
 
 /*
- * 0copy TCP transmit interface.
+ * use way more efficient do_tcp_sendpages() if
+ * exported by kernel.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
+#define TCP_SENDPAGES_EXPORTED
+#endif
+
+/*
+ * 0copy TCP transmit interface:  Push page array page by page,
+ * or use do_tcp_sendpages, if exported.
  *
- * Push page array page by page or in one shot.
- * Pushing the whole page array requires the inner do_tcp_sendpages
- * function to be exported by the kernel.
+ * Using sendpage to push page by page appears to be less efficient
+ * than using sendmsg, even if data are copied.
+ *
+ * A general performance limitation might be the extra four bytes
+ * trailer checksum segment to be pushed after user data.
  */
 static int siw_tcp_sendpages(struct socket *s, struct page **page,
 			     int offset, size_t size)
 {
-	size_t todo = size;
-	int i, rv = 0;
+	int i = 0, rv = 0;
+#ifdef TCP_SENDPAGES_EXPORTED
+	int sent = 0;
+	struct sock *sk = s->sk;
 
-	for (i = 0; size > 0; i++) {
+	while (size) {
 		size_t bytes = min_t(size_t, PAGE_SIZE - offset, size);
+		int flags;
+
+		if (size + offset <= PAGE_SIZE)
+	       		flags = MSG_MORE|MSG_DONTWAIT;
+		else
+	       		flags = MSG_MORE|MSG_DONTWAIT|MSG_SENDPAGE_NOTLAST;
+
+		tcp_rate_check_app_limited(sk);
+try_page_again:
+		lock_sock(sk);
+		rv = do_tcp_sendpages(sk, page[i], offset, bytes, flags);
+		release_sock(sk);
+
+		if (rv > 0) {
+			size -= rv;
+			sent += rv;
+			if (rv != bytes) {
+				offset += rv;
+				bytes -= rv;
+				goto try_page_again;
+			}
+			offset = 0;
+		} else {
+			if (rv  == -EAGAIN || rv == 0)
+				break;
+			return rv;
+		}
+		i++;
+	}
+	return sent;
+#else
+	for (i = 0; size > 0; i++) {
 
 		rv = s->ops->sendpage(s, page[i], offset, bytes,
 				      MSG_MORE|MSG_DONTWAIT);
@@ -422,8 +467,8 @@ static int siw_tcp_sendpages(struct socket *s, struct page **page,
 	}
 	if (rv >= 0 || rv == -EAGAIN)
 		rv = todo - size;
-
 	return rv;
+#endif
 }
 
 /*
