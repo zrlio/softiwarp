@@ -3,8 +3,10 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *          Fredy Neeser <nfd@zurich.ibm.com>
+ *          Greg Joyce <greg@opengridcomputing.com>
  *
- * Copyright (c) 2008-2016, IBM Corporation
+ * Copyright (c) 2008-2017, IBM Corporation
+ * Copyright (c) 2017, Open Grid Computing, Inc. 
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
