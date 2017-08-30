@@ -996,9 +996,8 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 	}
 
 	memset(&qp_attrs, 0, sizeof(qp_attrs));
-	qp_attrs.mpa.marker_rcv = 0;
-	qp_attrs.mpa.marker_snd = 0;
-	qp_attrs.mpa.crc = cep->mpa.hdr.params.bits & MPA_RR_FLAG_CRC ? 1 : 0;
+	if (cep->mpa.hdr.params.bits & MPA_RR_FLAG_CRC)
+		qp_attrs.flags = SIW_MPA_CRC;
 	qp_attrs.irq_size = cep->ird;
 	qp_attrs.orq_size = cep->ord;
 	qp_attrs.llp_stream_handle = cep->llp.sock;
@@ -1870,13 +1869,8 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	qp_attrs.orq_size = cep->ord;
 	qp_attrs.irq_size = cep->ird;
 	qp_attrs.llp_stream_handle = cep->llp.sock;
-
-	/*
-	 * Currently no MPA markers support. Consider adding marker TX path.
-	 */
-	qp_attrs.mpa.marker_rcv = 0;
-	qp_attrs.mpa.marker_snd = 0;
-	qp_attrs.mpa.crc = cep->mpa.hdr.params.bits & MPA_RR_FLAG_CRC ? 1 : 0;
+	if (cep->mpa.hdr.params.bits & MPA_RR_FLAG_CRC)
+		qp_attrs.flags = SIW_MPA_CRC;
 	qp_attrs.state = SIW_QP_STATE_RTS;
 
 	dprint(DBG_CM, "(id=0x%p, QP%d): Moving to RTS\n", id, QP_ID(qp));

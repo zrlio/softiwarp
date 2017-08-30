@@ -415,17 +415,14 @@ static int siw_tcp_sendpages(struct socket *s, struct page **page,
 {
 	int i = 0, rv = 0;
 #ifdef TCP_SENDPAGES_EXPORTED
-	int sent = 0;
+	int sent = 0, flags = MSG_MORE|MSG_DONTWAIT|MSG_SENDPAGE_NOTLAST;
 	struct sock *sk = s->sk;
 
 	while (size) {
 		size_t bytes = min_t(size_t, PAGE_SIZE - offset, size);
-		int flags;
 
 		if (size + offset <= PAGE_SIZE)
 	       		flags = MSG_MORE|MSG_DONTWAIT;
-		else
-	       		flags = MSG_MORE|MSG_DONTWAIT|MSG_SENDPAGE_NOTLAST;
 
 		tcp_rate_check_app_limited(sk);
 try_page_again:

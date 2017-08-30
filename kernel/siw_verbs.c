@@ -749,10 +749,6 @@ int siw_verbs_modify_qp(struct ib_qp *ofa_qp, struct ib_qp_attr *attr,
 		if (new_attrs.state > SIW_QP_STATE_RTS)
 			qp->tx_ctx.tx_suspend = 1;
 
-		/* TODO: SIW_QP_STATE_UNDEF is currently not possible ... */
-		if (new_attrs.state == SIW_QP_STATE_UNDEF)
-			return -EINVAL;
-
 		siw_attr_mask |= SIW_QP_ATTR_STATE;
 	}
 	if (!attr_mask)

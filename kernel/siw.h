@@ -87,7 +87,6 @@ struct siw_devinfo {
 	unsigned int	device;
 	unsigned int	version;
 
-	/* close match to ib_device_attr where appropriate */
 	u32	vendor_id;
 	u32	vendor_part_id;
 	u32	sw_version;
@@ -129,7 +128,7 @@ struct siw_dev {
 	struct idr		qp_idr;
 	struct idr		cq_idr;
 	struct idr		pd_idr;
-	struct idr		mem_idr;	/* MRs & MWs */
+	struct idr		mem_idr;
 
 	/* active objects statistics */
 	atomic_t		num_qp;
@@ -159,9 +158,10 @@ struct siw_uobj {
 struct siw_ucontext {
 	struct ib_ucontext	ib_ucontext;
 	struct siw_dev		*sdev;
+
 	/* List of user mappable queue objects */
-	spinlock_t		uobj_lock;
 	struct list_head	uobj_list;
+	spinlock_t		uobj_lock;
 	u32			uobj_key;
 };
 
@@ -313,9 +313,7 @@ enum siw_qp_state {
 	SIW_QP_STATE_CLOSING	= 3,
 	SIW_QP_STATE_TERMINATE	= 4,
 	SIW_QP_STATE_ERROR	= 5,
-	SIW_QP_STATE_MORIBUND	= 6, /* destroy called but still referenced */
-	SIW_QP_STATE_UNDEF	= 7,
-	SIW_QP_STATE_COUNT	= 8
+	SIW_QP_STATE_COUNT	= 6
 };
 
 enum siw_qp_flags {
@@ -323,10 +321,8 @@ enum siw_qp_flags {
 	SIW_RDMA_WRITE_ENABLED	= (1 << 1),
 	SIW_RDMA_READ_ENABLED	= (1 << 2),
 	SIW_SIGNAL_ALL_WR	= (1 << 3),
-	/*
-	 * QP currently being destroyed
-	 */
-	SIW_QP_IN_DESTROY	= (1 << 8)
+	SIW_MPA_CRC		= (1 << 4),
+	SIW_QP_IN_DESTROY	= (1 << 5)
 };
 
 enum siw_qp_attr_mask {
@@ -338,14 +334,6 @@ enum siw_qp_attr_mask {
 	SIW_QP_ATTR_SQ_SIZE		= (1 << 5),
 	SIW_QP_ATTR_RQ_SIZE		= (1 << 6),
 	SIW_QP_ATTR_MPA			= (1 << 7)
-};
-
-struct siw_mpa_attrs {
-	__u8	marker_rcv; /* always 0 */
-	__u8	marker_snd; /* always 0, consider support */
-	__u8	crc;
-	__u8	unused;
-	enum mpa_v2_ctrl	v2_ctrl;
 };
 
 struct siw_sk_upcalls {
@@ -390,7 +378,6 @@ struct siw_qp_attrs {
 	u32			sq_max_sges;
 	u32			sq_max_sges_rdmaw;
 	u32			rq_max_sges;
-	struct siw_mpa_attrs	mpa;
 	enum siw_qp_flags	flags;
 
 	struct socket		*llp_stream_handle;

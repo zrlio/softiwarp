@@ -66,9 +66,7 @@ static char siw_qp_state_to_string[SIW_QP_STATE_COUNT][sizeof "TERMINATE"] = {
 	[SIW_QP_STATE_RTS]		= "RTS",
 	[SIW_QP_STATE_CLOSING]		= "CLOSING",
 	[SIW_QP_STATE_TERMINATE]	= "TERMINATE",
-	[SIW_QP_STATE_ERROR]		= "ERROR",
-	[SIW_QP_STATE_MORIBUND]		= "MORIBUND",
-	[SIW_QP_STATE_UNDEF]		= "UNDEF"
+	[SIW_QP_STATE_ERROR]		= "ERROR"
 };
 #endif
 
@@ -487,7 +485,7 @@ int siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 
 		case SIW_QP_STATE_RTS:
 
-			if (attrs->mpa.crc) {
+			if (attrs->flags & SIW_MPA_CRC) {
 				rv = siw_qp_enable_crc(qp);
 				if (rv)
 					break;
@@ -529,9 +527,7 @@ int siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			if (rv)
 				break;
 
-			qp->attrs.mpa = attrs->mpa;
 			qp->attrs.llp_stream_handle = attrs->llp_stream_handle;
-
 			qp->attrs.state = SIW_QP_STATE_RTS;
 
 			break;
