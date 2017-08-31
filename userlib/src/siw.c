@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2016, IBM Corporation
+ * Copyright (c) 2008-2017, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -127,7 +127,7 @@ static struct ibv_device *siw_driver_init(const char *uverbs_sys_path,
 				siw_devpath[IBV_SYSFS_PATH_MAX],
 				node_desc[24];
 	struct siw_device	*dev;
-	int			version, if_type;
+	int			version;
 
         /*
          * software iwarp does not have own PCI device or

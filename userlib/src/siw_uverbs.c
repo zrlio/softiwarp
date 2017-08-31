@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2016, IBM Corporation
+ * Copyright (c) 2008-2017, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -362,7 +362,6 @@ static struct {
         {SIW_OP_SEND,		IBV_WC_SEND},
 	{SIW_OP_SEND_WITH_IMM,	IBV_WC_SEND},
 	{SIW_OP_SEND_REMOTE_INV,IBV_WC_SEND},
-	/* Unsupported */
 	{SIW_OP_FETCH_AND_ADD,	IBV_WC_FETCH_ADD},
 	{SIW_OP_COMP_AND_SWAP,	IBV_WC_COMP_SWAP},
         {SIW_OP_RECEIVE,	IBV_WC_RECV}
@@ -411,7 +410,6 @@ int siw_poll_cq(struct ibv_cq *ibcq, int num_entries, struct ibv_wc *wc)
 {
 	struct siw_cq	*cq = cq_ofa2siw(ibcq);
 	int		new = 0;
-
 
 	for (; num_entries--; wc++) {
 		struct siw_cqe *cqe;

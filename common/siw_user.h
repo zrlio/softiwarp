@@ -3,7 +3,7 @@
  *
  * Authors: Bernard Metzler <bmt@zurich.ibm.com>
  *
- * Copyright (c) 2008-2016, IBM Corporation
+ * Copyright (c) 2008-2017, IBM Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -101,15 +101,15 @@ enum siw_opcode {
 	SIW_OP_COMP_AND_SWAP	= 7,
 
 	SIW_OP_RECEIVE		= 8,
-#ifdef __KERNEL__
-	SIW_OP_READ_RESPONSE	= 9,	/* provider internal */
+	/* provider internal SQE */
+	SIW_OP_READ_RESPONSE	= 9,
+	/*
+	 * below opcodes valid for
+	 * in-kernel clients only
+	 */
 	SIW_OP_INVAL_STAG	= 10,
 	SIW_OP_REG_MR		= 11,
-	SIW_NUM_OPCODES		= 13,
-#else
-	SIW_NUM_OPCODES		= 9,
-#endif
-	SIW_OP_INVALID		= SIW_NUM_OPCODES + 1
+	SIW_NUM_OPCODES		= 12
 };
 
 /* Keep it same as ibv_sge to allow for memcpy */
@@ -146,7 +146,6 @@ struct siw_sqe {
 	uint8_t		num_sge;
 	uint8_t		opcode; /* Actual enum siw_opcode values */
 	uint32_t	rkey;
-#ifdef __KERNEL__
 	union {
 		uint64_t	raddr;
 		uint64_t	ofa_mr;
@@ -155,10 +154,6 @@ struct siw_sqe {
 		struct siw_sge	sge[SIW_MAX_SGE];
 		uint32_t	access;
 	};
-#else
-	uint64_t	raddr;
-	struct siw_sge	sge[SIW_MAX_SGE];
-#endif
 };
 
 struct siw_rqe {
@@ -214,5 +209,4 @@ struct siw_cq_ctrl {
 	enum siw_notify_flags	notify;
 };
 
-	
 #endif
