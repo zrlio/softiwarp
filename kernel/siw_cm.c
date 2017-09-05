@@ -60,7 +60,7 @@
 
 static bool mpa_crc_strict = true;
 module_param(mpa_crc_strict, bool, 0644);
-static bool mpa_crc_required;
+bool mpa_crc_required;
 module_param(mpa_crc_required, bool, 0644);
 static bool tcp_nodelay; /* default false */
 module_param(tcp_nodelay, bool, 0644);
@@ -100,8 +100,9 @@ static int siw_sock_nodelay(struct socket *sock)
 	set_fs(KERNEL_DS);
 
 	rv = sock->ops->setsockopt(sock, SOL_TCP, TCP_NODELAY,
-				    (char __user *)&val, sizeof(val));
+				    (char *)&val, sizeof(val));
 	set_fs(oldfs);
+
 	return rv;
 }
 

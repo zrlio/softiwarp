@@ -282,14 +282,9 @@ static dma_addr_t siw_dma_generic_map_page(struct device *dev,
 					   enum dma_data_direction dir,
 					   unsigned long attrs)
 {
-	u64 kva;
-
 	BUG_ON(!valid_dma_direction(dir));
 
-	kva = (u64)page_address(page);
-	if (kva)
-		kva += offset;
-	return kva;
+	return (u64)(page_address(page) + offset);
 }
 
 static void siw_dma_generic_unmap_page(struct device *dev,

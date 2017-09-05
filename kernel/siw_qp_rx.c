@@ -266,9 +266,6 @@ static inline int siw_rresp_check_ntoh(struct siw_iwarp_rx *rctx)
 		dprint(DBG_RX|DBG_ON,
 			" received STAG=%08x, expected STAG=%08x\n",
 			sink_stag, rctx->ddp_stag);
-		/*
-		 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
-		 */
 		return -EINVAL;
 	}
 	if (rctx->ddp_to != sink_to) {
@@ -276,9 +273,6 @@ static inline int siw_rresp_check_ntoh(struct siw_iwarp_rx *rctx)
 			" received TO=%016llx, expected TO=%016llx\n",
 			(unsigned long long)sink_to,
 			(unsigned long long)rctx->ddp_to);
-		/*
-		 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
-		 */
 		return -EINVAL;
 	}
 	if (!rctx->more_ddp_segs && (wqe->processed + rctx->fpdu_part_rem
@@ -318,9 +312,6 @@ static inline int siw_write_check_ntoh(struct siw_iwarp_rx *rctx)
 			dprint(DBG_RX|DBG_ON,
 				" received STAG=%08x, expected STAG=%08x\n",
 				sink_stag, rctx->ddp_stag);
-			/*
-			 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
-			 */
 			return -EINVAL;
 		}
 		if (rctx->ddp_to != sink_to) {
@@ -328,9 +319,6 @@ static inline int siw_write_check_ntoh(struct siw_iwarp_rx *rctx)
 				" received TO=%016llx, expected TO=%016llx\n",
 				(unsigned long long)sink_to,
 				(unsigned long long)rctx->ddp_to);
-			/*
-			 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
-			 */
 			return -EINVAL;
 		}
 	}
@@ -365,19 +353,11 @@ static inline int siw_send_check_ntoh(struct siw_iwarp_rx *rctx)
 	if (unlikely(ddp_msn != rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND])) {
 		dprint(DBG_RX|DBG_ON, " received MSN=%u, expected MSN=%u\n",
 			ddp_msn, rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]);
-		/*
-		 * TODO: Error handling
-		 * async_event= RI_EVENT_QP_RQ_PROTECTION_ERROR_MSN_GAP;
-		 * cmpl_status= RI_WC_STATUS_LOCAL_QP_CATASTROPHIC;
-		 */
 		return -EINVAL;
 	}
 	if (unlikely(ddp_mo != wqe->processed)) {
 		dprint(DBG_RX|DBG_ON, " Received MO=%u, expected MO=%u\n",
 			ddp_mo, wqe->processed);
-		/*
-		 * Verbs: RI_EVENT_QP_LLP_INTEGRITY_ERROR_BAD_FPDU
-		 */
 		return -EINVAL;
 	}
 	if (rctx->first_ddp_seg) {
@@ -620,12 +600,6 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	bytes = min(rctx->fpdu_part_rem, rctx->skb_new);
 
 	if (rctx->first_ddp_seg) {
-		/* DEBUG Code, to be removed */
-		if (rx_mem(qp) != NULL) {
-			dprint(DBG_RX|DBG_ON, "(QP%d): Stale rctx state!\n",
-				QP_ID(qp));
-			return -EFAULT;
-		}
 		rx_mem(qp) = siw_mem_id2obj(dev, rctx->ddp_stag >> 8);
 		rx_wqe(qp)->wr_status = SR_WR_INPROGRESS;
 	}
@@ -1197,17 +1171,15 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 
 			if (wc_status == SIW_WC_SUCCESS)
 				wc_status = SIW_WC_GENERAL_ERR;
-		} else if (qp->kernel_verbs) {
+		} else if (qp->kernel_verbs &&
+			   opcode == SIW_OP_READ_LOCAL_INV) {
 			/*
 			 * Handle any STag invalidation request
 			 */
-			if (opcode == SIW_OP_READ_LOCAL_INV) {
-				rv = siw_invalidate_stag(qp->pd,
-							 wqe->sqe.sge[0].lkey);
-				if (rv && wc_status == SIW_WC_SUCCESS) {
-					wc_status = SIW_WC_GENERAL_ERR;
-					error = rv;
-				}
+			rv = siw_invalidate_stag(qp->pd, wqe->sqe.sge[0].lkey);
+			if (rv && wc_status == SIW_WC_SUCCESS) {
+				wc_status = SIW_WC_GENERAL_ERR;
+				error = rv;
 			}
 		}
 		/*
@@ -1234,13 +1206,9 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 
 		/*
 		 * Free References from memory object if
-		 * attached to receive context (inbound WRITE)
-		 * While a zero-length WRITE is allowed, the
-		 * current implementation does not create
-		 * a memory reference (it is unclear if memory
-		 * rights should be checked in that case!).
-		 *
-		 * TODO: check zero length WRITE semantics
+		 * attached to receive context (inbound WRITE).
+		 * While a zero-length WRITE is allowed,
+		 * no memory reference got created.
 		 */
 		if (rx_mem(qp)) {
 			siw_mem_put(rx_mem(qp));

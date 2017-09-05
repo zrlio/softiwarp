@@ -792,14 +792,11 @@ int siw_destroy_qp(struct ib_qp *ofa_qp)
 
 	up_write(&qp->state_lock);
 
-	if (qp->rx_ctx.mpa_crc_hd) {
-		crypto_free_shash(qp->rx_ctx.mpa_crc_hd->tfm);
+	if (qp->rx_ctx.mpa_crc_hd)
 		kfree(qp->rx_ctx.mpa_crc_hd);
-	}
-	if (qp->tx_ctx.mpa_crc_hd) {
-		crypto_free_shash(qp->tx_ctx.mpa_crc_hd->tfm);
+
+	if (qp->tx_ctx.mpa_crc_hd)
 		kfree(qp->tx_ctx.mpa_crc_hd);
-	}
 
 	/* Drop references */
 	siw_cq_put(qp->scq);

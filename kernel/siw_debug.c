@@ -83,7 +83,7 @@ static ssize_t siw_show_qps(struct file *f, char __user *buf, size_t space,
 	}
 	space -= len;
 	n = snprintf(kbuf + len, space,
-		     "%-7s%-6s%-6s%-5s%-5s%-5s%-5s%-5s%-20s%-20s\n",
+		     "%-15s%-6s%-6s%-5s%-5s%-5s%-5s%-5s%-20s%s\n",
 		     "QP-ID", "State", "Ref's", "SQ", "RQ", "IRQ", "ORQ",
 		     "s/r", "Sock", "CEP");
 
@@ -98,7 +98,7 @@ static ssize_t siw_show_qps(struct file *f, char __user *buf, size_t space,
 		struct siw_qp *qp = list_entry(pos, struct siw_qp, devq);
 
 		n = snprintf(kbuf + len, space,
-			"%-7d%-6d%-6d%-5d%-5d%-5d%-5d%d/%-3d0x%-17p  0x%-18p\n",
+			"%-15d%-6d%-6d%-5d%-5d%-5d%-5d%d/%-3d0x%-18p0x%-18p\n",
 			     QP_ID(qp),
 			     qp->attrs.state,
 			     refcount_read(&qp->hdr.ref),
@@ -155,7 +155,7 @@ static ssize_t siw_show_ceps(struct file *f, char __user *buf, size_t space,
 	space -= len;
 
 	n = snprintf(kbuf + len, space,
-		     "%-20s%-6s%-6s%-7s%-3s%-3s%-4s%-21s%-9s\n",
+		     "%-20s%-6s%-6s%-9s%-5s%-3s%-4s%-21s%-9s\n",
 		     "CEP", "State", "Ref's", "QP-ID", "LQ", "LC", "U", "Sock",
 		     "CM-ID");
 
@@ -170,7 +170,7 @@ static ssize_t siw_show_ceps(struct file *f, char __user *buf, size_t space,
 		struct siw_cep *cep = list_entry(pos, struct siw_cep, devq);
 
 		n = snprintf(kbuf + len, space,
-			     "0x%-18p%-6d%-6d%-7d%-3s%-3s%-4d0x%-18p 0x%-16p\n",
+			     "0x%-18p%-6d%-6d%-9d%-5s%-3s%-4d0x%-18p 0x%-16p\n",
 			     cep, cep->state,
 			     refcount_read(&cep->ref),
 			     cep->qp ? QP_ID(cep->qp) : -1,
@@ -211,14 +211,8 @@ static ssize_t siw_show_stats(struct file *f, char __user *buf, size_t space,
 		goto out;
 
 	len =  snprintf(kbuf, space, "Allocated SIW Objects:\n"
-#if DPRINT_MASK > 0
-		"Global     :\t%s: %d\n"
-#endif
 		"Device %s (%s):\t"
 		"%s: %d, %s %d, %s: %d, %s: %d, %s: %d, %s: %d, %s: %d\n",
-#if DPRINT_MASK > 0
-		"WQEs", atomic_read(&siw_num_wqe),
-#endif
 		sdev->ofa_dev.name,
 		sdev->netdev->flags & IFF_UP ? "IFF_UP" : "IFF_DOWN",
 		"CXs", atomic_read(&sdev->num_ctx),
@@ -294,9 +288,6 @@ void siw_debug_init(void)
 		dprint(DBG_DM, ": could not init debugfs\n");
 		siw_debugfs = NULL;
 	}
-#if DPRINT_MASK > 0
-	atomic_set(&siw_num_wqe, 0);
-#endif
 }
 
 void siw_debugfs_delete(void)
@@ -420,7 +411,7 @@ void siw_print_hdr(union iwarp_hdrs *hdr, int qp_id, char *msg)
 
 void siw_print_rctx(struct siw_iwarp_rx *rctx)
 {
-	pr_info("---RX Context-->\n");
+	pr_info("---RX Context---\n");
 	siw_print_hdr(&rctx->hdr, RX_QPID(rctx), "\nCurrent Pkt:\t");
 	pr_info("Skbuf State:\tp:0x%p, new:%d, off:%d, copied:%d\n",
 		rctx->skb, rctx->skb_new, rctx->skb_offset, rctx->skb_copied);
@@ -435,12 +426,10 @@ void siw_print_rctx(struct siw_iwarp_rx *rctx)
 	pr_info("MPA State:\tlen:%d, crc_enabled:%d, crc:0x%x\n",
 		ntohs(rctx->hdr.ctrl.mpa_len), rctx->mpa_crc_hd ? 1 : 0,
 		rctx->trailer.crc);
-	pr_info("<---------------\n");
+	pr_info("----------------\n");
 }
 
 #if DPRINT_MASK > 0
-atomic_t siw_num_wqe;
-
 char ib_qp_state_to_string[IB_QPS_ERR+1][sizeof "RESET"] = {
 	[IB_QPS_RESET]	= "RESET",
 	[IB_QPS_INIT]	= "INIT",

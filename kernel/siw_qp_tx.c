@@ -62,10 +62,6 @@ static bool zcopy_tx = false;
 module_param(zcopy_tx, bool, 0644);
 MODULE_PARM_DESC(zcopy_tx, "Zero copy user data transmit if possible");
 
-static bool low_delay_tx = 1;
-module_param(low_delay_tx, bool, 0644);
-MODULE_PARM_DESC(low_delay_tx, "Run tight transmit thread loop if activated\n");
-
 static int gso_seg_limit;
 module_param(gso_seg_limit, int, 0644);
 MODULE_PARM_DESC(gso_seg_limit, "Limit TCP GSO to value if set\n");
@@ -867,10 +863,6 @@ static void siw_prepare_fpdu(struct siw_qp *qp, struct siw_wqe *wqe)
 	c_tx->pkt.ctrl.mpa_len =
 		htons(c_tx->ctrl_len + c_tx->bytes_unsent - MPA_HDR_SIZE);
 
-#ifdef SIW_TX_FULLSEGS
-	c_tx->fpdu_len =
-		c_tx->ctrl_len + c_tx->bytes_unsent + c_tx->pad + MPA_CRC_SIZE;
-#endif
 	/*
 	 * Init MPA CRC computation
 	 */
@@ -880,30 +872,15 @@ static void siw_prepare_fpdu(struct siw_qp *qp, struct siw_wqe *wqe)
 	}
 }
 
-#ifdef SIW_TX_FULLSEGS
-static inline int siw_test_wspace(struct socket *s, struct siw_iwarp_tx *c_tx)
-{
-	struct sock *sk = s->sk;
-	int rv = 0;
-
-	lock_sock(sk);
-	if (sk_stream_wspace(sk) < (int)c_tx->fpdu_len) {
-		set_bit(SOCK_NOSPACE, &s->flags);
-		rv = -EAGAIN;
-	}
-	release_sock(sk);
-
-	return rv;
-}
-#endif
-
 /*
  * siw_check_sgl_tx()
  *
- * Check permissions for a list of SGE's (SGL)
+ * Check permissions for a list of SGE's (SGL).
+ * A successful check will have all memory referenced
+ * for transmission resolved and assigned to the WQE.
  *
  * @pd:		Protection Domain SGL should belong to
- * @sge:	List of SGE to be checked
+ * @wqe:	WQE to be checked
  * @perms:	requested access permissions
  *
  */
@@ -943,13 +920,6 @@ int siw_check_sgl_tx(struct siw_pd *pd, struct siw_wqe *wqe,
  * siw_qp_sq_proc_tx()
  *
  * Process one WQE which needs transmission on the wire.
- * Return with:
- *	-EAGAIN, if handover to tcp remained incomplete
- *	0,	 if handover to tcp complete
- *	< 0,	 if other errors happend.
- *
- * @qp:		QP to send from
- * @wqe:	WQE causing transmission
  */
 static int siw_qp_sq_proc_tx(struct siw_qp *qp, struct siw_wqe *wqe)
 {
@@ -958,10 +928,9 @@ static int siw_qp_sq_proc_tx(struct siw_qp *qp, struct siw_wqe *wqe)
 	int			rv = 0,
 				burst_len = qp->tx_ctx.burst;
 
-	if (unlikely(wqe->wr_status == SR_WR_IDLE)) {
-		WARN_ON(1);
+	if (unlikely(wqe->wr_status == SR_WR_IDLE))
 		return 0;
-	}
+
 	if (!burst_len)
 		burst_len = SQ_USER_MAXBURST;
 
@@ -1016,12 +985,6 @@ next_segment:
 		QP_ID(qp), tx_type(wqe), wqe->wr_status, wqe->bytes,
 		wqe->processed, wqe->sqe.id);
 
-#ifdef SIW_TX_FULLSEGS
-	rv = siw_test_wspace(s, c_tx);
-	if (rv < 0)
-		goto tx_done;
-#endif
-
 	if (c_tx->state == SIW_SEND_SHORT_FPDU) {
 		enum siw_opcode tx_type = tx_type(wqe);
 
@@ -1053,7 +1016,8 @@ next_segment:
 			 */
 			rv = -ECONNABORTED;
 			goto tx_done;
-		} else if (c_tx->pkt.ctrl.ddp_rdmap_ctrl & DDP_FLAG_LAST) {
+		}
+		if (c_tx->pkt.ctrl.ddp_rdmap_ctrl & DDP_FLAG_LAST) {
 			dprint(DBG_TX, "(QP%d): WR completed\n", QP_ID(qp));
 			goto tx_done;
 		}
@@ -1161,14 +1125,10 @@ int siw_qp_sq_process(struct siw_qp *qp)
 	unsigned long		flags;
 	int			rv = 0;
 
-
 	wait_event(qp->tx_ctx.waitq, !atomic_read(&qp->tx_ctx.in_use));
 
 	if (atomic_inc_return(&qp->tx_ctx.in_use) > 1) {
-		/*
-		 * at least two waiters: that should never happen!
-		 */
-		WARN_ON(1);
+		pr_warn("SIW: QP[%d] already active\n", QP_ID(qp));
 		goto done;
 	}
 next_wqe:
@@ -1313,28 +1273,6 @@ done:
 	return rv;
 }
 
-static struct workqueue_struct *siw_sq_wq;
-
-int __init siw_sq_worker_init(void)
-{
-	siw_sq_wq = alloc_workqueue("siw_sq_wq", WQ_HIGHPRI, 0);
-	if (!siw_sq_wq)
-		return -ENOMEM;
-
-	dprint(DBG_TX|DBG_OBJ, " Init WQ\n");
-	return 0;
-}
-
-
-void siw_sq_worker_exit(void)
-{
-	dprint(DBG_TX|DBG_OBJ, " Destroy WQ\n");
-	if (siw_sq_wq) {
-		flush_workqueue(siw_sq_wq);
-		destroy_workqueue(siw_sq_wq);
-	}
-}
-
 static void siw_sq_resume(struct siw_qp *qp)
 {
 
@@ -1366,13 +1304,19 @@ struct tx_task_t {
 };
 
 DEFINE_PER_CPU(struct tx_task_t, tx_task_g);
+extern struct task_struct *qp_tx_thread[];
+
+void siw_stop_tx_thread(int nr_cpu)
+{
+	kthread_stop(qp_tx_thread[nr_cpu]);
+	wake_up(&per_cpu(tx_task_g, nr_cpu).waiting);
+}
 
 int siw_run_sq(void *data)
 {
 	const int nr_cpu = (unsigned int)(long)data;
 	struct llist_node *active;
 	struct siw_qp *qp;
-	unsigned long stoptime = jiffies;
 	struct tx_task_t *tx_task = &per_cpu(tx_task_g, nr_cpu);
 
 	init_llist_head(&tx_task->active);
@@ -1381,37 +1325,34 @@ int siw_run_sq(void *data)
 	pr_info("Started siw TX thread on CPU %u\n", nr_cpu);
 
 	while (1) {
-		if (!low_delay_tx || time_after(jiffies, stoptime)) {
-			wait_event_interruptible(tx_task->waiting,
-				kthread_should_stop() ||
-				!llist_empty(&tx_task->active));
+		struct llist_node *fifo_list = NULL;
 
-			if (kthread_should_stop())
-				break;
-		} else {
-			set_current_state(TASK_INTERRUPTIBLE);
-			if (kthread_should_stop())
-				break;
+		wait_event_interruptible(tx_task->waiting,
+					 !llist_empty(&tx_task->active) ||
+					 kthread_should_stop());
 
-			cond_resched();
-			__set_current_state(TASK_RUNNING);
-		}
+		if (kthread_should_stop())
+			break;
 
 		active = llist_del_all(&tx_task->active);
-		if (active != NULL) {
-			struct siw_qp *next_qp;
+		/*
+		 * llist_del_all returns a list with newest entry first.
+		 * Re-order list for fairness among QP's.
+		 */
+		while (active) {
+			struct llist_node *tmp = active;
 
-			llist_for_each_entry_safe(qp, next_qp, active,
-						  tx_list) {
-				qp->tx_list.next = NULL;
-				siw_sq_resume(qp);
-			}
-			stoptime = jiffies + HZ;
+			active = llist_next(active);
+			tmp->next = fifo_list;
+			fifo_list = tmp;
 		}
-	}
-	while (!kthread_should_stop()) {
-		schedule();
-		set_current_state(TASK_INTERRUPTIBLE);
+		while (fifo_list) {
+			qp = container_of(fifo_list, struct siw_qp, tx_list);
+			fifo_list = llist_next(fifo_list);
+			qp->tx_list.next = NULL;
+
+			siw_sq_resume(qp);
+		}
 	}
 	active = llist_del_all(&tx_task->active);
 	if (active != NULL) {
@@ -1420,9 +1361,6 @@ int siw_run_sq(void *data)
 			siw_sq_resume(qp);
 		}
 	}
-
-	__set_current_state(TASK_RUNNING);
-
 	pr_info("Stopped siw TX thread on CPU %u\n", nr_cpu);
 	return 0;
 }
@@ -1430,6 +1368,9 @@ int siw_run_sq(void *data)
 int siw_sq_start(struct siw_qp *qp)
 {
 	int cpu = qp->cpu;
+
+	if (tx_wqe(qp)->wr_status == SR_WR_IDLE)
+		goto out;
 
 	dprint(DBG_TX|DBG_OBJ, "(qp%d)\n", QP_ID(qp));
 
@@ -1457,7 +1398,6 @@ int siw_sq_start(struct siw_qp *qp)
 	llist_add(&qp->tx_list, &per_cpu(tx_task_g, cpu).active);
 
 	wake_up(&per_cpu(tx_task_g, cpu).waiting);
-
 out:
 	return 0;
 }

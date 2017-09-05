@@ -63,6 +63,8 @@ MODULE_DESCRIPTION("Software iWARP Driver");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_VERSION("0.2");
 
+extern bool mpa_crc_required;
+
 #define SIW_MAX_IF 12
 static int if_cnt;
 static char *iface_list[SIW_MAX_IF] = {[0 ... (SIW_MAX_IF-1)] = '\0'};
@@ -82,6 +84,7 @@ MODULE_PARM_DESC(tx_cpu_list, "List of CPUs siw TX thread shall be bound to");
 
 int default_tx_cpu = -1;
 struct task_struct *qp_tx_thread[MAX_CPU];
+struct crypto_shash *siw_crypto_shash;
 
 static ssize_t show_sw_version(struct device *dev,
 			       struct device_attribute *attr, char *buf)
@@ -417,7 +420,7 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	 */
 	ofa_dev->phys_port_cnt = 1;
 
-	ofa_dev->num_comp_vectors = 1;
+	ofa_dev->num_comp_vectors = num_possible_cpus();
 	ofa_dev->dev.parent = &siw_generic_dma_device;
 	ofa_dev->query_device = siw_query_device;
 	ofa_dev->query_port = siw_query_port;
@@ -652,12 +655,21 @@ static __init int siw_init_module(void)
 	if (rv)
 		goto out_unregister;
 
-	rv = siw_sq_worker_init();
-	if (rv)
-		goto out_unregister;
+	if (DPRINT_MASK)
+		siw_debug_init();
 
-	siw_debug_init();
-
+	/*
+	 * Allocate CRC SHASH object. Fail loading siw only, if CRC is
+	 * required by kernel module
+	 */
+	siw_crypto_shash = crypto_alloc_shash("crc32c", 0, 0);
+	if (IS_ERR(siw_crypto_shash)) {
+		pr_info("siw: Loading CRC32c failed: %ld\n",
+			PTR_ERR(siw_crypto_shash));
+		siw_crypto_shash = NULL;
+		if (mpa_crc_required == true)
+			goto out_unregister;
+	}
 	rv = register_netdevice_notifier(&siw_netdev_nb);
 	if (rv) {
 		siw_debugfs_delete();
@@ -679,17 +691,18 @@ static __init int siw_init_module(void)
 out_unregister:
 	for (nr_cpu = 0; nr_cpu < MAX_CPU; nr_cpu++) {
 		if (qp_tx_thread[nr_cpu]) {
-			kthread_stop(qp_tx_thread[nr_cpu]);
+			siw_stop_tx_thread(nr_cpu);
 			qp_tx_thread[nr_cpu] = NULL;
 		}
 	}
 	device_unregister(&siw_generic_dma_device);
 
+	if (siw_crypto_shash)
+		crypto_free_shash(siw_crypto_shash);
 out:
 	bus_unregister(&siw_bus);
 out_nobus:
 	pr_info("SoftIWARP attach failed. Error: %d\n", rv);
-	siw_sq_worker_exit();
 	siw_cm_exit();
 
 	return rv;
@@ -702,13 +715,12 @@ static void __exit siw_exit_module(void)
 
 	for (nr_cpu = 0; nr_cpu < MAX_CPU; nr_cpu++) {
 		if (qp_tx_thread[nr_cpu]) {
-			kthread_stop(qp_tx_thread[nr_cpu]);
+			siw_stop_tx_thread(nr_cpu);
 			qp_tx_thread[nr_cpu] = NULL;
 		}
 	}
 	unregister_netdevice_notifier(&siw_netdev_nb);
 
-	siw_sq_worker_exit();
 	siw_cm_exit();
 
 	while (!list_empty(&siw_devlist)) {
@@ -720,6 +732,9 @@ static void __exit siw_exit_module(void)
 
 		siw_device_destroy(sdev);
 	}
+	if (siw_crypto_shash)
+		crypto_free_shash(siw_crypto_shash);
+
 	siw_debugfs_delete();
 
 	device_unregister(&siw_generic_dma_device);

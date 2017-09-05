@@ -70,6 +70,8 @@ static char siw_qp_state_to_string[SIW_QP_STATE_COUNT][sizeof "TERMINATE"] = {
 };
 #endif
 
+extern struct crypto_shash *siw_crypto_shash;
+
 /*
  * iWARP (RDMAP, DDP and MPA) parameters as well as Softiwarp settings on a
  * per-RDMAP message basis. Please keep order of initializer. All MPA len
@@ -258,25 +260,11 @@ void siw_qp_llp_close(struct siw_qp *qp)
 void siw_qp_llp_write_space(struct sock *sk)
 {
 	struct siw_cep	*cep = sk_to_cep(sk);
-	/*
-	 * TODO:
-	 * Resemble sk_stream_write_space() logic for iWARP constraints:
-	 * Clear SOCK_NOSPACE only if sendspace may hold some reasonable
-	 * sized FPDU.
-	 */
-#ifdef SIW_TX_FULLSEGS
-	struct socket *sock = sk->sk_socket;
 
-	if (sk_stream_wspace(sk) >= (int)cep->qp.tx_ctx.fpdu_len && sock) {
-		clear_bit(SOCK_NOSPACE, &sock->flags);
-		siw_sq_start(cep->qp);
-	}
-#else
 	cep->sk_write_space(sk);
 
 	if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
 		siw_sq_start(cep->qp);
-#endif
 }
 
 static int siw_qp_readq_init(struct siw_qp *qp, int irq_size, int orq_size)
@@ -316,32 +304,24 @@ static int siw_qp_enable_crc(struct siw_qp *qp)
 {
 	struct siw_iwarp_rx *c_rx = &qp->rx_ctx;
 	struct siw_iwarp_tx *c_tx = &qp->tx_ctx;
-	struct crypto_shash *txsh, *rxsh;
 	int rv = 0;
 
-	txsh = crypto_alloc_shash("crc32c", 0, 0);
-	if (IS_ERR(txsh))
-		return -PTR_ERR(txsh);
-
-	rxsh = crypto_alloc_shash("crc32c", 0, 0);
-	if (IS_ERR(rxsh)) {
-		rv = -PTR_ERR(rxsh);
-		rxsh = NULL;
+	if (siw_crypto_shash == NULL) {
+		rv = -ENOSYS;
 		goto error;
 	}
-
 	c_tx->mpa_crc_hd = kzalloc(sizeof(struct shash_desc) +
-				   crypto_shash_descsize(txsh),
+				   crypto_shash_descsize(siw_crypto_shash),
 				   GFP_KERNEL);
 	c_rx->mpa_crc_hd = kzalloc(sizeof(struct shash_desc) +
-				   crypto_shash_descsize(rxsh),
+				   crypto_shash_descsize(siw_crypto_shash),
 				   GFP_KERNEL);
 	if (!c_tx->mpa_crc_hd || !c_rx->mpa_crc_hd) {
 		rv = -ENOMEM;
 		goto error;
 	}
-	c_tx->mpa_crc_hd->tfm = txsh;
-	c_rx->mpa_crc_hd->tfm = rxsh;
+	c_tx->mpa_crc_hd->tfm = siw_crypto_shash;
+	c_rx->mpa_crc_hd->tfm = siw_crypto_shash;
 
 	return 0;
 error:
@@ -352,11 +332,6 @@ error:
 	kfree(c_rx->mpa_crc_hd);
 
 	c_tx->mpa_crc_hd = c_rx->mpa_crc_hd = NULL;
-
-	if (txsh)
-		crypto_free_shash(txsh);
-	if (rxsh)
-		crypto_free_shash(rxsh);
 
 	return rv;
 }
@@ -838,10 +813,6 @@ int siw_activate_tx(struct siw_qp *qp)
 	struct siw_wqe	*wqe = tx_wqe(qp);
 	int rv = 1;
 
-	if (unlikely(wqe->wr_status != SR_WR_IDLE)) {
-		WARN_ON(1);
-		return -1;
-	}
 	/*
 	 * This codes prefers pending READ Responses over SQ processing
 	 */
@@ -1095,6 +1066,7 @@ void siw_sq_flush(struct siw_qp *qp)
 	for (;;) {
 		if (qp->attrs.orq_size == 0)
 			break;
+
 		sqe = &qp->orq[qp->orq_get % qp->attrs.orq_size];
 		if (!sqe->flags)
 			break;

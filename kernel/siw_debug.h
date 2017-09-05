@@ -61,12 +61,12 @@
  * DBG_TX	iWARP TX path
  * DBG_RX	iWARP RX path
  * DBG_SK	Socket operations
- * DBG_KT	Kernel threads
  * DBG_IRQ	Interrupt context (SoftIRQ or HardIRQ)
  * DBG_DM	Device management
  * DBG_HDR	Packet HDRs
  * DBG_ALL	All categories above
  */
+#define DBG_OFF		0
 #define DBG_ON		0x00000001
 #define DBG_TMP		0x00000002
 #define DBG_OBJ		0x00000004
@@ -77,15 +77,16 @@
 #define DBG_TX		0x00000080
 #define DBG_RX		0x00000100
 #define DBG_SK		0x00000200
-#define DBG_KT		0x00000400
 #define DBG_IRQ		0x00000800
 #define DBG_DM		0x00001000
 #define DBG_HDR		0x00002000
 #define DBG_CQ		0x00004000
-#define DBG_ALL		(DBG_IRQ|DBG_KT|DBG_SK|DBG_RX|DBG_TX|DBG_WR|\
-DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|DBG_DM|DBG_ON|DBG_HDR|DBG_CQ)
-#define DBG_ALL_NOHDR	(DBG_IRQ|DBG_KT|DBG_SK|DBG_RX|DBG_TX|DBG_WR|\
-DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|DBG_DM|DBG_ON)
+#define DBG_ALL		(DBG_IRQ|DBG_SK|DBG_RX|DBG_TX|DBG_WR|\
+			DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|\
+			DBG_DM|DBG_ON|DBG_HDR|DBG_CQ)
+#define DBG_ALL_NOHDR	(DBG_IRQ|DBG_SK|DBG_RX|DBG_TX|DBG_WR|\
+			DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|\
+			DBG_DM|DBG_ON)
 #define DBG_CTRL	(DBG_ON|DBG_CM|DBG_DM)
 
 /*
@@ -96,7 +97,7 @@ DBG_CM|DBG_EH|DBG_MM|DBG_OBJ|DBG_TMP|DBG_DM|DBG_ON)
  * DBG_ON			Important events / error conditions only
  *				(minimum number of debug messages)
  * OR-ed combination of DBG_*	Selective debugging
- * DBG_KT|DBG_ON		Kernel threads
+ * DBG_TX|DBG_ON		+ transmit path
  * DBG_ALL			All categories
  */
 #define DPRINT_MASK	(DBG_ON)
@@ -118,10 +119,6 @@ extern void siw_print_qp_attr_mask(enum ib_qp_attr_mask mask, char *msg);
 #define refcount_read(x)	atomic_read(x.refcount.refs)
 #endif
 
-#undef DEBUG
-#define DEBUG_ORQ
-#undef DEBUG_ORQ
-
 #if DPRINT_MASK > 0
 
 /**
@@ -137,36 +134,31 @@ extern void siw_print_qp_attr_mask(enum ib_qp_attr_mask mask, char *msg);
  * @fmt		: printf compliant format string
  * @args	: printf compliant argument list
  */
-#define dprint(dbgcat, fmt, args...)					\
-	do {								\
-		if ((dbgcat) & DPRINT_MASK) {				\
-			if (!in_interrupt())				\
-				pr_info("(%5d/%1d) %s" fmt,		\
-					current->pid,			\
+#define dprint(dbgcat, fmt, args...)				\
+	do {							\
+		if ((dbgcat) & DPRINT_MASK) {			\
+			if (!in_interrupt())			\
+				pr_info("(%5d/%1d) %s" fmt,	\
+					current->pid,		\
 					current->on_cpu,	\
-					__func__, ## args);		\
-			else						\
-				pr_info("( irq /%1d) %s" fmt,		\
+					__func__, ## args);	\
+			else					\
+				pr_info("( irq /%1d) %s" fmt,	\
 					current->on_cpu,	\
-					__func__, ## args);		\
-		}							\
+					__func__, ## args);	\
+		}						\
 	} while (0)
 
 
 #define siw_dprint_rctx(r)	siw_print_rctx(r)
 
 extern char ib_qp_state_to_string[IB_QPS_ERR+1][sizeof "RESET"];
-extern atomic_t siw_num_wqe;
-
-#define SIW_INC_STAT_WQE	atomic_inc(&siw_num_wqe)
-#define SIW_DEC_STAT_WQE	atomic_dec(&siw_num_wqe)
 
 #else
 
 #define dprint(dbgcat, fmt, args...)	do { } while (0)
 #define siw_dprint_rctx(r)	do { } while (0)
-#define SIW_INC_STAT_WQE	do { } while (0)
-#define SIW_DEC_STAT_WQE	do { } while (0)
+
 #endif
 
 

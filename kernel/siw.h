@@ -343,10 +343,6 @@ struct siw_sk_upcalls {
 	void	(*sk_error_report)(struct sock *sk);
 };
 
-struct siw_sq_work {
-	struct work_struct	work;
-};
-
 struct siw_srq {
 	struct ib_srq		ofa_srq;
 	struct siw_pd		*pd;
@@ -575,8 +571,6 @@ struct siw_qp {
 	spinlock_t		sq_lock;
 	spinlock_t		rq_lock;
 	spinlock_t		orq_lock;
-
-	struct siw_sq_work	sq_work;
 };
 
 #define RX_QP(rx)		container_of(rx, struct siw_qp, rx_ctx)
@@ -674,10 +668,9 @@ extern void siw_pbl_free(struct siw_pbl *pbl);
 /* QP TX path functions */
 extern int siw_run_sq(void *arg);
 extern int siw_qp_sq_process(struct siw_qp *qp);
-extern int siw_sq_worker_init(void);
-extern void siw_sq_worker_exit(void);
 extern int siw_sq_start(struct siw_qp *qp);
 extern int siw_activate_tx(struct siw_qp *qp);
+extern void siw_stop_tx_thread(int nr_cpu);
 
 /* QP RX path functions */
 extern int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rx);
