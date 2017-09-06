@@ -928,13 +928,13 @@ static int siw_qp_sq_proc_tx(struct siw_qp *qp, struct siw_wqe *wqe)
 	int			rv = 0,
 				burst_len = qp->tx_ctx.burst;
 
-	if (unlikely(wqe->wr_status == SR_WR_IDLE))
+	if (unlikely(wqe->wr_status == SIW_WR_IDLE))
 		return 0;
 
 	if (!burst_len)
 		burst_len = SQ_USER_MAXBURST;
 
-	if (wqe->wr_status == SR_WR_QUEUED) {
+	if (wqe->wr_status == SIW_WR_QUEUED) {
 		if (!(wqe->sqe.flags & SIW_WQE_INLINE)) {
 			if (tx_type(wqe) == SIW_OP_READ_RESPONSE)
 				wqe->sqe.num_sge = 1;
@@ -945,7 +945,7 @@ static int siw_qp_sq_proc_tx(struct siw_qp *qp, struct siw_wqe *wqe)
 				 * Reference memory to be tx'd
 				 */
 				rv = siw_check_sgl_tx(qp->pd, wqe,
-						      SR_MEM_LREAD);
+						      SIW_MEM_LREAD);
 				if (rv < 0)
 					return rv;
 
@@ -960,7 +960,7 @@ static int siw_qp_sq_proc_tx(struct siw_qp *qp, struct siw_wqe *wqe)
 				wqe->sqe.sge[0].laddr = (u64)&wqe->sqe.sge[1];
 			}
 		}
-		wqe->wr_status = SR_WR_INPROGRESS;
+		wqe->wr_status = SIW_WR_INPROGRESS;
 		wqe->processed = 0;
 
 		siw_update_tcpseg(c_tx, s);
@@ -1179,7 +1179,7 @@ next_wqe:
 		}
 
 		spin_lock_irqsave(&qp->sq_lock, flags);
-		wqe->wr_status = SR_WR_IDLE;
+		wqe->wr_status = SIW_WR_IDLE;
 		rv = siw_activate_tx(qp);
 		spin_unlock_irqrestore(&qp->sq_lock, flags);
 
@@ -1264,7 +1264,7 @@ next_wqe:
 		default:
 			BUG();
 		}
-		wqe->wr_status = SR_WR_IDLE;
+		wqe->wr_status = SIW_WR_IDLE;
 	}
 done:
 	atomic_dec(&qp->tx_ctx.in_use);
@@ -1369,7 +1369,7 @@ int siw_sq_start(struct siw_qp *qp)
 {
 	int cpu = qp->cpu;
 
-	if (tx_wqe(qp)->wr_status == SR_WR_IDLE)
+	if (tx_wqe(qp)->wr_status == SIW_WR_IDLE)
 		goto out;
 
 	dprint(DBG_TX|DBG_OBJ, "(qp%d)\n", QP_ID(qp));

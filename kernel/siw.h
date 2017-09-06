@@ -171,15 +171,15 @@ struct siw_pd {
 };
 
 enum siw_access_flags {
-	SR_MEM_LREAD	= (1<<0),
-	SR_MEM_LWRITE	= (1<<1),
-	SR_MEM_RREAD	= (1<<2),
-	SR_MEM_RWRITE	= (1<<3),
+	SIW_MEM_LREAD	= (1<<0),
+	SIW_MEM_LWRITE	= (1<<1),
+	SIW_MEM_RREAD	= (1<<2),
+	SIW_MEM_RWRITE	= (1<<3),
 
-	SR_MEM_FLAGS_LOCAL =
-		(SR_MEM_LREAD | SR_MEM_LWRITE),
-	SR_MEM_FLAGS_REMOTE =
-		(SR_MEM_RWRITE | SR_MEM_RREAD)
+	SIW_MEM_FLAGS_LOCAL =
+		(SIW_MEM_LREAD | SIW_MEM_LWRITE),
+	SIW_MEM_FLAGS_REMOTE =
+		(SIW_MEM_RWRITE | SIW_MEM_RREAD)
 };
 
 #define SIW_STAG_MAX	0xffffffff
@@ -265,12 +265,10 @@ struct siw_mw {
 	struct rcu_head rcu;
 };
 
-/********** WR definitions ****************/
-
 enum siw_wr_state {
-	SR_WR_IDLE		= 0,
-	SR_WR_QUEUED		= 1,	/* processing has not started yet */
-	SR_WR_INPROGRESS	= 2	/* initiated processing of the WR */
+	SIW_WR_IDLE		= 0,
+	SIW_WR_QUEUED		= 1,	/* processing has not started yet */
+	SIW_WR_INPROGRESS	= 2	/* initiated processing of the WR */
 };
 
 union siw_mem_resolved {
@@ -278,15 +276,14 @@ union siw_mem_resolved {
 	char		*buf;	/* linear kernel buffer */
 };
 
-struct siw_qp;
-
+/* The WQE currently being processed (RT or TX) */
 struct siw_wqe {
+	/* Copy of applications SQE or RQE */
 	union {
 		struct siw_sqe	sqe;
 		struct siw_rqe	rqe;
 	};
 	union siw_mem_resolved	mem[SIW_MAX_SGE]; /* per sge's resolved mem */
-
 	enum siw_wr_state	wr_status;
 	enum siw_wc_status	wc_status;
 	u32			bytes;		/* total bytes to process */

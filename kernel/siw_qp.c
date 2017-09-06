@@ -223,7 +223,7 @@ void siw_qp_llp_close(struct siw_qp *qp)
 	 * ERROR or IDLE ?
 	 */
 	case SIW_QP_STATE_CLOSING:
-		if (tx_wqe(qp)->wr_status == SR_WR_IDLE)
+		if (tx_wqe(qp)->wr_status == SIW_WR_IDLE)
 			qp->attrs.state = SIW_QP_STATE_ERROR;
 		else
 			qp->attrs.state = SIW_QP_STATE_IDLE;
@@ -351,13 +351,13 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 
 	spin_lock_irqsave(&qp->sq_lock, flags);
 
-	if (unlikely(wqe->wr_status != SR_WR_IDLE)) {
+	if (unlikely(wqe->wr_status != SIW_WR_IDLE)) {
 		spin_unlock_irqrestore(&qp->sq_lock, flags);
 		return -EIO;
 	}
 	memset(wqe->mem, 0, sizeof(*wqe->mem) * SIW_MAX_SGE);
 
-	wqe->wr_status = SR_WR_QUEUED;
+	wqe->wr_status = SIW_WR_QUEUED;
 	wqe->sqe.flags = 0;
 	wqe->sqe.num_sge = 1;
 	wqe->sqe.sge[0].length = 0;
@@ -392,7 +392,7 @@ int siw_qp_mpa_rts(struct siw_qp *qp, enum mpa_v2_ctrl ctrl)
 		rv = -EINVAL;
 
 	if (rv)
-		wqe->wr_status = SR_WR_IDLE;
+		wqe->wr_status = SIW_WR_IDLE;
 
 	spin_unlock_irqrestore(&qp->sq_lock, flags);
 
@@ -542,7 +542,7 @@ int siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			 * and wait for the socket state change upcall to
 			 * come back closed.
 			 */
-			if (tx_wqe(qp)->wr_status == SR_WR_IDLE)
+			if (tx_wqe(qp)->wr_status == SIW_WR_IDLE)
 				qp->attrs.state = SIW_QP_STATE_CLOSING;
 			else {
 				qp->attrs.state = SIW_QP_STATE_ERROR;
@@ -604,7 +604,7 @@ int siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			siw_rq_flush(qp);
 			qp->attrs.state = SIW_QP_STATE_ERROR;
 
-			if (tx_wqe(qp)->wr_status != SR_WR_IDLE)
+			if (tx_wqe(qp)->wr_status != SIW_WR_IDLE)
 				siw_sq_flush(qp);
 
 			break;
@@ -622,7 +622,7 @@ int siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 		switch (attrs->state) {
 
 		case SIW_QP_STATE_IDLE:
-			BUG_ON(tx_wqe(qp)->wr_status != SR_WR_IDLE);
+			BUG_ON(tx_wqe(qp)->wr_status != SIW_WR_IDLE);
 			qp->attrs.state = SIW_QP_STATE_IDLE;
 
 			break;
@@ -641,7 +641,7 @@ int siw_qp_modify(struct siw_qp *qp, struct siw_qp_attrs *attrs,
 			 */
 			qp->attrs.state = SIW_QP_STATE_ERROR;
 
-			if (tx_wqe(qp)->wr_status != SR_WR_IDLE)
+			if (tx_wqe(qp)->wr_status != SIW_WR_IDLE)
 				siw_sq_flush(qp);
 
 			siw_rq_flush(qp);
@@ -820,7 +820,7 @@ int siw_activate_tx(struct siw_qp *qp)
 
 	if (sqe->flags & SIW_WQE_VALID) {
 		memset(wqe->mem, 0, sizeof(*wqe->mem) * SIW_MAX_SGE);
-		wqe->wr_status = SR_WR_QUEUED;
+		wqe->wr_status = SIW_WR_QUEUED;
 
 		/* start READ RESPONSE */
 		wqe->sqe.opcode = SIW_OP_READ_RESPONSE;
@@ -843,7 +843,7 @@ int siw_activate_tx(struct siw_qp *qp)
 	sqe = sq_get_next(qp);
 	if (sqe) {
 		memset(wqe->mem, 0, sizeof(*wqe->mem) * SIW_MAX_SGE);
-		wqe->wr_status = SR_WR_QUEUED;
+		wqe->wr_status = SIW_WR_QUEUED;
 
 		/* First copy SQE to kernel private memory */
 		memcpy(&wqe->sqe, sqe, sizeof(*sqe));
@@ -917,7 +917,7 @@ int siw_activate_tx(struct siw_qp *qp)
 out:
 	if (unlikely(rv < 0)) {
 		pr_warn("QP[%d]: error %d in activate_tx\n", QP_ID(qp), rv);
-		wqe->wr_status = SR_WR_IDLE;
+		wqe->wr_status = SIW_WR_IDLE;
 	}
 	return rv;
 }
@@ -1042,7 +1042,6 @@ int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
  * siw_sq_flush()
  *
  * Flush SQ and ORRQ entries to CQ.
- * IRRQ entries are silently dropped.
  *
  * TODO: Add termination code for in-progress WQE.
  * TODO: an in-progress WQE may have been partially
@@ -1050,7 +1049,7 @@ int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
  *       of a started DDP segment must be completed if possible
  *       by any chance.
  *
- * Must be called with qp state write lock held.
+ * Must be called with QP state write lock held.
  * Therefore, SQ and ORQ lock must not be taken.
  */
 void siw_sq_flush(struct siw_qp *qp)
@@ -1078,22 +1077,22 @@ void siw_sq_flush(struct siw_qp *qp)
 		qp->orq_get++;
 	}
 	/*
-	 * Flush the in-progress wqe, if there.
+	 * Flush an in-progess WQE if present
 	 */
-	if (wqe->wr_status != SR_WR_IDLE) {
+	if (wqe->wr_status != SIW_WR_IDLE) {
 		/*
 		 * TODO: Add iWARP Termination code
 		 */
 		dprint(DBG_WR,
-			" (QP%d): Flush current WQE %p, type %d, status %d\n",
+			" (QP%d): Flush current SQE %p, type %d, status %d\n",
 			QP_ID(qp), wqe, tx_type(wqe), wqe->wr_status);
 
-		siw_wqe_put_mem(wqe, wqe->sqe.opcode);
+		siw_wqe_put_mem(wqe, tx_type(wqe));
 
-		if (wqe->sqe.opcode != SIW_OP_READ_RESPONSE &&
-			((wqe->sqe.opcode != SIW_OP_READ &&
-			  wqe->sqe.opcode != SIW_OP_READ_LOCAL_INV) ||
-			wqe->wr_status == SR_WR_QUEUED))
+		if (tx_type(wqe) != SIW_OP_READ_RESPONSE &&
+			((tx_type(wqe) != SIW_OP_READ &&
+			  tx_type(wqe) != SIW_OP_READ_LOCAL_INV) ||
+			wqe->wr_status == SIW_WR_QUEUED))
 			/*
 			 * An in-progress RREQUEST is already in
 			 * the ORQ
@@ -1101,7 +1100,7 @@ void siw_sq_flush(struct siw_qp *qp)
 			siw_sqe_complete(qp, &wqe->sqe, wqe->bytes,
 					 SIW_WC_WR_FLUSH_ERR);
 
-		wqe->wr_status = SR_WR_IDLE;
+		wqe->wr_status = SIW_WR_IDLE;
 	}
 	/*
 	 * Flush the Send Queue
@@ -1126,10 +1125,9 @@ void siw_sq_flush(struct siw_qp *qp)
 /*
  * siw_rq_flush()
  *
- * Flush recv queue entries to cq. An in-progress WQE may have some bytes
- * processed (wqe->processed).
+ * Flush recv queue entries to CQ. 
  *
- * Must be called with qp state write lock held.
+ * Must be called with QP state write lock held.
  * Therefore, RQ lock must not be taken.
  */
 void siw_rq_flush(struct siw_qp *qp)
@@ -1141,18 +1139,25 @@ void siw_rq_flush(struct siw_qp *qp)
 	/*
 	 * Flush an in-progess WQE if present
 	 */
-	if (wqe->wr_status != SR_WR_IDLE) {
-		if (__rdmap_opcode(&qp->rx_ctx.hdr.ctrl) != RDMAP_RDMA_WRITE) {
-			siw_wqe_put_mem(wqe, SIW_OP_RECEIVE);
+	if (wqe->wr_status != SIW_WR_IDLE) {
+		dprint(DBG_WR,
+			" (QP%d): Flush current RQE %p, type %d, status %d\n",
+			QP_ID(qp), wqe, rx_type(wqe), wqe->wr_status);
+		siw_wqe_put_mem(wqe, rx_type(wqe));
+		if (rx_type(wqe) == SIW_OP_RECEIVE) {
 			siw_rqe_complete(qp, &wqe->rqe, wqe->bytes,
 					 SIW_WC_WR_FLUSH_ERR);
-		} else
-			siw_mem_put(rx_mem(qp));
-
-		wqe->wr_status = SR_WR_IDLE;
+		} else if (rx_type(wqe) != SIW_OP_READ &&
+			   rx_type(wqe) != SIW_OP_READ_RESPONSE &&
+			   rx_type(wqe) != SIW_OP_WRITE) {
+			siw_sqe_complete(qp, &wqe->sqe, 0, SIW_WC_WR_FLUSH_ERR);
+		}
+		wqe->wr_status = SIW_WR_IDLE;
 	}
-
-	while (qp->recvq && qp->attrs.rq_size) {
+	/*
+	 * Flush the Receive Queue
+	 */
+	while (qp->attrs.rq_size) {
 		struct siw_rqe *rqe =
 			&qp->recvq[qp->rq_get % qp->attrs.rq_size];
 
@@ -1161,8 +1166,8 @@ void siw_rq_flush(struct siw_qp *qp)
 
 		if (siw_rqe_complete(qp, rqe, 0, SIW_WC_WR_FLUSH_ERR) != 0)
 			break;
-		rqe->flags = 0;
 
+		rqe->flags = 0;
 		qp->rq_get++;
 	}
 }

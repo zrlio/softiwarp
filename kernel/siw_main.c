@@ -177,14 +177,20 @@ static void siw_device_deregister(struct siw_dev *sdev)
 
 		ib_unregister_device(&sdev->ofa_dev);
 	}
-	WARN_ON(atomic_read(&sdev->num_ctx));
-	WARN_ON(atomic_read(&sdev->num_srq));
-	WARN_ON(atomic_read(&sdev->num_qp));
-	WARN_ON(atomic_read(&sdev->num_cq));
-	WARN_ON(atomic_read(&sdev->num_mem));
-	WARN_ON(atomic_read(&sdev->num_pd));
-	WARN_ON(atomic_read(&sdev->num_cep));
-
+	if (atomic_read(&sdev->num_ctx) || atomic_read(&sdev->num_srq) ||
+	    atomic_read(&sdev->num_mem) || atomic_read(&sdev->num_cep) ||
+	    atomic_read(&sdev->num_qp) || atomic_read(&sdev->num_cq) ||
+	    atomic_read(&sdev->num_pd)) {
+		pr_warn("SIW at %s: orphaned resources!\n", sdev->netdev->name);
+		pr_warn("CTX %d, SRQ %d, QP %d, CQ %d, MEM %d, CEP %d, PD %d\n",
+			atomic_read(&sdev->num_ctx),
+			atomic_read(&sdev->num_srq),
+			atomic_read(&sdev->num_qp),
+			atomic_read(&sdev->num_cq),
+			atomic_read(&sdev->num_mem),
+			atomic_read(&sdev->num_cep),
+			atomic_read(&sdev->num_pd));
+	}
 	i = 0;
 
 	while (!list_empty(&sdev->cep_list)) {

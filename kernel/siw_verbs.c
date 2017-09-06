@@ -1023,13 +1023,13 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 		case IB_WR_REG_MR:
 			sqe->ofa_mr = (uint64_t)reg_wr(wr)->mr;
 			sqe->rkey = reg_wr(wr)->key;
-			sqe->access = SR_MEM_LREAD;
+			sqe->access = SIW_MEM_LREAD;
 			if (reg_wr(wr)->access & IB_ACCESS_LOCAL_WRITE)
-				sqe->access |= SR_MEM_LWRITE;
+				sqe->access |= SIW_MEM_LWRITE;
 			if (reg_wr(wr)->access & IB_ACCESS_REMOTE_WRITE)
-				sqe->access |= SR_MEM_RWRITE;
+				sqe->access |= SIW_MEM_RWRITE;
 			if (reg_wr(wr)->access & IB_ACCESS_REMOTE_READ)
-				sqe->access |= SR_MEM_RREAD;
+				sqe->access |= SIW_MEM_RREAD;
 			sqe->opcode = SIW_OP_REG_MR;
 
 			break;
@@ -1067,7 +1067,7 @@ int siw_post_send(struct ib_qp *ofa_qp, struct ib_send_wr *wr,
 	 * processing, if new work is already pending. But rv must be passed
 	 * to caller.
 	 */
-	if (wqe->wr_status != SR_WR_IDLE) {
+	if (wqe->wr_status != SIW_WR_IDLE) {
 		spin_unlock_irqrestore(&qp->sq_lock, flags);
 		goto skip_direct_sending;
 	}
@@ -1413,10 +1413,10 @@ static struct siw_mr *siw_create_mr(struct siw_dev *sdev, void *mem_obj,
 	mr->mem.va  = start;
 	mr->mem.len = len;
 	mr->mem.mr  = NULL;
-	mr->mem.perms = SR_MEM_LREAD | /* not selectable in OFA */
-			(rights & IB_ACCESS_REMOTE_READ  ? SR_MEM_RREAD  : 0) |
-			(rights & IB_ACCESS_LOCAL_WRITE  ? SR_MEM_LWRITE : 0) |
-			(rights & IB_ACCESS_REMOTE_WRITE ? SR_MEM_RWRITE : 0);
+	mr->mem.perms = SIW_MEM_LREAD | /* not selectable in OFA */
+		(rights & IB_ACCESS_REMOTE_READ  ? SIW_MEM_RREAD  : 0) |
+		(rights & IB_ACCESS_LOCAL_WRITE  ? SIW_MEM_LWRITE : 0) |
+		(rights & IB_ACCESS_REMOTE_WRITE ? SIW_MEM_RWRITE : 0);
 
 	mr->mem_obj = mem_obj;
 

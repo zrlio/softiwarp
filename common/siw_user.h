@@ -139,12 +139,13 @@ enum siw_wqe_flags {
 	SIW_WQE_COMPLETED       = (1 << 5)
 };
 
-/* Minimum sized Send Queue Element */
+/* Send Queue Element */
 struct siw_sqe {
 	uint64_t	id;
 	uint16_t	flags;
 	uint8_t		num_sge;
-	uint8_t		opcode; /* Actual enum siw_opcode values */
+	/* Contains enum siw_opcode values */
+	uint8_t		opcode;
 	uint32_t	rkey;
 	union {
 		uint64_t	raddr;
@@ -156,10 +157,17 @@ struct siw_sqe {
 	};
 };
 
+/* Receive Queue Element */
 struct siw_rqe {
 	uint64_t	id;
-	uint32_t	flags;
-	uint32_t	num_sge;
+	uint16_t	flags;
+	uint8_t		num_sge;
+	/*
+	 * only used by kernel driver,
+	 * ignored if set by user
+	 */
+	uint8_t		opcode;
+	uint32_t	imm_data;
 	struct siw_sge	sge[SIW_MAX_SGE];
 };
 

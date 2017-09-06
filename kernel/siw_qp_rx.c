@@ -405,7 +405,8 @@ static struct siw_wqe *siw_rqe_get(struct siw_qp *qp)
 			int i = 0;
 
 			wqe = rx_wqe(qp);
-			wqe->wr_status = SR_WR_INPROGRESS;
+			rx_type(wqe) = SIW_OP_RECEIVE;
+			wqe->wr_status = SIW_WR_INPROGRESS;
 			wqe->bytes = 0;
 			wqe->processed = 0;
 
@@ -476,16 +477,9 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		wqe = siw_rqe_get(qp);
 		if (unlikely(!wqe))
 			return -ENOENT;
-	} else  {
+	} else
 		wqe = rx_wqe(qp);
-		if (unlikely(wqe->wr_status != SR_WR_INPROGRESS)) {
-			/*
-			 * this is a siw bug!
-			 */
-			dprint(DBG_ON, "QP(%d): RQ failure\n", QP_ID(qp));
-			return -EPROTO;
-		}
-	}
+
 	if (rctx->state == SIW_GET_DATA_START) {
 		rv = siw_send_check_ntoh(rctx);
 		if (unlikely(rv)) {
@@ -522,7 +516,7 @@ int siw_proc_send(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		 */
 		pd = qp->srq == NULL ? qp->pd : qp->srq->pd;
 
-		rv = siw_check_sge(pd, sge, mem, SR_MEM_LWRITE, rctx->sge_off,
+		rv = siw_check_sge(pd, sge, mem, SIW_MEM_LWRITE, rctx->sge_off,
 				   sge_bytes);
 		if (unlikely(rv)) {
 			siw_qp_event(qp, IB_EVENT_QP_ACCESS_ERR);
@@ -601,7 +595,8 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 	if (rctx->first_ddp_seg) {
 		rx_mem(qp) = siw_mem_id2obj(dev, rctx->ddp_stag >> 8);
-		rx_wqe(qp)->wr_status = SR_WR_INPROGRESS;
+		rx_wqe(qp)->wr_status = SIW_WR_INPROGRESS;
+		rx_type(rx_wqe(qp)) = SIW_OP_WRITE;
 	}
 	if (unlikely(!rx_mem(qp))) {
 		dprint(DBG_RX|DBG_ON,
@@ -615,7 +610,7 @@ int siw_proc_write(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	 * hdr check guarantees same tag as before if fragmented
 	 */
 	rv = siw_check_mem(qp->pd, mem, rctx->ddp_to + rctx->fpdu_part_rcvd,
-			   SR_MEM_RWRITE, bytes);
+			   SIW_MEM_RWRITE, bytes);
 	if (unlikely(rv)) {
 		siw_qp_event(qp, IB_EVENT_QP_ACCESS_ERR);
 		return rv;
@@ -692,14 +687,14 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 	spin_lock_irqsave(&qp->sq_lock, flags);
 
-	if (tx_work->wr_status == SR_WR_IDLE) {
+	if (tx_work->wr_status == SIW_WR_IDLE) {
 		/*
 		 * immediately schedule READ response w/o
 		 * consuming IRQ entry: IRQ must be empty.
 		 */
 		tx_work->processed = 0;
 		tx_work->mem[0].obj = NULL;
-		tx_work->wr_status = SR_WR_QUEUED;
+		tx_work->wr_status = SIW_WR_QUEUED;
 		resp = &tx_work->sqe;
 	} else {
 		resp = irq_alloc_free(qp);
@@ -762,7 +757,7 @@ static int siw_orqe_start_rx(struct siw_qp *qp)
 		wqe->mem[0].obj = NULL;
 		/* make sure WQE is completely written before valid */
 		smp_wmb();
-		wqe->wr_status = SR_WR_INPROGRESS;
+		wqe->wr_status = SIW_WR_INPROGRESS;
 
 		return 0;
 	}
@@ -789,7 +784,7 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 				rv;
 
 	if (rctx->first_ddp_seg) {
-		if (unlikely(wqe->wr_status != SR_WR_IDLE)) {
+		if (unlikely(wqe->wr_status != SIW_WR_IDLE)) {
 			pr_warn("QP[%d]: Start RRESP: RX status %d, op %d\n",
 				QP_ID(qp), wqe->wr_status,
 				wqe->sqe.opcode);
@@ -812,7 +807,7 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 			goto done;
 		}
 	} else {
-		if (unlikely(wqe->wr_status != SR_WR_INPROGRESS)) {
+		if (unlikely(wqe->wr_status != SIW_WR_INPROGRESS)) {
 			pr_warn("QP[%d]: Resume RRESP: status %d\n",
 				QP_ID(qp), wqe->wr_status);
 			rv = -EPROTO;
@@ -829,7 +824,7 @@ int siw_proc_rresp(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 		/*
 		 * check target memory which resolves memory on first fragment
 		 */
-		rv = siw_check_sge(qp->pd, sge, mem, SR_MEM_LWRITE, 0,
+		rv = siw_check_sge(qp->pd, sge, mem, SIW_MEM_LWRITE, 0,
 				   wqe->bytes);
 		if (rv) {
 			dprint(DBG_RX|DBG_ON, "(QP%d): siw_check_sge: %d\n",
@@ -1069,7 +1064,7 @@ static void siw_check_tx_fence(struct siw_qp *qp)
 	smp_store_mb(rreq->flags, 0);
 
 	if (qp->tx_ctx.orq_fence) {
-		if (unlikely(tx_waiting->wr_status != SR_WR_QUEUED)) {
+		if (unlikely(tx_waiting->wr_status != SIW_WR_QUEUED)) {
 			pr_warn("QP[%d]: Resume from fence: status %d wrong\n",
 				QP_ID(qp), tx_waiting->wr_status);
 			goto out;
@@ -1135,7 +1130,7 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 		wqe->rqe.flags |= SIW_WQE_SOLICITED;
 	case RDMAP_SEND:
 	case RDMAP_SEND_INVAL:
-		if (wqe->wr_status == SR_WR_IDLE)
+		if (wqe->wr_status == SIW_WR_IDLE)
 			break;
 
 		rctx->ddp_msn[RDMAP_UNTAGGED_QN_SEND]++;
@@ -1160,7 +1155,7 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 		break;
 
 	case RDMAP_RDMA_READ_RESP:
-		if (wqe->wr_status == SR_WR_IDLE)
+		if (wqe->wr_status == SIW_WR_IDLE)
 			break;
 
 		rctx->ddp_msn[RDMAP_UNTAGGED_QN_RDMA_READ]++;
@@ -1172,7 +1167,7 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 			if (wc_status == SIW_WC_SUCCESS)
 				wc_status = SIW_WC_GENERAL_ERR;
 		} else if (qp->kernel_verbs &&
-			   opcode == SIW_OP_READ_LOCAL_INV) {
+			   rx_type(wqe) == SIW_OP_READ_LOCAL_INV) {
 			/*
 			 * Handle any STag invalidation request
 			 */
@@ -1201,7 +1196,7 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 		break;
 
 	case RDMAP_RDMA_WRITE:
-		if (wqe->wr_status == SR_WR_IDLE)
+		if (wqe->wr_status == SIW_WR_IDLE)
 			break;
 
 		/*
@@ -1219,7 +1214,7 @@ siw_rdmap_complete(struct siw_qp *qp, int error)
 	default:
 		break;
 	}
-	wqe->wr_status = SR_WR_IDLE;
+	wqe->wr_status = SIW_WR_IDLE;
 
 	return rv;
 }
@@ -1283,10 +1278,8 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 		case SIW_GET_DATA_MORE:
 			/*
 			 * Another data fragment of the same DDP segment.
-			 * Headers will not be checked again by the
-			 * opcode-specific data receive function below.
 			 * Setting first_ddp_seg = 0 avoids repeating
-			 * initializations that may occur only once per
+			 * initializations that shall occur only once per
 			 * DDP segment.
 			 */
 			rctx->first_ddp_seg = 0;
@@ -1378,7 +1371,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 		}
 		if (rv) {
 			dprint(DBG_RX,
-				"(QP%d): FPDU truncated. state %d,  %d\n",
+				"(QP%d): FPDU frag. state %d, missing %d\n",
 				QP_ID(qp), rctx->state, rctx->fpdu_part_rem);
 			break;
 		}
