@@ -62,7 +62,7 @@ static bool mpa_crc_strict = true;
 module_param(mpa_crc_strict, bool, 0644);
 bool mpa_crc_required;
 module_param(mpa_crc_required, bool, 0644);
-static bool tcp_nodelay; /* default false */
+static bool tcp_nodelay = true;
 module_param(tcp_nodelay, bool, 0644);
 static u_char  mpa_version = MPA_REVISION_2;
 module_param(mpa_version, byte, 0644);
@@ -71,7 +71,7 @@ module_param(peer_to_peer, bool, 0644);
 
 MODULE_PARM_DESC(mpa_crc_required, "MPA CRC required");
 MODULE_PARM_DESC(mpa_crc_strict, "MPA CRC off enforced");
-MODULE_PARM_DESC(tcp_nodelay, "Set TCP NODELAY");
+MODULE_PARM_DESC(tcp_nodelay, "Set TCP NODELAY and TCP_QUICKACK");
 MODULE_PARM_DESC(mpa_version, "MPA version number");
 MODULE_PARM_DESC(peer_to_peer, "MPAv2 Peer-to-Peer RTR negotiation");
 
@@ -87,23 +87,15 @@ static const bool relaxed_ird_negotiation = 1;
  */
 static int siw_sock_nodelay(struct socket *sock)
 {
-	mm_segment_t oldfs;
-	int rv, val = 1;
+	int val = 1, rv;
+       
+	rv = kernel_setsockopt(sock, SOL_TCP, TCP_NODELAY, (char *)&val,
+			       sizeof(val));
+	if (rv)
+		return rv;
 
-	val = tcp_nodelay ? 1 : 0;
-
-	if (!val)
-		return 0;
-
-	oldfs = get_fs();
-
-	set_fs(KERNEL_DS);
-
-	rv = sock->ops->setsockopt(sock, SOL_TCP, TCP_NODELAY,
-				    (char *)&val, sizeof(val));
-	set_fs(oldfs);
-
-	return rv;
+	return kernel_setsockopt(sock, SOL_TCP, TCP_QUICKACK,
+				 (char *)&val, sizeof(val));
 }
 
 static void siw_cm_llp_state_change(struct sock *);

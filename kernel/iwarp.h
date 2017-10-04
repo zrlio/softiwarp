@@ -298,9 +298,6 @@ union iwarp_hdrs {
 	struct iwarp_send_inv		send_inv;
 };
 
-
-#define MPA_MIN_FRAG ((sizeof(union iwarp_hdrs) + MPA_CRC_SIZE))
-
 enum ddp_etype {
 	DDP_ETYPE_CATASTROPHIC	= 0x0,
 	DDP_ETYPE_TAGGED_BUF	= 0x1,

@@ -1652,9 +1652,6 @@ int siw_map_mr_sg(struct ib_mr *ofa_mr, struct scatterlist *sl, int num_sle,
  * siw_get_dma_mr()
  *
  * Create a (empty) DMA memory region, where no umem is attached.
- * All DMA addresses are created via siw_dma_mapping_ops - which
- * will return just kernel virtual addresses, since siw runs on top
- * of TCP kernel sockets.
  */
 struct ib_mr *siw_get_dma_mr(struct ib_pd *ofa_pd, int rights)
 {

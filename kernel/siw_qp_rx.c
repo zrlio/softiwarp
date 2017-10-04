@@ -890,6 +890,10 @@ static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 
 	avail = min(rctx->skb_new, rctx->fpdu_part_rem);
 
+	dprint(DBG_RX, " (QP%d): to recv %d, avail %d, pad %d, skb_new %d\n",
+		QP_ID(qp), rctx->fpdu_part_rem, avail, rctx->pad,
+		rctx->skb_new);
+
 	skb_copy_bits(skb, rctx->skb_offset,
 		      tbuf + rctx->fpdu_part_rcvd, avail);
 
@@ -899,9 +903,6 @@ static int siw_get_trailer(struct siw_qp *qp, struct siw_iwarp_rx *rctx)
 	rctx->skb_new -= avail;
 	rctx->skb_offset += avail;
 	rctx->skb_copied += avail;
-
-	dprint(DBG_RX, " (QP%d): %d remaining (%d)\n", QP_ID(qp),
-		rctx->fpdu_part_rem, avail);
 
 	if (!rctx->fpdu_part_rem) {
 		__be32	crc_in, crc_own = 0;

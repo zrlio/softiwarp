@@ -115,6 +115,5 @@ extern int siw_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 extern int siw_mmap(struct ib_ucontext *ibctx, struct vm_area_struct *vma);
 
 extern struct dma_map_ops siw_dma_generic_ops;
-extern struct ib_dma_mapping_ops siw_dma_mapping_ops;
 
 #endif

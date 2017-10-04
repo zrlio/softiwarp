@@ -79,7 +79,7 @@
 #define SIW_MAX_CONTEXT		SIW_MAX_PD
 
 #define SENDPAGE_THRESH		PAGE_SIZE /* min bytes for using sendpage() */
-#define SQ_USER_MAXBURST	10
+#define SQ_USER_MAXBURST	100
 
 #define MAX_CPU			NR_CPUS
 
@@ -511,11 +511,10 @@ struct siw_iwarp_tx {
 
 	u8			do_crc:1,	/* do crc for segment */
 				use_sendpage:1,	/* send w/o copy */
-				new_tcpseg:1,	/* start new tcp segment */
 				tx_suspend:1,	/* stop sending DDP segs. */
 				pad:2,		/* # pad in current fpdu */
 				orq_fence:1,	/* ORQ full or Send fenced */
-				unused:1;
+				unused:2;
 
 	u16			fpdu_len;	/* len of FPDU to tx */
 

@@ -998,7 +998,6 @@ int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
 	int rv = 0;
 
 	if (cq) {
-		u32 rqe_flags = rqe->flags;
 		unsigned long flags;
 
 		spin_lock_irqsave(&cq->lock, flags);
@@ -1026,7 +1025,7 @@ int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
 
 			cq->cq_put++;
 			spin_unlock_irqrestore(&cq->lock, flags);
-			siw_cq_notify(cq, rqe_flags);
+			siw_cq_notify(cq, SIW_WQE_SIGNALLED);
 		} else {
 			spin_unlock_irqrestore(&cq->lock, flags);
 			rv = -ENOMEM;

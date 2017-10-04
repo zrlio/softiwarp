@@ -248,9 +248,9 @@ static inline int push_recv_wqe(struct ibv_recv_wr *ofa_wr,
 	siw_rqe->num_sge = ofa_wr->num_sge;
 
 	if (ofa_wr->num_sge == 1) {
-		siw_rqe->sge[0].laddr    = ofa_wr->sg_list[0].addr;
-		siw_rqe->sge[0].length  = ofa_wr->sg_list[0].length;
-		siw_rqe->sge[0].lkey     = ofa_wr->sg_list[0].lkey;
+		siw_rqe->sge[0].laddr = ofa_wr->sg_list[0].addr;
+		siw_rqe->sge[0].length = ofa_wr->sg_list[0].length;
+		siw_rqe->sge[0].lkey = ofa_wr->sg_list[0].lkey;
 	} else if (ofa_wr->num_sge && ofa_wr->num_sge <= SIW_MAX_SGE)
 		/* this assumes same layout of siw and ofa SGE */
 		memcpy(siw_rqe->sge, ofa_wr->sg_list,

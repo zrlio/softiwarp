@@ -46,8 +46,6 @@
 #include <infiniband/driver.h>
 #include <infiniband/arch.h>
 
-#define _NR_SYSCALL_DB 313
-
 
 struct siw_device {
 	struct ibv_device	ofa_dev;
