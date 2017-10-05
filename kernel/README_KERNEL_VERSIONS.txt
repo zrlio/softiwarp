@@ -33,3 +33,10 @@ in inefficient initialization of RDMA data source or sink location for
 a software RDMA stack. Therefore, siw abandons using OFA core
 user page management (ib_umem_get() etc.) and implememnts its
 own simple, but better suited management of pinned user pages.
+
+05/10/2017
+
+The branch 'dev-siw.mem_ext' implements the required set of kernel
+verbs API calls to run siw as provider for both NVMeF initiator
+and target. The code only compiles on kernels with version >= 4.12.
+It also implements MPA version 2 (RFC 6581) with peer-to-peer mode.

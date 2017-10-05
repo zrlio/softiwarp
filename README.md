@@ -63,7 +63,10 @@ sudo insmod ./siw.ko
 ```
 
 setting 2: for starting TX thread on all CPUs given in 
-comma separated list, if CPU available
+comma separated list, if CPU available. Consider this
+option, if you want to run siw on a certain network
+device and want to restrict TX threads to the NUMA
+node this device is located at
 ```bash
 sudo insmod ./siw.ko tx_cpu_list=[n,m,...]
 ```

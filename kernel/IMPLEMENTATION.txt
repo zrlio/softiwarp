@@ -9,30 +9,37 @@ for user level applications. It makes use of the OFA connection manager
 to set up connections. siw runs on top of TCP kernel sockets.
 
 
-
 Status:
 =======
-siw is work in progress. While the implementation is not complete,
-it implements basic connection management, all iWARP wire operations
-(SEND, READ, WRITE), and memory protection.
-
+siw is work in progress. It implements connection management, all iWARP
+wire operations (SEND, READ, WRITE), and memory protection. For kernel
+clients such as NVMe over Fabrics, additional application buffer management
+functionality (local and remote STAG invalidation, 
+fast memory registration) is provided.
 
 
 Transmit Path:
 ==============
 If a send queue (SQ) work queue element (wqe) gets posted, siw tries
 first to send it directly out of the application context. If the SQ
-was non-empty, SQ processing is done by a kernel worker thread.
-This thread schedules work, if the tcp socket signals new write
-space to be available. If during send operation the socket send space
-get exhausted, SQ is abandoned until it resumes via write space available
+was non-idle, SQ processing is done by a kernel worker thread.
+If during send operation the socket send space get exhausted, SQ
+processing is abandoned until it resumes via write space available
 socket callback.
 
 Packet Fragmentation:
 ---------------------
-siw tries to take into account medium's MTU. FPDU's are constructed not to
-exceed the MTU to avoid fragmentation on the wire. Since TCP is a byte stream
-protocol, no guarantee can be given if FPDU's are not fragmented.
+siw tries to take into account MTU size as reported by TCP. FPDU's are
+constructed not to exceed the MTU to avoid fragmentation on the wire.
+Since TCP is a byte stream protocol, no guarantee can be given if
+FPDU's are not fragmented.
+If interfacing real iWARP hardware, it might be needed to restrict
+siw not to use GSO (Generic Segmentation Offload). Using GSO lets siw
+send frames up to the size of the reported MTU (<=64KB), which may not
+be acceptabe by RDMA hardware. A module parameter 'gso_seg_limit'
+controls if GSO MTU size gets used by siw. A value of 1 allows siw
+to format packets only up to MSS. A '0' formats as large frames as allowed
+by GSO. Using GSO significantly improves siw throughput.
 
 Zero Copy Send:
 ---------------
@@ -42,7 +49,9 @@ are not placed in peers target buffer, any changes to the content of
 the local buffer to be sent will result in non predictable target buffer
 content. Furthermore, if CRC checksumming is enabled, any change to non
 transmitted data already under control of TCP will result in CRC 
-corruption. 
+corruption.  from kernel version 4.13 on, siw uses the now exported
+function do_tcp_sendpages(), which significantly improves performance
+for large, multi-page buffers.
 
 Current experimental indicators for using sendpage():
 
@@ -54,23 +63,19 @@ operation is a non signalled WRITE.
 Furthermore, sendpage() gets used only after a certain threshold of
 payload data. All sendpage() usage is experimental and will be extended
 to guarantee that the memory must stay resident until the data are
-transmitted.
+acknowledged by the peer.
 
 
 Receive Path:
 ============-
 All application data is directly received within the softirq socket callback
-via tcp_read_sock()). This can be easily achieved, since all target
+via tcp_read_sock(). This can be easily achieved, since all target
 buffers are kernel resident.
 
 
 Connection Management:
 ======================
-To be rewritten for stability and simplification.  The interaction of
-three state machienes (socket, QP, connection endpoint) tends to get
-confusing. The iSCSI kernel code gives a good example on how to do TCP
-connection management better. Current connection manager code is known
-to have bugs and is under change.
+IPv6 support is missing and will be added.
 
 
 Memory Management:
@@ -85,22 +90,10 @@ network input path or before pushing it to the socket for transmission.
 Performance:
 ============
 Overall, performance was not yet our main focus. There is known headroom
-for achieving higher performance. 
+for achieving higher performance.  Using GSO is essential for achieving
+performance on par with plain TCP.
 
-Fast Path Operations:
-While RDMA hardware (RNIC) is typically using a private fast path
-between application and RDMA device, siw normally uses the OFA kernel 
-environment to trigger execution of work previously posted on the send
-queue.
-
-As an experimental extension, we implemented a code path to use a
-prorietary system call to ring the doorbell during user space post_send()
-operations. The SoftiWarp code detects the availability of that system
-call and falls back to using above described mechanism for triggering
-transmit operations. The proprietary system call is not part of the
-software.
-
-For user level operations, endpoint resources are by default mapped
+For user level operations, endpoint resources are memory mapped
 to user space. This includes send queue, receive queue, and completion
 queue. With that, the doorbell call during post_send() is the only
 operation which requires the application to trap into the kernel
@@ -111,13 +104,16 @@ element handling is done within the user library.
 Debugging:
 ==========
 siw flexibly allows to set different levels of runtime debugging (see
-siw_debug.h). Debug level setting is only compile-time.
+siw_debug.h). Debug level setting is only compile-time. The debug code
+must get revised to better make use of the available in-kernel device
+debugging framework.
 
 
 Incomplete List of Missing Functionality:
 =========================================
 MPA Marker insertion
 MPA Marker reception (not very useful)
+IPv6 support
 
 
 
