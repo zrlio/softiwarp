@@ -106,15 +106,15 @@ static u32 siw_insert_uobj(struct siw_ucontext *uctx, void *vaddr, u32 size)
 		uctx->uobj_key -= size;
 		key = SIW_INVAL_UOBJ_KEY;
 		kfree(uobj);
-		goto out;
+		goto out_unlock;
 	}
 	uobj->size = size;
 	uobj->addr = vaddr;
 
 	list_add_tail(&uobj->list, &uctx->uobj_list);
-out:
+out_unlock:
 	spin_unlock(&uctx->uobj_lock);
-
+out:
 	return key;
 }
 
