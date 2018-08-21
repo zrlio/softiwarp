@@ -53,6 +53,7 @@
 #define SIW_NODE_DESC_COMMON	"Software iWARP stack"
 
 #define SIW_IBDEV_PREFIX "siw_"
+#define SIW_IB_UVERBS_ABI_VERSION (0x7369775fU) /* siw_ */
 
 #define VERSION_ID_SOFTIWARP	2
 
