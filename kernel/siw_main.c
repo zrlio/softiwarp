@@ -375,6 +375,7 @@ static struct siw_dev *siw_device_create(struct net_device *netdev)
 	}
 	ofa_dev->owner = THIS_MODULE;
 
+	ofa_dev->uverbs_abi_ver = SIW_IB_UVERBS_ABI_VERSION;
 	ofa_dev->uverbs_cmd_mask =
 	    (1ull << IB_USER_VERBS_CMD_GET_CONTEXT) |
 	    (1ull << IB_USER_VERBS_CMD_QUERY_DEVICE) |
