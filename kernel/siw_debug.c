@@ -56,7 +56,7 @@
 static struct dentry *siw_debugfs;
 
 static ssize_t siw_show_qps(struct file *f, char __user *buf, size_t space,
-			    loff_t *ppos)
+				loff_t *ppos)
 {
 	struct siw_dev	*sdev = f->f_dentry->d_inode->i_private;
 	struct list_head *pos, *tmp;
@@ -81,9 +81,9 @@ static ssize_t siw_show_qps(struct file *f, char __user *buf, size_t space,
 	}
 	space -= len;
 	n = snprintf(kbuf + len, space,
-		     "%-7s%-6s%-6s%-5s%-5s%-5s%-5s%-5s%-20s%-20s\n",
-		     "QP-ID", "State", "Ref's", "SQ", "RQ", "IRQ", "ORQ",
-		     "s/r", "Sock", "CEP");
+			 "%-7s%-6s%-6s%-5s%-5s%-5s%-5s%-5s%-20s%-20s\n",
+			 "QP-ID", "State", "Ref's", "SQ", "RQ", "IRQ", "ORQ",
+			 "s/r", "Sock", "CEP");
 
 	if (n > space) {
 		len += space;
@@ -95,19 +95,19 @@ static ssize_t siw_show_qps(struct file *f, char __user *buf, size_t space,
 	list_for_each_safe(pos, tmp, &sdev->qp_list) {
 		struct siw_qp *qp = list_entry(pos, struct siw_qp, devq);
 		n = snprintf(kbuf + len, space,
-			     "%-7d%-6d%-6d%-5d%-5d%-5d%-5d%d/%-3d0x%-17p"
-			     " 0x%-18p\n",
-			     QP_ID(qp),
-			     qp->attrs.state,
-			     atomic_read(&qp->hdr.ref.refcount),
-			     qp->attrs.sq_size - atomic_read(&qp->sq_space),
-			     qp->attrs.rq_size - atomic_read(&qp->rq_space),
-			     qp->attrs.ird - atomic_read(&qp->irq_space),
-			     qp->attrs.ord - atomic_read(&qp->orq_space),
-			     tx_wqe(qp) ? 1 : 0,
-			     rx_wqe(qp) ? 1 : 0,
-			     qp->attrs.llp_stream_handle,
-			     qp->cep);
+				 "%-7d%-6d%-6d%-5d%-5d%-5d%-5d%d/%-3d0x%-17p"
+				 " 0x%-18p\n",
+				 QP_ID(qp),
+				 qp->attrs.state,
+				 atomic_read(&qp->hdr.ref.refcount),
+				 qp->attrs.sq_size,
+				 qp->attrs.rq_size,
+				 qp->attrs.irq_size,
+				 qp->attrs.orq_size,
+				 tx_wqe(qp) ? 1 : 0,
+				 rx_wqe(qp) ? 1 : 0,
+				 qp->attrs.llp_stream_handle,
+				 qp->cep);
 		if (n < space) {
 			len += n;
 			space -= n;
@@ -126,7 +126,7 @@ out:
 };
 
 static ssize_t siw_show_ceps(struct file *f, char __user *buf, size_t space,
-			     loff_t *ppos)
+				 loff_t *ppos)
 {
 	struct siw_dev	*sdev = f->f_dentry->d_inode->i_private;
 	struct list_head *pos, *tmp;
@@ -145,7 +145,7 @@ static ssize_t siw_show_ceps(struct file *f, char __user *buf, size_t space,
 		goto out;
 
 	len = snprintf(kbuf, space, "%s: %d CEPs\n", sdev->ofa_dev.name,
-		       num_cep);
+			   num_cep);
 	if (len > space) {
 		len = space;
 		goto out;
@@ -153,9 +153,9 @@ static ssize_t siw_show_ceps(struct file *f, char __user *buf, size_t space,
 	space -= len;
 
 	n = snprintf(kbuf + len, space,
-		     "%-20s%-6s%-6s%-7s%-3s%-3s%-4s%-21s%-9s\n",
-		     "CEP", "State", "Ref's", "QP-ID", "LQ", "LC", "U", "Sock",
-		     "CM-ID");
+			 "%-20s%-6s%-6s%-7s%-3s%-3s%-4s%-21s%-9s\n",
+			 "CEP", "State", "Ref's", "QP-ID", "LQ", "LC", "U", "Sock",
+			 "CM-ID");
 
 	if (n > space) {
 		len += space;
@@ -168,16 +168,16 @@ static ssize_t siw_show_ceps(struct file *f, char __user *buf, size_t space,
 		struct siw_cep *cep = list_entry(pos, struct siw_cep, devq);
 
 		n = snprintf(kbuf + len, space,
-			     "0x%-18p%-6d%-6d%-7d%-3s%-3s%-4d0x%-18p"
-			     " 0x%-16p\n",
-			     cep, cep->state,
-			     atomic_read(&cep->ref.refcount),
-			     cep->qp ? QP_ID(cep->qp) : -1,
-			     list_empty(&cep->listenq) ? "n" : "y",
-			     cep->listen_cep ? "y" : "n",
-			     cep->in_use,
-			     cep->llp.sock,
-			     cep->cm_id);
+				 "0x%-18p%-6d%-6d%-7d%-3s%-3s%-4d0x%-18p"
+				 " 0x%-16p\n",
+				 cep, cep->state,
+				 atomic_read(&cep->ref.refcount),
+				 cep->qp ? QP_ID(cep->qp) : -1,
+				 list_empty(&cep->listenq) ? "n" : "y",
+				 cep->listen_cep ? "y" : "n",
+				 cep->in_use,
+				 cep->llp.sock,
+				 cep->cm_id);
 		if (n < space) {
 			len += n;
 			space -= n;
@@ -196,7 +196,7 @@ out:
 };
 
 static ssize_t siw_show_stats(struct file *f, char __user *buf, size_t space,
-			      loff_t *ppos)
+				  loff_t *ppos)
 {
 	struct siw_dev	*sdev = f->f_dentry->d_inode->i_private;
 	char *kbuf = NULL;
@@ -262,18 +262,18 @@ void siw_debugfs_add_device(struct siw_dev *sdev)
 	sdev->debugfs = debugfs_create_dir(sdev->ofa_dev.name, siw_debugfs);
 	if (sdev->debugfs) {
 		entry = debugfs_create_file("qp", S_IRUSR, sdev->debugfs,
-					    (void *)sdev, &siw_qp_debug_fops);
+						(void *)sdev, &siw_qp_debug_fops);
 		if (!entry)
 			dprint(DBG_DM, ": could not create 'qp' entry\n");
 
 		entry = debugfs_create_file("cep", S_IRUSR, sdev->debugfs,
-					    (void *)sdev, &siw_cep_debug_fops);
+						(void *)sdev, &siw_cep_debug_fops);
 		if (!entry)
 			dprint(DBG_DM, ": could not create 'cep' entry\n");
 
 		entry = debugfs_create_file("stats", S_IRUSR, sdev->debugfs,
-					    (void *)sdev,
-					    &siw_stats_debug_fops);
+						(void *)sdev,
+						&siw_stats_debug_fops);
 		if (!entry)
 			dprint(DBG_DM, ": could not create 'stats' entry\n");
 	}
@@ -417,6 +417,29 @@ void siw_print_hdr(union iwarp_hdrs *hdr, int qp_id, char *msg)
 			ntohs(hdr->ctrl.mpa_len));
 		break;
 
+	case RDMAPEX_IMM_DATA:
+	case RDMAPEX_IMM_DATA_SE:
+		/* TODO */
+		break;
+
+	case RDMAPEX_ATOMIC_REQ:
+		pr_info("QP%04d %s(ATOMIC_REQ, MPA len %d): %08x %08x "
+			"%08x %01x %08x %08x %016llx %016llx %016llx\n", qp_id, msg,
+			ntohs(hdr->ctrl.mpa_len),
+			hdr->atomic_req.ddp_qn, hdr->atomic_req.ddp_msn,
+			hdr->atomic_req.ddp_mo, hdr->atomic_req.atomic_op,
+			hdr->atomic_req.req_id, hdr->atomic_req.remote_stag,
+			hdr->atomic_req.remote_to, hdr->atomic_req.add_swap,
+			hdr->atomic_req.cmp_data);
+		break;
+
+	case RDMAPEX_ATOMIC_RESP:
+		pr_info("QP%04d %s(ATOMIC_RESP, MPA len %d):"
+			" %08x \n" /*"%016llx\n"*/,
+			qp_id, msg, ntohs(hdr->ctrl.mpa_len),
+			hdr->atomic_resp.req_id/*, hdr->atomic_resp.org_value*/);
+		break;
+
 	default:
 		pr_info("QP%04d %s ?????\n", qp_id, msg);
 		break;
@@ -433,12 +456,13 @@ void siw_print_rctx(struct siw_iwarp_rx *rctx)
 		"pad:%d\n", rctx->state, rctx->fpdu_part_rcvd,
 		rctx->fpdu_part_rem, rctx->pad);
 	pr_info("Rx Mem:\t\tp:0x%p, stag:0x%08x, mem_id:%d\n",
-		rctx->dest.wqe, rctx->ddp_stag, rctx->ddp_stag >> 8);
+		&rctx->wqe_active, rctx->ddp_stag, rctx->ddp_stag >> 8);
 	pr_info("DDP State:\tprev_op:%d, first_seg:%d, "
 		"more_segs:%d\n", rctx->prev_rdmap_opcode, rctx->first_ddp_seg,
 		rctx->more_ddp_segs);
 	pr_info("MPA State:\tlen:%d, crc_enabled:%d, crc:0x%x\n",
-		rctx->hdr.ctrl.mpa_len, rctx->crc_enabled, rctx->trailer.crc);
+		ntohs(rctx->hdr.ctrl.mpa_len), rctx->crc_enabled,
+		rctx->trailer.crc);
 	pr_info("<---------------\n");
 }
 

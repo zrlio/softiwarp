@@ -1,11 +1,11 @@
 dnl Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.57)
-AC_INIT(libsiw, 0.9, bmt@zurich.ibm.com)
+AC_INIT(libsiw2, 0.9, bmt@zurich.ibm.com)
 AC_CONFIG_SRCDIR([src/siw.h])
 AC_CONFIG_AUX_DIR(config)
 AM_CONFIG_HEADER(config.h)
-AM_INIT_AUTOMAKE(libsiw, 0.9)
+AM_INIT_AUTOMAKE(libsiw2, 0.9)
 AM_PROG_LIBTOOL
 
 AC_ARG_ENABLE(libcheck, [  --disable-libcheck      do not test for presence of ib libraries],
@@ -22,7 +22,7 @@ dnl Checks for libraries
 if test "$disable_libcheck" != "yes"
 then
 AC_CHECK_LIB(ibverbs, ibv_get_device_list, [],
-    AC_MSG_ERROR([ibv_get_device_list() not found.  libsiw requires libibverbs.]))
+    AC_MSG_ERROR([ibv_get_device_list() not found.  libsiw2 requires libibverbs.]))
 fi
 
 dnl Checks for header files.
@@ -63,5 +63,5 @@ AC_CACHE_CHECK(whether ld accepts --version-script, ac_cv_version_script,
 
 AM_CONDITIONAL(HAVE_LD_VERSION_SCRIPT, test "$ac_cv_version_script" = "yes")
 
-AC_CONFIG_FILES([Makefile libsiw.spec])
+AC_CONFIG_FILES([Makefile libsiw2.spec])
 AC_OUTPUT

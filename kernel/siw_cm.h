@@ -41,7 +41,6 @@
 
 #include <net/sock.h>
 #include <linux/tcp.h>
-#include <linux/version.h>
 
 #include <rdma/iw_cm.h>
 
@@ -125,6 +124,12 @@ struct siw_cm_work {
 	enum siw_work_type	type;
 	struct siw_cep	*cep;
 };
+
+/*
+ * With kernel 3.12, OFA ddressing changed from sockaddr_in to
+ * sockaddr_storage
+ */
+#define to_sockaddr_in(a) (*(struct sockaddr_in *)(&(a)))
 
 extern int siw_connect(struct iw_cm_id *, struct iw_cm_conn_param *);
 extern int siw_accept(struct iw_cm_id *, struct iw_cm_conn_param *);

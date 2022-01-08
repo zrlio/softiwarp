@@ -48,8 +48,11 @@
 #include <netinet/in.h>
 #include <inttypes.h>
 
+#include <siw_user.h>
 #include "siw.h"
 #include "siw_abi.h"
+
+const int siw_debug = 0;
 
 int siw_query_device(struct ibv_context *ctx, struct ibv_device_attr *attr)
 {
@@ -83,7 +86,7 @@ int siw_query_port(struct ibv_context *ctx, uint8_t port,
 
 
 int siw_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr,
-                        int attr_mask, struct ibv_qp_init_attr *init_attr)
+						int attr_mask, struct ibv_qp_init_attr *init_attr)
 {
 	struct ibv_query_qp cmd;
 
@@ -102,7 +105,7 @@ struct ibv_pd *siw_alloc_pd(struct ibv_context *ctx)
 		return NULL;
 
 	if (ibv_cmd_alloc_pd(ctx, &pd->ofa_pd, &cmd, sizeof cmd,
-			     &resp.ofa_resp, sizeof resp)) {
+				 &resp.ofa, sizeof resp)) {
 		free(pd);
 		return NULL;
 	}
@@ -137,7 +140,7 @@ struct ibv_mr *siw_reg_mr(struct ibv_pd *pd, void *addr,
 		return NULL;
 
 	rv = ibv_cmd_reg_mr(pd, addr, len, (uintptr_t)addr, access, &mr->ofa_mr,
-			    &req.ofa_req, sizeof req, &resp.ofa_resp, sizeof resp);
+				&req.ofa, sizeof req, &resp.ofa, sizeof resp);
 
 	if (rv) {
 		free(mr);
@@ -162,7 +165,7 @@ int siw_dereg_mr(struct ibv_mr *ofa_mr)
 }
 
 struct ibv_cq *siw_create_cq(struct ibv_context *ctx, int num_cqe,
-			     struct ibv_comp_channel *channel, int comp_vector)
+				 struct ibv_comp_channel *channel, int comp_vector)
 {
 	struct siw_cq			*cq;
 	struct siw_cmd_create_cq	cmd;
@@ -174,18 +177,44 @@ struct ibv_cq *siw_create_cq(struct ibv_context *ctx, int num_cqe,
 		return NULL;
 
 	rv = ibv_cmd_create_cq(ctx, num_cqe, channel, comp_vector,
-			       &cq->ofa_cq, &cmd.ofa_cmd, sizeof cmd,
-			       &resp.ofa_resp, sizeof resp);
+				   &cq->ofa_cq, &cmd.ofa, sizeof cmd,
+				   &resp.ofa, sizeof resp);
 	if (rv)
 		goto fail;
 
 	pthread_spin_init(&cq->lock, PTHREAD_PROCESS_PRIVATE);
 
-	cq->k_id = resp.cq_id;
+	cq->id = resp.siw.cq_id;
+	cq->num_cqe = resp.siw.num_cqe;
+
+	if (resp.siw.cq_key <= SIW_MAX_UOBJ_KEY) {
+		int cq_size = resp.siw.num_cqe * sizeof(struct siw_cqe)
+				+ sizeof(struct siw_cq_ctrl);
+
+		if (siw_debug)
+			printf("CQ mapping: %d elements, size %d\n",
+				resp.siw.num_cqe, cq_size);
+
+		cq->queue = mmap(NULL, cq_size,
+				 PROT_READ|PROT_WRITE, MAP_SHARED,
+				  ctx->cmd_fd, resp.siw.cq_key);
+
+		if (cq->queue == MAP_FAILED)
+			goto fail;
+
+		cq->ctrl = (struct siw_cq_ctrl *)&cq->queue[cq->num_cqe + 1];
+		cq->ctrl->notify = SIW_NOTIFY_NOT;
+	} else
+		goto fail;
 
 	return &cq->ofa_cq;
 
-fail:	free (cq);
+fail:
+	if (siw_debug)
+		printf("CQ mapping failed: %d", resp.siw.num_cqe);
+
+	free (cq);
+
 	return (struct ibv_cq *) NULL;
 }
 
@@ -199,7 +228,14 @@ int siw_destroy_cq(struct ibv_cq *ofacq)
 	struct siw_cq	*cq = cq_ofa2siw(ofacq);
 	int 		rv;
 
+	if (siw_debug)
+		printf("destroy CQ[%d]\n", cq->id);
+
 	pthread_spin_lock(&cq->lock);
+
+	if (cq->queue)
+		munmap(cq->queue, cq->num_cqe * sizeof(struct siw_cqe)
+			+ sizeof (struct siw_cq_ctrl));
 
 	rv = ibv_cmd_destroy_cq(ofacq);
 	if (rv) {
@@ -214,22 +250,41 @@ int siw_destroy_cq(struct ibv_cq *ofacq)
 }
 
 struct ibv_srq *siw_create_srq(struct ibv_pd *pd,
-			       struct ibv_srq_init_attr *attr)
+				   struct ibv_srq_init_attr *attr)
 {
 	struct siw_cmd_create_srq	cmd;
 	struct siw_cmd_create_srq_resp	resp;
-	struct siw_srq			*srq = malloc(sizeof *srq);
+	struct siw_srq			*srq = calloc(1, sizeof *srq);
 
 	if (!srq)
 		return NULL;
 
-	if (ibv_cmd_create_srq(pd, &srq->ofa_srq, attr, &cmd.ofa_cmd,
-			       sizeof cmd, &resp.ofa_resp, sizeof resp)) {
+	if (ibv_cmd_create_srq(pd, &srq->ofa_srq, attr, &cmd.ofa,
+				   sizeof cmd, &resp.ofa, sizeof resp)) {
 		free(srq);
 		return NULL;
 	}
 	pthread_spin_init(&srq->lock, PTHREAD_PROCESS_PRIVATE);
 
+	if (resp.siw.srq_key <= SIW_MAX_UOBJ_KEY) {
+		struct ibv_context *ctx = pd->context;
+		int rq_size = resp.siw.num_rqe * sizeof(struct siw_rqe);
+
+		srq->num_rqe = resp.siw.num_rqe;
+
+		if (siw_debug)
+			printf("SRQ mapping: %d\n", srq->num_rqe);
+
+		srq->recvq = mmap(NULL, rq_size, PROT_READ|PROT_WRITE,
+				  MAP_SHARED, ctx->cmd_fd, resp.siw.srq_key);
+
+		if (srq->recvq == MAP_FAILED) {
+			if (siw_debug)
+				printf("SRQ mapping failed: %d",
+					resp.siw.num_rqe);
+			srq->recvq = NULL;
+		}
+	}
 	return &srq->ofa_srq;
 }
 
@@ -255,6 +310,9 @@ int siw_destroy_srq(struct ibv_srq *ofa_srq)
 	ibv_cmd_destroy_srq(ofa_srq);
 	pthread_spin_unlock(&srq->lock);
 
+	if (srq->recvq)
+		munmap(srq->recvq, srq->num_rqe * sizeof(struct siw_rqe));
+
 	free(srq);
 
 	return 0;
@@ -265,6 +323,8 @@ struct ibv_qp *siw_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 	struct siw_cmd_create_qp	cmd;
 	struct siw_cmd_create_qp_resp	resp;
 	struct siw_qp			*qp;
+	struct ibv_context		*ofa_ctx = pd->context;
+	struct siw_context		*ctx = ctx_ofa2siw(ofa_ctx);
 
 	int				rv;
 
@@ -272,21 +332,75 @@ struct ibv_qp *siw_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 	if (!qp)
 		return NULL;
 
-	rv = ibv_cmd_create_qp(pd, &qp->ofa_qp, attr, &cmd.ofa_cmd,
-			       sizeof cmd, &resp.ofa_resp, sizeof resp);
+	qp->dev_id = ctx->dev_id;
+
+	rv = ibv_cmd_create_qp(pd, &qp->ofa_qp, attr, &cmd.ofa,
+				   sizeof cmd, &resp.ofa, sizeof resp);
 	if (rv)
 		goto fail;
 
-	qp->id = resp.qp_id;
+	qp->id 	    = resp.siw.qp_id;
+	qp->num_sqe = resp.siw.num_sqe;
+	qp->num_rqe = resp.siw.num_rqe;
+	qp->sq_sig_all = attr->sq_sig_all;
 
-	pthread_spin_init(&qp->lock, PTHREAD_PROCESS_PRIVATE);
-	/*
-	 * TODO: assign and initialize send and receive wq
-	 * for mapped qp interface
-	 */
+	pthread_spin_init(&qp->sq_lock, PTHREAD_PROCESS_PRIVATE);
+	pthread_spin_init(&qp->rq_lock, PTHREAD_PROCESS_PRIVATE);
+
+	if (resp.siw.sq_key <= SIW_MAX_UOBJ_KEY) {
+		int sq_size = resp.siw.num_sqe * sizeof(struct siw_sqe);
+
+		if (siw_debug)
+			printf("SQ mapping: %d\n", resp.siw.num_sqe);
+
+		qp->sendq = mmap(NULL, sq_size,
+				 PROT_READ|PROT_WRITE, MAP_SHARED,
+				 ofa_ctx->cmd_fd, resp.siw.sq_key);
+
+		if (qp->sendq == MAP_FAILED) {
+			printf("SQ mapping failed: %d", resp.siw.num_sqe);
+			qp->sendq = NULL;
+			goto fail;
+		}
+	} else {
+		if (siw_debug)
+			printf("SQ mapping failed\n");
+		goto fail;
+	}
+	if (attr->srq) {
+		struct siw_srq *srq = srq_ofa2siw(attr->srq);
+		qp->srq = srq;
+	} else if (resp.siw.rq_key <= SIW_MAX_UOBJ_KEY) {
+		int rq_size = resp.siw.num_rqe * sizeof(struct siw_rqe);
+
+		if (siw_debug)
+			printf("RQ mapping: %d\n", resp.siw.num_rqe);
+
+		qp->recvq = mmap(NULL, rq_size,
+				 PROT_READ|PROT_WRITE, MAP_SHARED,
+				  ofa_ctx->cmd_fd, resp.siw.rq_key);
+
+		if (qp->recvq == MAP_FAILED) {
+			if (siw_debug)
+				printf("RQ mapping failed: %d\n",
+					resp.siw.num_rqe);
+			qp->recvq = NULL;
+			goto fail;
+		}
+	} else {
+		if (siw_debug)
+			printf("RQ mapping failed\n");
+		goto fail;
+	}
 	return &qp->ofa_qp;
 
-fail:	free(qp);
+fail:
+	if (qp->sendq)
+		munmap(qp->sendq, qp->num_sqe * sizeof(struct siw_sqe));
+	if (qp->recvq)
+		munmap(qp->recvq, qp->num_rqe * sizeof(struct siw_rqe));
+
+	free(qp);
 
 	return (struct ibv_qp *) NULL;
 }
@@ -298,9 +412,16 @@ int siw_modify_qp(struct ibv_qp *ofaqp, struct ibv_qp_attr *attr,
 	struct ibv_modify_qp	cmd;
 	int			rv;
 
-	pthread_spin_lock(&qp->lock);
+	if (siw_debug)
+		printf("modify QP[%d]\n", qp->id);
+
+	pthread_spin_lock(&qp->sq_lock);
+	pthread_spin_lock(&qp->rq_lock);
+
 	rv = ibv_cmd_modify_qp(ofaqp, attr, attr_mask, &cmd, sizeof cmd);
-	pthread_spin_unlock(&qp->lock);
+
+	pthread_spin_unlock(&qp->rq_lock);
+	pthread_spin_unlock(&qp->sq_lock);
 
 	return rv;
 }
@@ -310,14 +431,25 @@ int siw_destroy_qp(struct ibv_qp *ofaqp)
 	struct siw_qp	*qp = qp_ofa2siw(ofaqp);
 	int		rv;
 
-	pthread_spin_lock(&qp->lock);
+	if (siw_debug)
+		printf("destroy QP[%d]\n", qp->id);
+
+	pthread_spin_lock(&qp->sq_lock);
+	pthread_spin_lock(&qp->rq_lock);
+
+	if (qp->sendq)
+		munmap(qp->sendq, qp->num_sqe * sizeof(struct siw_sqe));
+	if (qp->recvq)
+		munmap(qp->recvq, qp->num_rqe * sizeof(struct siw_rqe));
 
 	rv = ibv_cmd_destroy_qp(ofaqp);
 	if (rv) {
-		pthread_spin_unlock(&qp->lock);
+		pthread_spin_unlock(&qp->rq_lock);
+		pthread_spin_unlock(&qp->sq_lock);
 		return rv;
 	}
-	pthread_spin_unlock(&qp->lock);
+	pthread_spin_unlock(&qp->rq_lock);
+	pthread_spin_unlock(&qp->sq_lock);
 
 	free(qp);
 

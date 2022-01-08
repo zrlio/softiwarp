@@ -59,7 +59,7 @@ static bool mpa_crc_strict = 1;
 module_param(mpa_crc_strict, bool, 0644);
 static bool mpa_crc_required;
 module_param(mpa_crc_required, bool, 0644);
-static bool tcp_nodelay = 1;
+static bool tcp_nodelay = 0;
 module_param(tcp_nodelay, bool, 0644);
 
 MODULE_PARM_DESC(mpa_crc_required, "MPA CRC required");
@@ -77,21 +77,24 @@ static int siw_sock_nodelay(struct socket *sock)
 
 	val = tcp_nodelay ? 1 : 0;
 
+	if (!val)
+		return 0;
+
 	oldfs = get_fs();
 
 	set_fs(KERNEL_DS);
 
 	rv = sock->ops->setsockopt(sock, SOL_TCP, TCP_NODELAY,
-				    (char __user *)&val, sizeof(val));
+					(char __user *)&val, sizeof(val));
 	set_fs(oldfs);
 	return rv;
 }
 
 static void siw_cm_llp_state_change(struct sock *);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-static void siw_cm_llp_data_ready(struct sock *, int);
+static void siw_cm_llp_data_ready(struct sock *sk, int flags);
 #else
-static void siw_cm_llp_data_ready(struct sock *);
+static void siw_cm_llp_data_ready(struct sock *sk);
 #endif
 static void siw_cm_llp_write_space(struct sock *);
 static void siw_cm_llp_error_report(struct sock *);
@@ -139,9 +142,11 @@ static void siw_socket_disassoc(struct socket *s)
 		if (cep) {
 			siw_sk_restore_upcalls(sk, cep);
 			siw_cep_put(cep);
-		}
+		} else
+			pr_warn("cannot restore sk callbacks: no ep\n");
 		write_unlock_bh(&sk->sk_callback_lock);
-	}
+	} else
+		pr_warn("cannot restore sk callbacks: no sk\n");
 }
 
 
@@ -324,12 +329,6 @@ static int siw_cm_alloc_work(struct siw_cep *cep, int num)
 }
 
 /*
- * With kernel 3.12, OFA ddressing changed from sockaddr_in to
- * sockaddr_storage
- */
-#define to_sockaddr_in(a) (*(struct sockaddr_in *)(&(a)))
-
-/*
  * siw_cm_upcall()
  *
  * Upcall to IWCM to inform about async connection events
@@ -345,7 +344,7 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 	event.event = reason;
 
 	if (reason == IW_CM_EVENT_CONNECT_REQUEST ||
-	    reason == IW_CM_EVENT_CONNECT_REPLY) {
+		reason == IW_CM_EVENT_CONNECT_REPLY) {
 		u16 pd_len = be16_to_cpu(cep->mpa.hdr.params.pd_len);
 
 		if (pd_len) {
@@ -369,10 +368,9 @@ static int siw_cm_upcall(struct siw_cep *cep, enum iw_cm_event_type reason,
 		cm_id = cep->cm_id;
 
 	dprint(DBG_CM, " (QP%d): cep=0x%p, id=0x%p, dev(id)=%s, "
-		"reason=%d, status=%d pdlen %d pdata %p\n",
+		"reason=%d, status=%d\n",
 		cep->qp ? QP_ID(cep->qp) : -1, cep, cm_id,
-		cm_id->device->name, reason, status,
-		event.private_data_len, event.private_data);
+		cm_id->device->name, reason, status);
 
 	return cm_id->event_handler(cm_id, &event);
 }
@@ -416,7 +414,7 @@ void siw_qp_cm_drop(struct siw_qp *qp, int schedule)
 
 			case SIW_EPSTATE_AWAIT_MPAREP:
 				siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-					      -EINVAL);
+						  -EINVAL);
 				break;
 
 			case SIW_EPSTATE_RDMA_MODE:
@@ -475,7 +473,7 @@ void siw_cep_get(struct siw_cep *cep)
 
 
 static inline int ksock_recv(struct socket *sock, char *buf, size_t size,
-			     int flags)
+				 int flags)
 {
 	struct kvec iov = {buf, size};
 	struct msghdr msg = {.msg_name = NULL, .msg_flags = flags};
@@ -491,7 +489,7 @@ static inline int ksock_recv(struct socket *sock, char *buf, size_t size,
  * This way, all private data parameters would be in a common struct.
  */
 static int siw_send_mpareqrep(struct siw_cep *cep, const void *pdata,
-			      u8 pd_len)
+				  u8 pd_len)
 {
 	struct socket	*s = cep->llp.sock;
 	struct mpa_rr	*rr = &cep->mpa.hdr;
@@ -724,7 +722,7 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 	if (rep->params.bits & MPA_RR_FLAG_REJECT) {
 		dprint(DBG_CM, "(cep=0x%p): Got MPA reject\n", cep);
 		(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-				    -ECONNRESET);
+					-ECONNRESET);
 
 		rv = -ECONNRESET;
 		goto out;
@@ -740,7 +738,7 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 			rep->params.bits & MPA_RR_FLAG_MARKERS ? 1 : 0, 0);
 
 		(void)siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-				    -ECONNREFUSED);
+					-ECONNREFUSED);
 		rv = -EINVAL;
 		goto out;
 	}
@@ -748,8 +746,8 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 	qp_attrs.mpa.marker_rcv = 0;
 	qp_attrs.mpa.marker_snd = 0;
 	qp_attrs.mpa.crc = cep->mpa.hdr.params.bits & MPA_RR_FLAG_CRC ? 1 : 0;
-	qp_attrs.ird = cep->ird;
-	qp_attrs.ord = cep->ord;
+	qp_attrs.irq_size = cep->ird;
+	qp_attrs.orq_size = cep->ord;
 	qp_attrs.llp_stream_handle = cep->llp.sock;
 	qp_attrs.state = SIW_QP_STATE_RTS;
 
@@ -761,10 +759,10 @@ static int siw_proc_mpareply(struct siw_cep *cep)
 		goto out_err;
 	}
 	rv = siw_qp_modify(qp, &qp_attrs, SIW_QP_ATTR_STATE|
-					       SIW_QP_ATTR_LLP_HANDLE|
-					       SIW_QP_ATTR_ORD|
-					       SIW_QP_ATTR_IRD|
-					       SIW_QP_ATTR_MPA);
+						   SIW_QP_ATTR_LLP_HANDLE|
+						   SIW_QP_ATTR_ORD|
+						   SIW_QP_ATTR_IRD|
+						   SIW_QP_ATTR_MPA);
 
 	up_write(&qp->state_lock);
 
@@ -922,7 +920,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 				siw_cep_set_inuse(cep->listen_cep);
 
 				if (cep->listen_cep->state ==
-				    SIW_EPSTATE_LISTENING)
+					SIW_EPSTATE_LISTENING)
 					rv = siw_proc_mpareq(cep);
 				else
 					rv = -EFAULT;
@@ -951,6 +949,18 @@ static void siw_cm_work_handler(struct work_struct *w)
 			 */
 			dprint(DBG_CM, "(): CEP not in MPA "
 				"handshake state: %d\n", cep->state);
+			if (cep->state == SIW_EPSTATE_RDMA_MODE) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
+				cep->llp.sock->sk->sk_data_ready(
+					cep->llp.sock->sk, 0);
+#else
+				cep->llp.sock->sk->sk_data_ready(
+					cep->llp.sock->sk);
+#endif
+				pr_info("cep already in RDMA mode");
+			} else
+				pr_info("cep out of state: %d\n", cep->state);
+				
 		}
 		if (rv && rv != EAGAIN)
 			release_cep = 1;
@@ -984,7 +994,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 				 * MPA reply not received, but connection drop
 				 */
 				siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-					      -ECONNRESET);
+						  -ECONNRESET);
 				break;
 
 			case SIW_EPSTATE_RDMA_MODE:
@@ -1050,7 +1060,7 @@ static void siw_cm_work_handler(struct work_struct *w)
 
 			if (cep->cm_id)
 				siw_cm_upcall(cep, IW_CM_EVENT_CONNECT_REPLY,
-					      -ETIMEDOUT);
+						  -ETIMEDOUT);
 			release_cep = 1;
 
 		} else if (cep->state == SIW_EPSTATE_AWAIT_MPAREQ) {
@@ -1147,7 +1157,6 @@ int siw_cm_queue_work(struct siw_cep *cep, enum siw_work_type type)
 	return 0;
 }
 
-
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 static void siw_cm_llp_data_ready(struct sock *sk, int flags)
 #else
@@ -1164,12 +1173,8 @@ static void siw_cm_llp_data_ready(struct sock *sk)
 		goto out;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
-	dprint(DBG_CM, "(): cep 0x%p, state: %d, flags %x\n", cep,
-		cep->state, flags);
-#else
 	dprint(DBG_CM, "(): cep 0x%p, state: %d\n", cep, cep->state);
-#endif
+
 	switch (cep->state) {
 
 	case SIW_EPSTATE_RDMA_MODE:
@@ -1262,8 +1267,8 @@ static void siw_cm_llp_state_change(struct sock *sk)
 
 
 static int kernel_bindconnect(struct socket *s,
-			      struct sockaddr *laddr, int laddrlen,
-			      struct sockaddr *raddr, int raddrlen, int flags)
+				  struct sockaddr *laddr, int laddrlen,
+				  struct sockaddr *raddr, int raddrlen, int flags)
 {
 	int err, s_val = 1;
 	/*
@@ -1469,6 +1474,7 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	siw_cep_set_inuse(cep);
 	siw_cep_put(cep);
 
+	/* Free lingering inbound private data */
 	if (cep->mpa.hdr.params.pd_len) {
 		cep->mpa.hdr.params.pd_len = 0;
 		kfree(cep->mpa.pdata);
@@ -1501,12 +1507,12 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 		id, QP_ID(qp), sdev->ofa_dev.name);
 
 	if (params->ord > sdev->attrs.max_ord ||
-	    params->ird > sdev->attrs.max_ord) {
+		params->ird > sdev->attrs.max_ord) {
 		dprint(DBG_CM|DBG_ON, "(id=0x%p, QP%d): "
 			"ORD: %d (max: %d), IRD: %d (max: %d)\n",
 			id, QP_ID(qp),
-			params->ord, qp->attrs.ord,
-			params->ird, qp->attrs.ird);
+			params->ord, qp->attrs.orq_size,
+			params->ird, qp->attrs.irq_size);
 		rv = -EINVAL;
 		up_write(&qp->state_lock);
 		goto error;
@@ -1524,8 +1530,8 @@ int siw_accept(struct iw_cm_id *id, struct iw_cm_conn_param *params)
 	id->add_ref(id);
 
 	memset(&qp_attrs, 0, sizeof qp_attrs);
-	qp_attrs.ord = params->ord;
-	qp_attrs.ird = params->ird;
+	qp_attrs.orq_size = params->ord;
+	qp_attrs.irq_size = params->ird;
 	qp_attrs.llp_stream_handle = cep->llp.sock;
 
 	/*
@@ -1646,7 +1652,7 @@ int siw_reject(struct iw_cm_id *id, const void *pdata, u8 plen)
 }
 
 static int siw_listen_address(struct iw_cm_id *id, int backlog,
-			      struct sockaddr *laddr)
+				  struct sockaddr *laddr)
 {
 	struct socket		*s;
 	struct siw_cep		*cep = NULL;
@@ -1659,13 +1665,20 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 		return rv;
 	}
 
+#if 0
+	rv = siw_sock_nodelay(s);
+	if (rv != 0) {
+		pr_info("listen: TCP_NODELAY failed\n");
+		goto error;
+	}
+#endif
 	/*
 	 * Probably to be removed later. Allows binding
 	 * local port when still in TIME_WAIT from last close.
 	 */
 	s_val = 1;
 	rv = kernel_setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char *)&s_val,
-			       sizeof s_val);
+				   sizeof s_val);
 	if (rv != 0) {
 		dprint(DBG_CM|DBG_ON, "(id=0x%p): ERROR: "
 			"kernel_setsockopt(): rv=%d\n", id, rv);
@@ -1733,7 +1746,7 @@ static int siw_listen_address(struct iw_cm_id *id, int backlog,
 	 */
 	if (!id->provider_data) {
 		id->provider_data = kmalloc(sizeof(struct list_head),
-					    GFP_KERNEL);
+						GFP_KERNEL);
 		if (!id->provider_data) {
 			rv = -ENOMEM;
 			goto error;
@@ -1864,9 +1877,9 @@ int siw_create_listen(struct iw_cm_id *id, int backlog)
 			 * the IP address of the interface.
 			 */
 			if (ipv4_is_zeronet(
-			    to_sockaddr_in(id->local_addr).sin_addr.s_addr) ||
-			    to_sockaddr_in(id->local_addr).sin_addr.s_addr ==
-			    ifa->ifa_address) {
+				to_sockaddr_in(id->local_addr).sin_addr.s_addr) ||
+				to_sockaddr_in(id->local_addr).sin_addr.s_addr ==
+				ifa->ifa_address) {
 				laddr.sin_addr.s_addr = ifa->ifa_address;
 
 				l_ip = (u8 *) &laddr.sin_addr.s_addr;

@@ -47,11 +47,6 @@
 #include "siw.h"
 #include "siw_debug.h"
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 2, 0)
-/* Older kernels don't have pinned pages acounting */
-#define pinned_vm       locked_vm
-#endif
-
 static void siw_umem_update_stats(struct work_struct *work)
 {
 	struct siw_umem *umem = container_of(work, struct siw_umem, work);
@@ -149,7 +144,6 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 		rv = -ENOMEM;
 		goto out;
 	}
-
 	umem->fp_addr = first_page_va;
 
 	umem->page_chunk = kzalloc(num_chunks * sizeof(struct siw_page_chunk),
@@ -166,8 +160,8 @@ struct siw_umem *siw_umem_get(u64 start, u64 len)
 		while (nents) {
 			struct page **plist = &umem->page_chunk[i].p[got];
 			rv = get_user_pages(current, current->mm,
-					    first_page_va, nents, 1, 1, plist,
-					    NULL);
+						first_page_va, nents, 1, 1, plist,
+						NULL);
 			if (rv < 0 )
 				goto out;
 
@@ -203,7 +197,7 @@ static int siw_mapping_error(struct ib_device *dev, u64 dma_addr)
 }
 
 static u64 siw_dma_map_single(struct ib_device *dev, void *kva, size_t size,
-			       enum dma_data_direction dir)
+				   enum dma_data_direction dir)
 {
 	/* siw uses kernel virtual addresses for data transfer */
 	return (u64) kva;
@@ -217,8 +211,8 @@ static void siw_dma_unmap_single(struct ib_device *dev,
 }
 
 static u64 siw_dma_map_page(struct ib_device *dev, struct page *page,
-			    unsigned long offset, size_t size,
-			    enum dma_data_direction dir)
+				unsigned long offset, size_t size,
+				enum dma_data_direction dir)
 {
 	u64 kva = 0;
 
@@ -233,8 +227,8 @@ static u64 siw_dma_map_page(struct ib_device *dev, struct page *page,
 }
 
 static void siw_dma_unmap_page(struct ib_device *dev,
-			       u64 addr, size_t size,
-			       enum dma_data_direction dir)
+				   u64 addr, size_t size,
+				   enum dma_data_direction dir)
 {
 	/* NOP */
 }
@@ -260,7 +254,7 @@ static int siw_dma_map_sg(struct ib_device *dev, struct scatterlist *sgl,
 }
 
 static void siw_dma_unmap_sg(struct ib_device *dev, struct scatterlist *sgl,
-			     int n_sge, enum dma_data_direction dir)
+				 int n_sge, enum dma_data_direction dir)
 {
 	/* NOP */
 }
@@ -284,20 +278,20 @@ static unsigned int siw_dma_len(struct ib_device *dev,
 #endif
 
 static void siw_sync_single_for_cpu(struct ib_device *dev, u64 addr,
-				    size_t size, enum dma_data_direction dir)
+					size_t size, enum dma_data_direction dir)
 {
 	/* NOP */
 }
 
 static void siw_sync_single_for_device(struct ib_device *dev, u64 addr,
-				       size_t size,
-				       enum dma_data_direction dir)
+					   size_t size,
+					   enum dma_data_direction dir)
 {
 	/* NOP */
 }
 
 static void *siw_dma_alloc_coherent(struct ib_device *dev, size_t size,
-				    u64 *dma_addr, gfp_t flag)
+					u64 *dma_addr, gfp_t flag)
 {
 	struct page *page;
 	void *kva = NULL;
@@ -337,7 +331,7 @@ struct ib_dma_mapping_ops siw_dma_mapping_ops = {
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 4, 0)
 static void *siw_dma_generic_alloc_coherent(struct device *dev, size_t size,
-					    dma_addr_t *dma_handle, gfp_t gfp)
+						dma_addr_t *dma_handle, gfp_t gfp)
 {
 	return siw_dma_alloc_coherent(NULL, size, dma_handle, gfp);
 }
@@ -374,10 +368,10 @@ static dma_addr_t siw_dma_generic_map_page(struct device *dev,
 }
 
 static void siw_dma_generic_unmap_page(struct device *dev,
-				       dma_addr_t handle,
-				       size_t size,
-				       enum dma_data_direction dir,
-				       struct dma_attrs *attrs)
+					   dma_addr_t handle,
+					   size_t size,
+					   enum dma_data_direction dir,
+					   struct dma_attrs *attrs)
 {
 	siw_dma_unmap_page(NULL, handle, size, dir);
 }
@@ -390,27 +384,27 @@ static int siw_dma_generic_map_sg(struct device *dev, struct scatterlist *sg,
 }
 
 static void siw_dma_generic_unmap_sg(struct device *dev,
-				    struct scatterlist *sg,
-				    int nents,
-				    enum dma_data_direction dir,
-				    struct dma_attrs *attrs)
+					struct scatterlist *sg,
+					int nents,
+					enum dma_data_direction dir,
+					struct dma_attrs *attrs)
 {
 	siw_dma_unmap_sg(NULL, sg, nents, dir);
 }
 
 static void siw_generic_sync_single_for_cpu(struct device *dev,
-					    dma_addr_t dma_handle,
-					    size_t size,
-					    enum dma_data_direction dir)
+						dma_addr_t dma_handle,
+						size_t size,
+						enum dma_data_direction dir)
 {
 	siw_sync_single_for_cpu(NULL, dma_handle, size, dir);
 }
 
 
 static void siw_generic_sync_single_for_device(struct device *dev,
-					       dma_addr_t dma_handle,
-					       size_t size,
-					       enum dma_data_direction dir)
+						   dma_addr_t dma_handle,
+						   size_t size,
+						   enum dma_data_direction dir)
 {
 	siw_sync_single_for_device(NULL, dma_handle, size, dir);
 }

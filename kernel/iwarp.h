@@ -228,6 +228,42 @@ struct iwarp_terminate {
 	__be32			term_ctrl;
 };
 
+struct iwarpex_imm_data {
+	struct iwarp_ctrl	ctrl;
+	__be32			rsvd;
+	__be32			ddp_qn;
+	__be32			ddp_msn;
+	__be32			ddp_mo;
+    __be64          data;
+};
+
+struct iwarpex_atomic_req {
+	struct iwarp_ctrl	ctrl;
+	__be32			rsvd;
+	__be32			ddp_qn;
+	__be32			ddp_msn;
+	__be32			ddp_mo;
+    __u8            rsvd2[3];
+    __u8            atomic_op;
+    __be32          req_id;
+	__be32			remote_stag;
+	__be64			remote_to;
+	__be64			add_swap;
+	__be64			add_swap_mask;
+	__be64			cmp_data;
+    __be64          cmp_mask;
+};
+
+struct iwarpex_atomic_resp {
+	struct iwarp_ctrl	ctrl;
+	__be32			rsvd;
+	__be32			ddp_qn;
+	__be32			ddp_msn;
+	__be32			ddp_mo;
+    __be32          req_id;
+    __be64          org_value;
+};
+
 /*
  * Terminate Hdr bits & fields
  */
@@ -292,6 +328,8 @@ union iwarp_hdrs {
 	struct iwarp_terminate		terminate;
 	struct iwarp_send		send;
 	struct iwarp_send_inv		send_inv;
+    struct iwarpex_atomic_req   atomic_req;
+    struct iwarpex_atomic_resp  atomic_resp;
 };
 
 
@@ -323,14 +361,15 @@ enum ddp_ecode {
 
 
 enum rdmap_untagged_qn {
-	RDMAP_UNTAGGED_QN_SEND		= 0,
-	RDMAP_UNTAGGED_QN_RDMA_READ	= 1,
+	RDMAP_UNTAGGED_QN_SEND      = 0,
+	RDMAP_UNTAGGED_QN_RDMA_READ = 1,
 	RDMAP_UNTAGGED_QN_TERMINATE	= 2,
-	RDMAP_UNTAGGED_QN_COUNT		= 3
+    RDMAPEX_UNTAGGED_QN_ATOMIC_RESP = 3,
+	RDMAP_UNTAGGED_QN_COUNT		= 4
 };
 
 enum rdmap_etype {
-	RDMAP_ETYPE_CATASTROPHIC	= 0x0,
+	RDMAP_ETYPE_CATASTROPHIC    = 0x0,
 	RDMAP_ETYPE_REMOTE_PROTECTION	= 0x1,
 	RDMAP_ETYPE_REMOTE_OPERATION	= 0x2
 };
@@ -364,7 +403,18 @@ enum rdma_opcode {
 	RDMAP_SEND_SE		= 0x5,
 	RDMAP_SEND_SE_INVAL	= 0x6,
 	RDMAP_TERMINATE		= 0x7,
-	RDMAP_NOT_SUPPORTED	= RDMAP_TERMINATE + 1
+    RDMAPEX_IMM_DATA    = 0x8,
+    RDMAPEX_IMM_DATA_SE = 0x9,
+    RDMAPEX_ATOMIC_REQ  = 0xa,
+    RDMAPEX_ATOMIC_RESP = 0xb,
+	RDMAP_NOT_SUPPORTED	= RDMAPEX_ATOMIC_RESP + 1
+};
+
+enum rdma_atomic_opcode {
+    RDMAPEX_ATOMIC_FETCH_ADD    = 0x0,
+    RDMAPEX_ATOMIC_RESERVED     = 0x1,
+    RDMAPEX_ATOMIC_CMP_SWAP     = 0x2,
+    RDMAPEX_ATOMIC_NOT_SUPPORTED = RDMAPEX_ATOMIC_CMP_SWAP + 1
 };
 
 #endif

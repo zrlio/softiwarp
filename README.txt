@@ -1,7 +1,7 @@
 SoftiWARP: Software iWARP kernel driver and user library for Linux.
 
 SoftiWARP (siw) implements the iWARP protocol suite (MPA/DDP/RDMAP,
-IETF-RFC 5044/5041/5040) completely in software, without requiring
+IETF-RFC 5044/5041/5040/7306) completely in software, without requiring
 any dedictaed RDMA hardware. It comprises a loadable Linux kernel
 module 'siw' located in kernel/ and a user level library 'libsiw'
 located in userlib/.
