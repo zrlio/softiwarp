@@ -1,4 +1,14 @@
-#SoftiWARP
+## DISCLAIMER
+
+**THIS CODE IS NOT LONGER MAINTAINED, SINCE THE SOFTIWARP DRIVER
+BECAME PART OF UPSTREAM LINUX WITH KERNEL 5.2, AND IS MAINTAINED
+THERE.**
+
+Please use the latest SoftiWarp driver and its user RDMA library
+from your Linux distro for running software RDMA over IP interfaces.
+We keep this zrlio siw repo only for reference.
+
+# SoftiWARP
 
 SoftiWARP (siw) is a software iWARP kernel driver and user library 
 for Linux. It implements the iWARP protocol suite (MPA/DDP/RDMAP,
